@@ -150,6 +150,38 @@ def status(colony_name: str) -> None:
 
 
 @cli.command()
+@click.argument("request")
+@click.option("--colony", "colony_name", default="default", help="Colony name.")
+def ask(request: str, colony_name: str) -> None:
+    """Hand the colony a natural-language request. Scout decomposes; colony executes."""
+    config = AnthillConfig.load()
+    colony = load_colony(colony_name, config.home)
+    if colony is None or not colony.agents:
+        console.print(
+            f"[red]No agents in colony '{colony_name}'.[/red] "
+            f"Run [cyan]anthill spawn --count 3[/cyan] first."
+        )
+        return
+
+    result = asyncio.run(colony.ask(request))
+    save_colony(colony, config.home)
+
+    console.print(f"[dim]request[/dim]  {request}")
+    console.print(f"[dim]plan[/dim]     {len(result.plan)} subtask(s)")
+    console.print()
+    for i, (sub, res) in enumerate(zip(result.plan.subtasks, result.results), start=1):
+        agent = next((a for a in colony.agents if a.id == res.agent_id), None)
+        model = agent.model if agent else "?"
+        console.print(
+            f"[cyan]#{i}[/cyan] "
+            f"[magenta]{sub.task_type}[/magenta] -> {res.agent_id} ({model})  "
+            f"score={res.success_score:.1f}  {res.duration_seconds:.1f}s"
+        )
+        console.print(str(res.output))
+        console.print()
+
+
+@cli.command()
 @click.option("--terse-tasks", default=25, help="Terse tasks per arm.")
 @click.option("--verbose-tasks", default=25, help="Verbose tasks per arm.")
 @click.option("--model", default="deepseek-chat", help="Model used by all agents.")
