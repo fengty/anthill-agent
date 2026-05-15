@@ -2,64 +2,57 @@
 
 > Agents leave traces. Traces become paths. Paths become organization.
 
-**Anthill** is a multi-agent framework where specialization emerges from experience, not assignment.
+---
 
-No predefined roles. No org chart. Agents leave reputation trails like ants leave pheromones — and the colony self-organizes.
+## A different way to think about agents
+
+Most coordination in the world is invisible.
+
+No one designs an ant colony. No one tells worker #4823 to become a forager. There is no org chart, no manager, no plan. And yet — paths form, roles emerge, the colony adapts, the colony repairs itself when half of it dies.
+
+The mechanism is almost embarrassingly simple. An ant walks somewhere. If the path was worth walking, it leaves a chemical trace on the way back. Other ants are biased toward stronger traces. Traces decay over time, so old paths fade unless reinforced.
+
+That's it. From this single rule, an entire civilization runs.
+
+**Anthill is the same idea, for agents.**
+
+Agents don't get roles. They get tasks. When a task goes well, a trace is left — not in chemistry, but in a reputation map. Future tasks follow the stronger traces. Specialization is not assigned. It is something the colony *grows into*.
 
 ---
 
-## Why Anthill?
+## Why this matters
 
-Most agent frameworks today work like a planned economy:
+Every multi-agent framework today is a planned economy. A human decides: this one is the researcher, this one is the coder, this one is the reviewer. The architecture is fixed before the first task runs.
 
-```
-You define roles → agents execute roles → you tune the plan
-```
+Real organizations don't work this way. A startup doesn't start with an org chart; the org chart emerges from who turns out to be good at what. A jazz band doesn't write a script; the music emerges from listening. A city doesn't design its neighborhoods; they grow.
 
-Anthill works like a market — or more precisely, like an ant colony:
+Coordination at scale — the kind that doesn't break when one node fails, the kind that adapts when the world changes — has only ever been achieved by one mechanism in nature: **accumulated traces, biased selection, decay.**
 
-```
-Agents handle tasks → leave pheromone trails → trails reinforce paths
-→ specialization emerges → colony organizes itself
-```
-
-You don't tell an ant "you are a forager." It becomes one by repeatedly walking that path successfully. Anthill does the same with agents.
+Anthill is an attempt to give that mechanism to agents.
 
 ---
 
-## How it's different from Hermes / OpenClaw
+## How it works
 
-|                      | Hermes                | OpenClaw               | **Anthill**                   |
-| -------------------- | --------------------- | ---------------------- | ----------------------------- |
-| Focus                | Personal assistant    | Personal multi-channel | **Multi-agent organization**  |
-| Specialization       | Self-evolution (solo) | Skills marketplace     | **Emergent from experience**  |
-| Routing              | Predefined roles      | Predefined roles       | **Pheromone-based**           |
-| Mental model         | One agent grows       | One agent reaches      | **Colony self-organizes**     |
-
-Hermes makes one agent smarter. Anthill makes a group of agents form an organization.
-
----
-
-## The Pheromone Model
-
-Every task completion leaves a trace:
-
-```python
-agent.complete(task)
-  → success_score = evaluate(result)
-  → pheromone.deposit(agent_id, task_type, success_score)
-  → pheromone.decay_over_time()
 ```
-
-Future routing follows the strongest trails:
-
-```python
-router.assign(new_task)
-  → pheromone.strongest_path(task_type)
-  → returns agent with highest reinforced reputation
+A task arrives
+   ↓
+The router reads the pheromone map
+   ↓
+The agent with the strongest trail for this task type is selected
+   ↓
+The agent works
+   ↓
+The outcome deposits a new pheromone (or erodes the trail, on failure)
+   ↓
+Old traces decay
+   ↓
+Over time, the map reorganizes itself
 ```
 
 No central planner. No predefined roles. Just trails getting stronger or fading.
+
+A bit of exploration noise (~10%) keeps the colony from getting stuck in early local optima — the same reason real ants occasionally wander off-trail.
 
 ---
 
@@ -68,77 +61,53 @@ No central planner. No predefined roles. Just trails getting stronger or fading.
 ```bash
 pip install anthill-agent
 
-# Initialize a colony
 anthill init my-colony
-cd my-colony
-
-# Spawn workers
 anthill spawn --count 5
-
-# Give the colony a task
-anthill run "Build me a function that parses CSV"
-
-# Watch specialization emerge
+anthill run "Refactor this module for clarity" --type code
 anthill trails
 ```
 
+After a hundred tasks, run `anthill trails` again. You will see clusters — agents that drifted toward what they were good at. No one told them to.
+
 ---
 
-## Architecture
+## The four memories
 
-```
-~/.anthill/
-├── colonies/
-│   └── default/
-│       ├── pheromones.db     # the trails
-│       ├── agents/           # individual workers
-│       ├── memory/
-│       │   ├── shared/       # colony-wide context
-│       │   └── private/      # per-agent experience
-│       └── skills/           # learned procedures
-└── config.toml
-```
+A colony coordinates through layered memory, the same way any organization does:
 
-Four memory tiers, mirroring how real colonies coordinate:
+| Memory          | Scope                                 |
+| --------------- | ------------------------------------- |
+| Goal            | Shared, immutable — what we exist for |
+| Context         | Shared, append-only — what's happening |
+| Private         | Per-agent — what I've learned         |
+| Working         | Per-task — what I'm doing right now   |
 
-| Tier            | Role                                      |
-| --------------- | ----------------------------------------- |
-| Goal memory     | Shared, immutable — what we're building   |
-| Context memory  | Shared, append-only — current state       |
-| Private memory  | Per-agent — accumulated expertise         |
-| Working memory  | Per-task — ephemeral                      |
+Pheromones are not memory. They are the *structure between memories* — the invisible architecture that decides who reads what, who acts when.
+
+---
+
+## A small claim
+
+The first thing this project exists to prove is one claim, empirically:
+
+> Reputation-based routing produces better task completion than role-based routing, given enough tasks for trails to form.
+
+Everything else — the multi-model layer, the visualizations, the persistence — comes after.
+
+If the claim is wrong, the project should die. If the claim is right, a lot of agent architecture needs to be rethought.
 
 ---
 
 ## Status
 
-Pre-alpha. Building in public.
+Pre-alpha. The core pheromone mechanism works and is tested. Model dispatch and persistence are the next milestones.
 
-The first milestone is proving one thing: **reputation routing outperforms role routing.** Once that benchmark exists, everything else follows.
+Building in public. Issues and PRs welcome — especially around the pheromone algorithm itself (decay curves, deposit strategies, exploration rates), and around benchmark design.
 
----
-
-## Contributing
-
-We're looking for help on:
-
-- [ ] Pheromone decay algorithms
-- [ ] Multi-model dispatch layer
-- [ ] Benchmark suite (Anthill vs. role-based frameworks)
-- [ ] Visualization of emergent trails
-
-See `CONTRIBUTING.md` for setup.
-
----
-
-## Philosophy
-
-If you're curious why "ant colony" is more than a cute name, read [`docs/why-anthill.md`](docs/why-anthill.md).
-
-Short version: human civilization scaled past 150 people because we developed shared culture — coordination without central control. Agent systems are stuck at the "tribe with a chief" stage. Anthill is an attempt to build the cultural layer.
+See [`docs/why-anthill.md`](docs/why-anthill.md) for the longer philosophical case.
 
 ---
 
 ## License
 
-MIT
+MIT — use it, fork it, learn from it, prove it wrong.

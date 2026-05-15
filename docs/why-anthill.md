@@ -1,67 +1,90 @@
 # Why Anthill
 
-## The problem with current agent frameworks
+## The question
 
-Every multi-agent framework today asks you to define roles upfront:
+How do you get many minds to work as one, without a single mind telling them what to do?
 
-```python
-researcher = Agent(role="researcher", tools=[search, scrape])
-coder = Agent(role="coder", tools=[file_edit, run_tests])
-reviewer = Agent(role="reviewer", tools=[diff, comment])
-```
+This is one of the oldest questions humans have asked. We answered it with families, then tribes, then chiefs, then kings, then bureaucracies, then markets, then constitutions. Each layer was an attempt to coordinate larger numbers of independent intelligences toward something coherent.
 
-This is a planned economy. You decide the structure, and the agents execute it.
+Software has not yet asked this question seriously.
 
-It works — until you hit the limit of what one human can plan. Real organizations don't work this way. A startup doesn't start with an org chart; the org chart emerges from who turns out to be good at what.
+When we build multi-agent systems today, we use the oldest answer: a chief. One agent assigns work. The others execute. It works for small groups, the same way it worked for villages of 150 people. It does not scale, and it does not adapt, for the same reasons monarchies didn't.
 
-## The colony model
+Anthill is an attempt to ask the question differently.
 
-Ant colonies have no architect. No queen tells worker #4823 to become a forager. Specialization emerges from a simple mechanism:
+---
 
-1. An ant walks a path
-2. If the path leads to food, it leaves pheromones on the way back
-3. Other ants are biased toward stronger pheromone trails
-4. Pheromones decay over time, so old paths fade if unused
+## The mechanism nature settled on
 
-That's it. From this single rule, you get foraging patterns, optimal pathfinding, role division, and resilient self-repair when ants die.
+Every form of coordination at scale that has ever existed in nature — every one — runs on a variant of the same mechanism.
 
-It's the same mechanism Anthill uses for agents:
+An individual acts. The act leaves a trace in the environment. Other individuals are biased, but not forced, toward stronger traces. Traces decay unless reinforced.
 
-1. An agent completes a task
-2. If the task succeeds, a pheromone trail is deposited (agent, task_type, strength)
-3. The router biases future similar tasks toward agents with stronger trails
-4. Trails decay over time, so unused expertise fades
+This is how ant colonies find optimal food paths.
 
-No roles. No assignments. Just trails getting stronger or fading.
+This is how human cities grow neighborhoods that match their character.
 
-## What this gives you
+This is how scientific fields develop, with citation trails replacing pheromones.
 
-**Self-organization.** Add ten generalist agents to a colony. After 100 tasks, you'll see clusters of specialization emerge — without anyone designing them.
+This is how markets discover prices.
 
-**Resilience.** Remove an agent. The router shifts to the next-strongest trail. The colony keeps working.
+This is how cultures form — accumulated patterns of behavior that bias newcomers without anyone deciding the bias should exist.
 
-**Adaptation.** Task distribution shifts? Old trails decay, new ones strengthen. The colony reorganizes itself.
+The mechanism has a name in biology: **stigmergy**. Coordination through traces, not through commands.
 
-**Cultural transmission.** New agents joining read existing trails. They start biased toward the colony's established patterns — they get socialized.
+What is striking is that the same mechanism produces all of these very different outcomes. The substrate changes — chemicals, footpaths, citations, prices, customs — but the structure is the same. Act. Leave trace. Bias selection. Decay.
 
-## The bigger picture
+---
 
-Human civilization scaled past the Dunbar number (~150 people) because we developed culture — shared patterns of coordination that don't require central control.
+## What this means for agents
 
-Most agent frameworks today are stuck at "tribe with a chief." A coordinator agent assigns work. It doesn't scale, and it can't evolve.
+The current agent paradigm asks: *how do I assign the right task to the right agent?*
 
-Anthill is an attempt to build the cultural layer for agent systems. Not because culture is poetic, but because it's the only known mechanism that lets independent intelligences coordinate at scale without a planner.
+Stigmergy reframes the question: *how do I let the right agent emerge for the task?*
 
-## What this isn't
+You do not need to know in advance which agent is good at what. You do not even need the agents to know. You only need a way for the work itself to leave a record, and a way for future work to follow those records.
 
-- Not a replacement for [Hermes](https://github.com/NousResearch/hermes-agent) (personal assistant) or [OpenClaw](https://github.com/openclaw/openclaw) (multi-channel agent). Different problems.
-- Not a general framework that tries to do everything. Anthill does one thing: emergent coordination via pheromone trails.
-- Not magic. The agents themselves still need to be capable. The colony coordinates them — it doesn't make them smarter individually.
+In Anthill:
 
-## Status
+- Each task type is a kind of terrain.
+- Each agent's success on a task leaves a pheromone on that terrain.
+- The next task in that terrain is biased toward strong pheromones.
+- Pheromones fade if not refreshed.
 
-The first goal is to prove one claim empirically:
+The colony does not need a coordinator to know who the researcher is. After a few hundred tasks, the researcher is whoever the pheromone map says — and that might change next week, when the world changes.
 
-> **Pheromone-based routing produces better task completion rates than predefined role routing, after N tasks of warm-up.**
+---
 
-Once that benchmark exists and is reproducible, the rest of the framework can be built around it.
+## What this is not
+
+Anthill is not magic. The individual agents still need to be capable. The pheromone layer does not make them smarter — it only makes the group more than the sum of them.
+
+Anthill is also not anti-design. There is structure: a memory hierarchy, an exploration rate, a decay curve. These are the *rules of the world the ants live in*. What is not designed is the colony's internal organization. That part grows.
+
+And Anthill is not a complete framework. It is, deliberately, one idea, executed cleanly, that can be tested.
+
+---
+
+## The smallest provable claim
+
+The project exists to test one claim:
+
+> A colony of generic agents, coordinated by pheromone trails, will out-perform an equivalent colony with fixed roles on a sufficiently varied task distribution, after a warm-up period.
+
+If this is true, much of how we build agent systems today is the wrong shape. If it is false, this project should not exist, and that is also a useful thing to know.
+
+This is the only thing that has to be proven first. Everything else — persistence, visualization, model dispatch, multi-colony coordination — is downstream of the claim being right.
+
+---
+
+## A longer view
+
+If this works, the interesting question is not "did we build a better framework."
+
+The interesting question is: when an agent colony has been running long enough that its pheromone map represents accumulated experience no human designed, *who owns that map?*
+
+It is no longer the user's preferences. It is no longer the developer's architecture. It is something the colony grew. It is, in a precise and uncomfortable sense, the colony's culture.
+
+That is the layer of agent design that is almost entirely unexplored today — the layer where organization is not built but **inherited**.
+
+Anthill is a small first step in that direction.

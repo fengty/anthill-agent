@@ -28,8 +28,8 @@ ruff check src/
 ## What we want
 
 - **Improvements to the pheromone algorithm.** Decay curves, deposit strategies, exploration vs exploitation tradeoffs. Cite a paper if you can.
-- **Benchmarks.** The whole project rests on the claim that pheromone routing beats role routing. We need reproducible benchmarks to prove or disprove it.
-- **Model dispatch.** Connecting the `Agent.execute` method to real model APIs (Anthropic, OpenAI, local).
+- **Benchmarks.** The whole project rests on a single claim: pheromone routing outperforms role routing. We need reproducible benchmarks to prove or disprove it.
+- **Model dispatch.** Connecting the `Agent.execute` method to real model APIs.
 - **Visualizations.** Watching trails strengthen and fade is the most compelling demo we can build.
 
 ## What we don't want (yet)
