@@ -17,6 +17,7 @@ from rich.console import Console
 from rich.table import Table
 
 from anthill import __version__
+from anthill.bench.compare import benchmark
 from anthill.config import AnthillConfig
 from anthill.core.colony import Colony
 from anthill.core.persistence import load_colony, save_colony
@@ -146,6 +147,45 @@ def status(colony_name: str) -> None:
     console.print(f"  Workers: {len(colony.agents)}")
     console.print(f"  Trails:  {trails_count}")
     console.print(f"  Home:    {config.home / 'colonies' / colony_name}")
+
+
+@cli.command()
+@click.option("--terse-tasks", default=25, help="Terse tasks per arm.")
+@click.option("--verbose-tasks", default=25, help="Verbose tasks per arm.")
+@click.option("--model", default="deepseek-chat", help="Model used by all agents.")
+@click.option("--exploration", default=0.10, help="Pheromone exploration rate.")
+@click.option("--seed", default=42, help="Seed for task pool and role pick.")
+def bench(
+    terse_tasks: int,
+    verbose_tasks: int,
+    model: str,
+    exploration: float,
+    seed: int,
+) -> None:
+    """Compare role routing vs pheromone routing.
+
+    The central experiment of this project. Both arms get the same agents
+    and the same tasks; only the routing differs.
+    """
+    console.print(f"[dim]Running benchmark — {terse_tasks + verbose_tasks} tasks per arm[/dim]")
+    result = asyncio.run(
+        benchmark(
+            n_terse_tasks=terse_tasks,
+            n_verbose_tasks=verbose_tasks,
+            model=model,
+            exploration=exploration,
+            seed=seed,
+        )
+    )
+    console.print()
+    console.print(result.summary())
+    console.print()
+    if result.gap > 0.05:
+        console.print(f"[bold green]Pheromone wins by {result.gap:.1%}.[/bold green]")
+    elif result.gap < -0.05:
+        console.print(f"[bold red]Role routing wins by {-result.gap:.1%}.[/bold red]")
+    else:
+        console.print("[bold yellow]Too close to call.[/bold yellow]")
 
 
 if __name__ == "__main__":

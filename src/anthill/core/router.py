@@ -49,7 +49,18 @@ class Router:
         if random.random() < self.config.exploration:
             return random.choice(self.agents)
 
-        ranking = self.pheromones.ranking(task_type)
+        # A trail with strength 0 means "tried and failed" — should not
+        # outrank agents that haven't tried at all. Treat zero-strength
+        # entries as untried so they don't block cold-start randomness.
+        ranking = [(aid, s) for aid, s in self.pheromones.ranking(task_type) if s > 0]
+
+        tried_ids = {aid for aid, _ in self.pheromones.ranking(task_type)}
+        untried = [a for a in self.agents if a.id not in tried_ids]
+        if untried and not ranking:
+            # Nobody has succeeded yet — explore among the agents that haven't
+            # been tried, instead of doubling down on a known failure.
+            return random.choice(untried)
+
         if not ranking and self.config.cold_start_random:
             return random.choice(self.agents)
 

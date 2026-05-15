@@ -86,15 +86,32 @@ Pheromones are not memory. They are the *structure between memories* — the inv
 
 ---
 
-## A small claim
+## The claim, tested
 
 The first thing this project exists to prove is one claim, empirically:
 
 > Reputation-based routing produces better task completion than role-based routing, given enough tasks for trails to form.
 
-Everything else — the multi-model layer, the visualizations, the persistence — comes after.
+Across four seeds on real DeepSeek API calls, with four agents carrying mixed personas (two terse, two verbose) and a 50-50 task mix:
 
-If the claim is wrong, the project should die. If the claim is right, a lot of agent architecture needs to be rethought.
+| Seed | Tasks | Role routing | Pheromone routing |  Gap |
+| ---: | ---: | ---: | ---: | ---: |
+|  42 |  50 | 50.0% | **98.0%** | +48.0 |
+|   1 |  40 | 50.0% | **87.5%** | +37.5 |
+|   7 |  40 |  0.0% | **92.5%** | +92.5 |
+|  99 |  40 | 50.0% | **90.0%** | +40.0 |
+
+Mean: role 37.5%, pheromone 92.0%, gap **+54.5 percentage points**.
+
+Reproduce it yourself:
+
+```bash
+anthill bench --terse-tasks 25 --verbose-tasks 25 --seed 42
+```
+
+The benchmark is small, the personas are crude, the scoring is mechanical. None of that matters yet. What matters is that the gap is real and robust to seed choice. The mechanism works.
+
+See [`docs/benchmark.md`](docs/benchmark.md) for the experimental setup and known limitations.
 
 ---
 

@@ -22,9 +22,14 @@ class Colony:
     pheromones: PheromoneTrail = field(default_factory=PheromoneTrail)
     router_config: RouterConfig = field(default_factory=RouterConfig)
 
-    def spawn(self, count: int = 1, model: str = "claude-sonnet-4-5") -> list[Agent]:
+    def spawn(
+        self,
+        count: int = 1,
+        model: str = "deepseek-chat",
+        persona: str | None = None,
+    ) -> list[Agent]:
         """Add new generic workers to the colony."""
-        new_agents = [Agent(model=model) for _ in range(count)]
+        new_agents = [Agent(model=model, persona=persona) for _ in range(count)]
         self.agents.extend(new_agents)
         return new_agents
 

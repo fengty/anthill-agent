@@ -27,7 +27,12 @@ def save_colony(colony: Colony, home: Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
 
     agents_data = [
-        {"id": a.id, "model": a.model, "private_memory": a.private_memory}
+        {
+            "id": a.id,
+            "model": a.model,
+            "persona": a.persona,
+            "private_memory": a.private_memory,
+        }
         for a in colony.agents
     ]
     (directory / "agents.json").write_text(json.dumps(agents_data, indent=2))
@@ -62,6 +67,7 @@ def load_colony(name: str, home: Path) -> Colony | None:
                 Agent(
                     id=record["id"],
                     model=record.get("model", "deepseek-chat"),
+                    persona=record.get("persona"),
                     private_memory=record.get("private_memory", {}),
                 )
             )

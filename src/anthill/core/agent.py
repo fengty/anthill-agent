@@ -28,15 +28,18 @@ class TaskResult:
 class Agent:
     """A worker in the colony.
 
-    Agents start identical. Specialization comes from the pheromone trails
-    they accumulate, not from a `role` field assigned by a human.
+    Agents start identical in the simple case. Specialization comes from the
+    pheromone trails they accumulate, not from a `role` field assigned by a
+    human.
 
-    The model is set at spawn time and stays constant for the agent's life.
-    The colony, not the agent, decides whether this agent gets a task.
+    For benchmarks and experiments, an agent can carry a `persona` — a system
+    prompt baked in at spawn time. This is what creates the latent capability
+    differences that the pheromone mechanism is supposed to discover.
     """
 
     id: str = field(default_factory=lambda: f"ant-{uuid.uuid4().hex[:8]}")
     model: str = "deepseek-chat"
+    persona: str | None = None
     private_memory: dict[str, Any] = field(default_factory=dict)
     _provider: ModelProvider | None = field(default=None, repr=False)
 
@@ -60,10 +63,11 @@ class Agent:
         """
         task_id = f"task-{uuid.uuid4().hex[:8]}"
         provider = self._get_provider()
+        effective_system = system if system is not None else self.persona
         start = time.perf_counter()
 
         try:
-            response = await provider.complete(prompt, system=system)
+            response = await provider.complete(prompt, system=effective_system)
             duration = time.perf_counter() - start
             success_score = 1.0 if response.text.strip() else 0.0
             return TaskResult(
