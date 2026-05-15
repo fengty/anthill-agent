@@ -18,6 +18,7 @@ import asyncio
 import os
 import subprocess
 import time
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -44,6 +45,7 @@ from anthill.core.history import (
 )
 from anthill.core.costs import load_usage, summarise
 from anthill.core.power import compute_ages, compute_power
+from anthill.core.snapshot import export_nation, import_nation
 from anthill.core.style_learner import suggest_house_style
 from anthill.core.nation import Nation
 from anthill.core.persistence import load_nation, nation_dir, save_nation
@@ -607,6 +609,51 @@ def history_search(query: str, nation_name: str) -> None:
         return
     for e in matches:
         console.print(f"[cyan]{e.id}[/cyan]  {e.request}")
+
+
+@cli.command("export")
+@click.option("--nation", "nation_name", default="default", help="Nation to export.")
+@click.argument("output", type=click.Path(path_type=Path))
+def export_cmd(nation_name: str, output: Path) -> None:
+    """Bundle a nation into a .tar.gz snapshot."""
+    config = AnthillConfig.load()
+    src = nation_dir(config.home, nation_name)
+    if not src.exists():
+        console.print(f"[red]Nation '{nation_name}' not found.[/red]")
+        return
+    if output.suffix == "":
+        output = output.with_suffix(".tar.gz")
+    manifest = export_nation(src, output)
+    console.print(f"[green]Exported[/green] '{nation_name}' to {output}")
+    console.print(
+        f"  citizens={manifest.citizen_count}  "
+        f"vocabulary={manifest.vocabulary_size}  "
+        f"history={manifest.history_entries}  "
+        f"version={manifest.anthill_version}"
+    )
+
+
+@cli.command("import")
+@click.argument("archive", type=click.Path(exists=True, path_type=Path))
+def import_cmd(archive: Path) -> None:
+    """Restore a nation from a .tar.gz snapshot."""
+    config = AnthillConfig.load()
+    config.ensure_home()
+    target_root = config.home / "nations"
+    try:
+        manifest = import_nation(archive, target_root)
+    except FileExistsError as e:
+        console.print(f"[red]{e}[/red]")
+        return
+    console.print(
+        f"[green]Imported[/green] nation '{manifest.nation_name}' from {archive}"
+    )
+    console.print(
+        f"  citizens={manifest.citizen_count}  "
+        f"vocabulary={manifest.vocabulary_size}  "
+        f"history={manifest.history_entries}  "
+        f"version={manifest.anthill_version}"
+    )
 
 
 @cli.command()

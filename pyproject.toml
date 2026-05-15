@@ -1,6 +1,6 @@
 [project]
 name = "anthill-agent"
-version = "0.0.17"
+version = "0.0.18"
 description = "Grow your own AI nation: agents that specialize through pheromone trails"
 readme = "README.md"
 requires-python = ">=3.9"
