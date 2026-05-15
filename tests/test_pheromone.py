@@ -78,3 +78,45 @@ def test_decay_reduces_old_trails() -> None:
 def test_empty_strongest_returns_none() -> None:
     p = PheromoneTrail()
     assert p.strongest_for("anything") is None
+
+
+# Alarm (negative pheromone) tests
+
+
+def test_failure_deposits_alarm() -> None:
+    p = PheromoneTrail()
+    p.deposit("ant-1", "explain", success_score=0.0)
+    assert p.alarm("ant-1", "explain") > 0
+    # Strength stays at zero (no attractor was deposited).
+    assert p.strength("ant-1", "explain") == 0
+
+
+def test_alarm_repels_below_strength() -> None:
+    """A citizen with mixed success and many failures should rank below
+    a clean alternative."""
+    p = PheromoneTrail(alarm_amount=2.0)
+    p.deposit("flaky", "explain", success_score=1.0)
+    for _ in range(3):
+        p.deposit("flaky", "explain", success_score=0.0)
+    p.deposit("clean", "explain", success_score=1.0)
+    ranking = p.ranking("explain")
+    # The clean citizen should outrank the flaky one even though both succeeded.
+    assert ranking[0][0] == "clean"
+
+
+def test_alarm_does_not_zero_out_solid_strength() -> None:
+    """A few failures should not erase a long history of success."""
+    p = PheromoneTrail(alarm_amount=0.5)
+    for _ in range(10):
+        p.deposit("solid", "explain", success_score=1.0)
+    p.deposit("solid", "explain", success_score=0.0)  # one failure
+    assert p.strength("solid", "explain") > 0
+
+
+def test_explicit_negative_score_erodes_strength() -> None:
+    """User thumbs-down (apply_rating) uses negative score to actively erode."""
+    p = PheromoneTrail(deposit_amount=1.0)
+    p.deposit("ant-1", "explain", success_score=1.0)
+    initial = p.strength("ant-1", "explain")
+    p.deposit("ant-1", "explain", success_score=-1.0)
+    assert p.strength("ant-1", "explain") < initial

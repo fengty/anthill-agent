@@ -43,6 +43,7 @@ def save_nation(nation: Nation, home: Path) -> Path:
             "agent_id": t.agent_id,
             "task_type": t.task_type,
             "strength": t.strength,
+            "alarm": t.alarm,
             "last_updated": t.last_updated,
         }
         for t in nation.pheromones._trails.values()
@@ -84,6 +85,7 @@ def load_nation(name: str, home: Path) -> Nation | None:
                 agent_id=record["agent_id"],
                 task_type=record["task_type"],
                 strength=record["strength"],
+                alarm=record.get("alarm", 0.0),
                 last_updated=record.get("last_updated", time.time()),
             )
 
