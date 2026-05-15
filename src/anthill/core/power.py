@@ -26,6 +26,16 @@ from anthill.core.nation import Nation
 
 
 @dataclass
+class AgeMilestone:
+    """One of the four ages a nation passes through as it grows."""
+
+    name: str
+    description: str
+    completed: bool
+    progress: float  # [0, 1] — partial credit for ages still in progress
+
+
+@dataclass
 class PowerReport:
     vocabulary: int
     specialists: int
@@ -51,6 +61,77 @@ class PowerReport:
         score += min(max(self.feedback_score, 0), 10)  # up to 10 for approval
         score += self.diversity * 10                  # up to 10 for healthy spread
         return min(score, 100.0)
+
+
+def compute_ages(
+    nation: Nation,
+    history: list[HistoryEntry],
+    exemplars: list[Exemplar],
+) -> list[AgeMilestone]:
+    """The four ages a nation passes through.
+
+    Founding         once any citizen has been spawned
+    Specialization   once at least one citizen has a strong (>=2.0) trail
+    Culture          once a house style is set OR 5+ task types in catalog
+    Statecraft       once a multi-step (>=3) plan has run end-to-end successfully
+
+    Each age has fractional progress so the user can see how far they
+    are from the next one — not just binary done/not-done.
+    """
+    # Founding
+    citizens = len(nation.agents)
+    founding_progress = min(citizens / 3.0, 1.0)
+    founding_done = citizens >= 1
+
+    # Specialization
+    strong_trails = sum(1 for t in nation.pheromones.trails() if t.strength >= 2.0)
+    spec_progress = min(strong_trails / 3.0, 1.0)
+    spec_done = strong_trails >= 1
+
+    # Culture
+    vocab = len(nation.culture.task_catalog)
+    has_style = bool(nation.culture.house_style.strip())
+    culture_progress = min((vocab / 5.0), 1.0)
+    if has_style:
+        culture_progress = max(culture_progress, 0.5)
+    culture_done = has_style or vocab >= 5
+
+    # Statecraft
+    longest_successful_chain = 0
+    for entry in history:
+        if all(o["status"] == "ok" for o in entry.outcomes):
+            longest_successful_chain = max(longest_successful_chain, len(entry.outcomes))
+    statecraft_progress = min(longest_successful_chain / 3.0, 1.0)
+    statecraft_done = longest_successful_chain >= 3
+
+    return [
+        AgeMilestone(
+            name="Founding",
+            description=f"{citizens} citizen(s) spawned",
+            completed=founding_done,
+            progress=founding_progress,
+        ),
+        AgeMilestone(
+            name="Specialization",
+            description=f"{strong_trails} strong trail(s) (need 1+)",
+            completed=spec_done,
+            progress=spec_progress,
+        ),
+        AgeMilestone(
+            name="Culture",
+            description=(
+                f"vocabulary {vocab}, style {'set' if has_style else 'unset'}"
+            ),
+            completed=culture_done,
+            progress=culture_progress,
+        ),
+        AgeMilestone(
+            name="Statecraft",
+            description=f"longest successful chain: {longest_successful_chain} step(s) (need 3+)",
+            completed=statecraft_done,
+            progress=statecraft_progress,
+        ),
+    ]
 
 
 def compute_power(

@@ -42,7 +42,7 @@ from anthill.core.history import (
     load_history,
     search_history,
 )
-from anthill.core.power import compute_power
+from anthill.core.power import compute_ages, compute_power
 from anthill.core.style_learner import suggest_house_style
 from anthill.core.nation import Nation
 from anthill.core.persistence import load_nation, nation_dir, save_nation
@@ -403,6 +403,7 @@ def power(nation_name: str) -> None:
     history = load_history(nation_dir(config.home, nation_name))
     exemplars = load_exemplars(nation_dir(config.home, nation_name))
     report = compute_power(nation, history, exemplars)
+    ages = compute_ages(nation, history, exemplars)
 
     # Visual power bar (out of 100)
     overall = report.overall
@@ -438,6 +439,20 @@ def power(nation_name: str) -> None:
         "how work spreads across citizens (0=concentrated, 1=spread)",
     )
     console.print(table)
+    console.print()
+
+    # The four ages — progression timeline.
+    console.print("[bold]The four ages[/bold]")
+    for age in ages:
+        icon = "[bold green]✓[/bold green]" if age.completed else "[dim]·[/dim]"
+        mini_bar_width = 12
+        filled = int(round(age.progress * mini_bar_width))
+        mini_bar = "█" * filled + "░" * (mini_bar_width - filled)
+        color = "green" if age.completed else "yellow"
+        console.print(
+            f"  {icon} [{color}]{age.name:<14}[/{color}] "
+            f"[{color}]{mini_bar}[/{color}]  [dim]{age.description}[/dim]"
+        )
 
 
 @cli.group()
