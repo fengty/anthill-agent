@@ -16,7 +16,9 @@ _REGISTRY: dict[str, Callable[[], ModelProvider]] = {
     "deepseek-chat": lambda: DeepSeekProvider(model="deepseek-chat"),
     "deepseek-reasoner": lambda: DeepSeekProvider(model="deepseek-reasoner"),
     "minimax": lambda: MiniMaxProvider(),
-    "minimax-abab6.5s": lambda: MiniMaxProvider(model="abab6.5s-chat"),
+    "minimax-m2-stable": lambda: MiniMaxProvider(model="MiniMax-M2-Stable"),
+    "minimax-m2": lambda: MiniMaxProvider(model="MiniMax-M2"),
+    "minimax-m2.5": lambda: MiniMaxProvider(model="MiniMax-M2.5"),
 }
 
 

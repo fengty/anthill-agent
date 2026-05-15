@@ -25,7 +25,7 @@ class MiniMaxProvider(ModelProvider):
         self,
         api_key: str | None = None,
         group_id: str | None = None,
-        model: str = "abab6.5s-chat",
+        model: str = "MiniMax-M2-Stable",
         timeout: float = 60.0,
     ) -> None:
         self.api_key = api_key or os.getenv("ANTHILL_MINIMAX_KEY") or os.getenv("MINIMAX_API_KEY")
@@ -76,7 +76,16 @@ class MiniMaxProvider(ModelProvider):
             data = response.json()
         latency_ms = (time.perf_counter() - start) * 1000
 
-        # MiniMax v2 returns OpenAI-style choices
+        # MiniMax wraps errors in base_resp instead of HTTP status codes.
+        # Surface those before pretending we got a valid completion.
+        base = data.get("base_resp", {})
+        if base.get("status_code", 0) != 0:
+            raise RuntimeError(
+                f"MiniMax error {base.get('status_code')}: {base.get('status_msg')}"
+            )
+        if "choices" not in data:
+            raise RuntimeError(f"MiniMax unexpected response: {data}")
+
         text = data["choices"][0]["message"]["content"]
         usage = data.get("usage", {})
         return ModelResponse(
