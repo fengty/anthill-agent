@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import time
 
 import click
 from rich.console import Console
@@ -25,8 +26,9 @@ from rich.table import Table
 from anthill import __version__
 from anthill.bench.compare import benchmark
 from anthill.config import AnthillConfig
+from anthill.core.feedback import AskRecord, apply_rating, load_last_ask, save_last_ask
 from anthill.core.nation import Nation
-from anthill.core.persistence import load_nation, save_nation
+from anthill.core.persistence import load_nation, nation_dir, save_nation
 from anthill.core.router import RouterConfig
 
 console = Console()
@@ -264,6 +266,18 @@ def ask(request: str, nation_name: str) -> None:
     result = asyncio.run(nation.ask(request))
     save_nation(nation, config.home)
 
+    # Record the king's most recent request so `anthill rate` has a target.
+    pairs = [
+        (o.final.agent_id, o.subtask.task_type)
+        for o in result.outcomes
+        if o.status == "ok" and o.final is not None
+    ]
+    if pairs:
+        save_last_ask(
+            AskRecord(request=request, timestamp=time.time(), pairs=pairs),
+            nation_dir(config.home, nation_name),
+        )
+
     console.print(f"[dim]request[/dim]  {request}")
     console.print(f"[dim]plan[/dim]     {len(result.plan)} subtask(s)")
     if len(result.plan) > 1:
@@ -320,6 +334,35 @@ def ask(request: str, nation_name: str) -> None:
     if not result.succeeded:
         console.print("[bold red]Request did not complete successfully.[/bold red]")
         console.print("Use [cyan]anthill trails[/cyan] to see how the failures landed in pheromones.")
+
+
+@cli.command()
+@click.argument("verdict", type=click.Choice(["up", "down"]))
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+@click.option("--weight", default=2.0, help="Rating impact magnitude.")
+def rate(verdict: str, nation_name: str, weight: float) -> None:
+    """Rate the last `anthill ask` up or down. Reshapes pheromone trails."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+
+    record = load_last_ask(nation_dir(config.home, nation_name))
+    if record is None:
+        console.print("[yellow]No recent ask to rate. Run [cyan]anthill ask[/cyan] first.[/yellow]")
+        return
+
+    touched = apply_rating(verdict, record, nation.pheromones, weight=weight)
+    save_nation(nation, config.home)
+
+    icon = "👑" if verdict == "up" else "✗"
+    color = "green" if verdict == "up" else "red"
+    console.print(
+        f"[bold {color}]{icon} Rating '{verdict}' applied[/bold {color}] "
+        f"to {touched} trail(s) for request:"
+    )
+    console.print(f"  [dim]{record.request}[/dim]")
 
 
 @cli.command()
