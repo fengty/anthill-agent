@@ -1,23 +1,38 @@
 """anthill CLI entry point.
 
 Commands:
-    anthill init <name>         Initialize a colony
-    anthill spawn --count N     Add N workers
-    anthill run "<task>"        Give the colony a task
-    anthill trails              Show current pheromone map
-    anthill status              Colony health overview
+    anthill init [<name>]            Initialize a colony
+    anthill spawn --count N          Add N workers
+    anthill run "<task>"             Give the colony a task (calls real model)
+    anthill trails                   Show current pheromone map
+    anthill status                   Colony health overview
 """
 
 from __future__ import annotations
+
+import asyncio
 
 import click
 from rich.console import Console
 from rich.table import Table
 
 from anthill import __version__
+from anthill.config import AnthillConfig
 from anthill.core.colony import Colony
+from anthill.core.persistence import load_colony, save_colony
+from anthill.core.router import RouterConfig
 
 console = Console()
+
+
+def _load_or_create(name: str, config: AnthillConfig) -> Colony:
+    colony = load_colony(name, config.home)
+    if colony is None:
+        colony = Colony(
+            name=name,
+            router_config=RouterConfig(exploration=config.exploration_rate),
+        )
+    return colony
 
 
 @click.group()
@@ -30,50 +45,107 @@ def cli() -> None:
 @click.argument("name", default="default")
 def init(name: str) -> None:
     """Initialize a new colony."""
+    config = AnthillConfig.load()
+    config.ensure_home()
+    colony = Colony(
+        name=name,
+        router_config=RouterConfig(exploration=config.exploration_rate),
+    )
+    save_colony(colony, config.home)
     console.print(f"[bold green]Colony '{name}' initialized.[/bold green]")
+    console.print(f"State: {config.home}/colonies/{name}/")
     console.print("Spawn workers with: [cyan]anthill spawn --count 5[/cyan]")
 
 
 @cli.command()
 @click.option("--count", default=1, help="Number of workers to spawn.")
-@click.option("--model", default="claude-sonnet-4-5", help="Model for new workers.")
-def spawn(count: int, model: str) -> None:
+@click.option("--model", default=None, help="Model for new workers (defaults to config).")
+@click.option("--colony", "colony_name", default="default", help="Colony name.")
+def spawn(count: int, model: str | None, colony_name: str) -> None:
     """Add new workers to the colony."""
-    colony = Colony()
-    agents = colony.spawn(count=count, model=model)
-    console.print(f"Spawned [bold]{len(agents)}[/bold] workers using {model}.")
+    config = AnthillConfig.load()
+    config.ensure_home()
+    colony = _load_or_create(colony_name, config)
+    chosen_model = model or config.default_model
+    new_agents = colony.spawn(count=count, model=chosen_model)
+    save_colony(colony, config.home)
+    console.print(f"Spawned [bold]{len(new_agents)}[/bold] workers using [cyan]{chosen_model}[/cyan].")
+    console.print(f"Colony '{colony_name}' now has [bold]{len(colony.agents)}[/bold] agents.")
 
 
 @cli.command()
 @click.argument("task")
 @click.option("--type", "task_type", default="general", help="Task type for pheromone tracking.")
-def run(task: str, task_type: str) -> None:
+@click.option("--colony", "colony_name", default="default", help="Colony name.")
+def run(task: str, task_type: str, colony_name: str) -> None:
     """Give the colony a task."""
-    console.print(f"[dim]Task type:[/dim] {task_type}")
-    console.print(f"[dim]Task:[/dim] {task}")
-    console.print("[yellow]Execution layer pending — v0.0.2[/yellow]")
+    config = AnthillConfig.load()
+    colony = load_colony(colony_name, config.home)
+    if colony is None or not colony.agents:
+        console.print(
+            f"[red]No agents in colony '{colony_name}'.[/red] "
+            f"Run [cyan]anthill spawn --count 3[/cyan] first."
+        )
+        return
+
+    result = asyncio.run(colony.run(task_type, task))
+    save_colony(colony, config.home)
+
+    chosen = next((a for a in colony.agents if a.id == result.agent_id), None)
+    model_name = chosen.model if chosen else "?"
+
+    console.print(f"[dim]agent[/dim]   {result.agent_id} ({model_name})")
+    console.print(f"[dim]type[/dim]    {task_type}")
+    console.print(f"[dim]score[/dim]   {result.success_score:.2f}")
+    console.print(f"[dim]tokens[/dim]  in={result.input_tokens} out={result.output_tokens}")
+    console.print(f"[dim]took[/dim]    {result.duration_seconds:.2f}s")
+    console.print()
+    console.print(str(result.output))
 
 
 @cli.command()
-def trails() -> None:
+@click.option("--colony", "colony_name", default="default", help="Colony name.")
+def trails(colony_name: str) -> None:
     """Show the current pheromone map."""
-    table = Table(title="Pheromone Trails")
+    config = AnthillConfig.load()
+    colony = load_colony(colony_name, config.home)
+    if colony is None:
+        console.print(f"[red]No colony named '{colony_name}'.[/red]")
+        return
+
+    table = Table(title=f"Pheromone Trails — {colony_name}")
     table.add_column("Agent", style="cyan")
     table.add_column("Task Type", style="magenta")
     table.add_column("Strength", style="green", justify="right")
 
-    # placeholder — real implementation reads from persisted colony state
+    trails_list = list(colony.pheromones.trails())
+    if not trails_list:
+        console.print(table)
+        console.print("[dim]No trails yet. Run some tasks first.[/dim]")
+        return
+
+    trails_list.sort(key=lambda t: t.strength, reverse=True)
+    for trail in trails_list:
+        table.add_row(trail.agent_id, trail.task_type, f"{trail.strength:.2f}")
     console.print(table)
-    console.print("[dim]No trails yet. Run some tasks first.[/dim]")
 
 
 @cli.command()
-def status() -> None:
+@click.option("--colony", "colony_name", default="default", help="Colony name.")
+def status(colony_name: str) -> None:
     """Show colony status."""
-    console.print("[bold]Anthill colony status[/bold]")
-    console.print("  Workers: 0")
-    console.print("  Trails:  0")
-    console.print("  State:   [yellow]idle[/yellow]")
+    config = AnthillConfig.load()
+    colony = load_colony(colony_name, config.home)
+    if colony is None:
+        console.print(f"[bold]Anthill[/bold] — colony '{colony_name}' not initialized")
+        console.print(f"Run [cyan]anthill init {colony_name}[/cyan] to create it.")
+        return
+
+    trails_count = len(list(colony.pheromones.trails()))
+    console.print(f"[bold]Anthill colony[/bold] — {colony_name}")
+    console.print(f"  Workers: {len(colony.agents)}")
+    console.print(f"  Trails:  {trails_count}")
+    console.print(f"  Home:    {config.home / 'colonies' / colony_name}")
 
 
 if __name__ == "__main__":
