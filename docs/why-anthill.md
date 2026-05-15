@@ -20,7 +20,7 @@ Every form of coordination at scale that has ever existed in nature — every on
 
 An individual acts. The act leaves a trace in the environment. Other individuals are biased, but not forced, toward stronger traces. Traces decay unless reinforced.
 
-This is how ant colonies find optimal food paths.
+This is how ants find optimal food paths.
 
 This is how human cities grow neighborhoods that match their character.
 
@@ -51,7 +51,7 @@ In Anthill:
 - The next task in that terrain is biased toward strong pheromones.
 - Pheromones fade if not refreshed.
 
-The colony does not need a coordinator to know who the researcher is. After a few hundred tasks, the researcher is whoever the pheromone map says — and that might change next week, when the world changes.
+The nation does not need a coordinator to know who the researcher is. After a few hundred tasks, the researcher is whoever the pheromone map says — and that might change next week, when the world changes.
 
 ---
 
@@ -59,7 +59,7 @@ The colony does not need a coordinator to know who the researcher is. After a fe
 
 Anthill is not magic. The individual agents still need to be capable. The pheromone layer does not make them smarter — it only makes the group more than the sum of them.
 
-Anthill is also not anti-design. There is structure: a memory hierarchy, an exploration rate, a decay curve. These are the *rules of the world the ants live in*. What is not designed is the colony's internal organization. That part grows.
+Anthill is also not anti-design. There is structure: a memory hierarchy, an exploration rate, a decay curve. These are the *rules of the world the ants live in*. What is not designed is the nation's internal organisation. That part grows.
 
 And Anthill is not a complete framework. It is, deliberately, one idea, executed cleanly, that can be tested.
 
@@ -69,11 +69,11 @@ And Anthill is not a complete framework. It is, deliberately, one idea, executed
 
 The project exists to test one claim:
 
-> A colony of generic agents, coordinated by pheromone trails, will out-perform an equivalent colony with fixed roles on a sufficiently varied task distribution, after a warm-up period.
+> A nation of generic citizens, coordinated by pheromone trails, will out-perform an equivalent nation with fixed roles on a sufficiently varied task distribution, after a warm-up period.
 
 If this is true, much of how we build agent systems today is the wrong shape. If it is false, this project should not exist, and that is also a useful thing to know.
 
-This is the only thing that has to be proven first. Everything else — persistence, visualization, model dispatch, multi-colony coordination — is downstream of the claim being right.
+This is the only thing that has to be proven first. Everything else — persistence, visualisation, model dispatch, multi-nation coordination — is downstream of the claim being right.
 
 ---
 
@@ -81,9 +81,9 @@ This is the only thing that has to be proven first. Everything else — persiste
 
 If this works, the interesting question is not "did we build a better framework."
 
-The interesting question is: when an agent colony has been running long enough that its pheromone map represents accumulated experience no human designed, *who owns that map?*
+The interesting question is: when a nation has been running long enough that its pheromone map represents accumulated experience no human designed, *who owns that map?*
 
-It is no longer the user's preferences. It is no longer the developer's architecture. It is something the colony grew. It is, in a precise and uncomfortable sense, the colony's culture.
+It is no longer the user's preferences. It is no longer the developer's architecture. It is something the nation grew. It is, in a precise and uncomfortable sense, the nation's culture.
 
 That is the layer of agent design that is almost entirely unexplored today — the layer where organization is not built but **inherited**.
 

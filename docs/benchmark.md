@@ -4,7 +4,7 @@ The README opens with a claim. This doc is the experiment that defends it.
 
 ## The question
 
-> If a colony of agents has unknown, hidden capability differences, can a
+> If a nation of citizens has unknown, hidden capability differences, can a
 > pheromone-based router discover the right specialist for each task type —
 > without being told which agent is good at what?
 

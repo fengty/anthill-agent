@@ -1,10 +1,10 @@
-"""Anthill — multi-agent framework where specialization emerges from pheromone trails."""
+"""Anthill — every user grows their own AI nation through accumulated experience."""
 
-__version__ = "0.0.1"
+__version__ = "0.0.6"
 
 from anthill.core.agent import Agent
+from anthill.core.nation import Nation
 from anthill.core.pheromone import PheromoneTrail
 from anthill.core.router import Router
-from anthill.core.colony import Colony
 
-__all__ = ["Agent", "PheromoneTrail", "Router", "Colony"]
+__all__ = ["Agent", "Nation", "PheromoneTrail", "Router"]

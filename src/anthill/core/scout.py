@@ -1,14 +1,14 @@
 """The Scout — the agent that decomposes natural-language tasks.
 
-A real ant colony has scouts: workers whose only job is to go out, find
-something worth doing, and come back with a plan. In Anthill, the Scout
-plays the same role.
+Real ants have scouts: workers whose only job is to go out, find something
+worth doing, and come back with a plan. In Anthill, the Scout plays the
+same role.
 
 When a user says "translate this PDF and summarize the result", the Scout:
     1. Recognizes that this is two subtasks chained together.
     2. Names each subtask with a stable task_type label (translate, summarize).
     3. Decides whether they run sequentially or in parallel.
-    4. Hands the plan back to the colony, which routes each subtask via
+    4. Hands the plan back to the nation, which routes each subtask via
        pheromone trails.
 
 The Scout itself uses an LLM, because natural-language decomposition is
@@ -22,7 +22,7 @@ Two design choices worth flagging:
   is informative and easy to fix prompt-side.
 - task_type labels are not from a closed vocabulary. The Scout invents
   them based on the task, and the pheromone map accumulates trails for
-  whatever labels it sees. Over time, a colony's task_type vocabulary
+  whatever labels it sees. Over time, a nation's task_type vocabulary
   itself becomes a fingerprint of what it does.
 """
 
@@ -35,15 +35,15 @@ from dataclasses import dataclass
 from anthill.models import get_provider
 
 
-SCOUT_SYSTEM_PROMPT_TEMPLATE = """You are the Scout for an agent colony.
+SCOUT_SYSTEM_PROMPT_TEMPLATE = """You are the Scout for an agent nation.
 
 A user gives you one request in natural language. Your job is to break it
-into one or more concrete subtasks the colony can execute.
+into one or more concrete subtasks the nation can execute.
 
 For each subtask, produce:
     - task_type: a short snake_case label that names what kind of work this is
                  (examples: translate, summarize, code_review, draft_email).
-                 Reuse labels — the colony tracks expertise by label.
+                 Reuse labels — the nation tracks expertise by label.
     - prompt:    the actual instruction the worker agent will receive.
                  Make it self-contained; the worker has no context beyond it.
     - depends_on: an optional list of task_type strings this subtask waits on.
@@ -67,22 +67,22 @@ Rules:
 
 
 def build_system_prompt(known_task_types: list[str] | None = None) -> str:
-    """Inject the colony's existing task-type vocabulary into the Scout prompt.
+    """Inject the nation's existing task-type vocabulary into the Scout prompt.
 
     Without this, the model invents a fresh label for every nuance of every
-    request, and the pheromone map fragments. With it, the colony's existing
+    request, and the pheromone map fragments. With it, the nation's existing
     expertise stays load-bearing.
     """
     if known_task_types:
         listing = ", ".join(known_task_types)
         section = (
-            "This colony has existing expertise in these task types — strongly "
+            "This nation has existing expertise in these task types — strongly "
             "prefer reusing them when the work fits:\n"
             f"  {listing}\n"
             "Only invent a new task_type if no existing one is a good match."
         )
     else:
-        section = "This colony has no prior task types yet. Choose carefully — labels you pick today become the colony's permanent vocabulary."
+        section = "This nation has no prior task types yet. Choose carefully — labels you pick today become the nation's permanent vocabulary."
     return SCOUT_SYSTEM_PROMPT_TEMPLATE.format(vocabulary_section=section)
 
 

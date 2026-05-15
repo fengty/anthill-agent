@@ -1,9 +1,8 @@
-"""Persist colony state — agents and pheromone trails — to disk.
+"""Persist Nation state — agents, pheromones, culture — to disk.
 
-Storage format is intentionally JSON for now. Easy to inspect, easy to diff
-in git, easy to evolve. SQLite comes when we have a reason for it (likely
-when trails grow past tens of thousands of rows or when concurrent writes
-become a real issue).
+Storage is plain JSON + markdown for now. Easy to inspect, easy to diff
+in git, easy to evolve. A real database goes in when the volume justifies
+it; right now files-on-disk is exactly the right tradeoff.
 """
 
 from __future__ import annotations
@@ -13,18 +12,18 @@ import time
 from pathlib import Path
 
 from anthill.core.agent import Agent
-from anthill.core.colony import Colony
 from anthill.core.culture import load_culture, save_culture
+from anthill.core.nation import Nation
 from anthill.core.pheromone import PheromoneTrail, Trail
 
 
-def colony_dir(home: Path, name: str) -> Path:
-    return home / "colonies" / name
+def nation_dir(home: Path, name: str) -> Path:
+    return home / "nations" / name
 
 
-def save_colony(colony: Colony, home: Path) -> Path:
-    """Write colony + pheromone state to ~/.anthill/colonies/<name>/."""
-    directory = colony_dir(home, colony.name)
+def save_nation(nation: Nation, home: Path) -> Path:
+    """Write nation + pheromone + culture state to ~/.anthill/nations/<name>/."""
+    directory = nation_dir(home, nation.name)
     directory.mkdir(parents=True, exist_ok=True)
 
     agents_data = [
@@ -34,7 +33,7 @@ def save_colony(colony: Colony, home: Path) -> Path:
             "persona": a.persona,
             "private_memory": a.private_memory,
         }
-        for a in colony.agents
+        for a in nation.agents
     ]
     (directory / "agents.json").write_text(json.dumps(agents_data, indent=2))
 
@@ -45,18 +44,18 @@ def save_colony(colony: Colony, home: Path) -> Path:
             "strength": t.strength,
             "last_updated": t.last_updated,
         }
-        for t in colony.pheromones._trails.values()
+        for t in nation.pheromones._trails.values()
     ]
     (directory / "pheromones.json").write_text(json.dumps(trails_data, indent=2))
 
-    save_culture(colony.culture, directory)
+    save_culture(nation.culture, directory)
 
     return directory
 
 
-def load_colony(name: str, home: Path) -> Colony | None:
-    """Read colony state from disk. Returns None if no colony with that name."""
-    directory = colony_dir(home, name)
+def load_nation(name: str, home: Path) -> Nation | None:
+    """Read nation state from disk. Returns None if no nation with that name."""
+    directory = nation_dir(home, name)
     if not directory.exists():
         return None
 
@@ -88,4 +87,4 @@ def load_colony(name: str, home: Path) -> Colony | None:
 
     culture = load_culture(directory)
 
-    return Colony(name=name, agents=agents, pheromones=pheromones, culture=culture)
+    return Nation(name=name, agents=agents, pheromones=pheromones, culture=culture)

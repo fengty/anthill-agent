@@ -1,11 +1,15 @@
 """anthill CLI entry point.
 
 Commands:
-    anthill init [<name>]            Initialize a colony
-    anthill spawn --count N          Add N workers
-    anthill run "<task>"             Give the colony a task (calls real model)
-    anthill trails                   Show current pheromone map
-    anthill status                   Colony health overview
+    anthill init [<name>]            Found a new nation
+    anthill spawn --count N          Add N citizens (workers)
+    anthill ask "<request>"          Hand the king's request to the nation
+    anthill run "<task>" --type T    Run one typed task directly (for testing)
+    anthill trails                   Show the pheromone map
+    anthill identity                 Who has this nation become?
+    anthill style edit               Edit the nation's house style
+    anthill status                   Health overview
+    anthill bench                    Compare pheromone routing vs role routing
 """
 
 from __future__ import annotations
@@ -21,83 +25,85 @@ from rich.table import Table
 from anthill import __version__
 from anthill.bench.compare import benchmark
 from anthill.config import AnthillConfig
-from anthill.core.colony import Colony
-from anthill.core.persistence import load_colony, save_colony
+from anthill.core.nation import Nation
+from anthill.core.persistence import load_nation, save_nation
 from anthill.core.router import RouterConfig
 
 console = Console()
 
 
-def _load_or_create(name: str, config: AnthillConfig) -> Colony:
-    colony = load_colony(name, config.home)
-    if colony is None:
-        colony = Colony(
+def _load_or_create(name: str, config: AnthillConfig) -> Nation:
+    nation = load_nation(name, config.home)
+    if nation is None:
+        nation = Nation(
             name=name,
             router_config=RouterConfig(exploration=config.exploration_rate),
         )
-    return colony
+    return nation
 
 
 @click.group()
 @click.version_option(__version__, prog_name="anthill")
 def cli() -> None:
-    """Anthill — a colony of agents that organize themselves."""
+    """Anthill — every user grows their own AI nation."""
 
 
 @cli.command()
 @click.argument("name", default="default")
 def init(name: str) -> None:
-    """Initialize a new colony."""
+    """Found a new nation."""
     config = AnthillConfig.load()
     config.ensure_home()
-    colony = Colony(
+    nation = Nation(
         name=name,
         router_config=RouterConfig(exploration=config.exploration_rate),
     )
-    save_colony(colony, config.home)
-    console.print(f"[bold green]Colony '{name}' initialized.[/bold green]")
-    console.print(f"State: {config.home}/colonies/{name}/")
-    console.print("Spawn workers with: [cyan]anthill spawn --count 5[/cyan]")
+    save_nation(nation, config.home)
+    console.print(f"[bold green]Nation '{name}' founded.[/bold green]")
+    console.print(f"State: {config.home}/nations/{name}/")
+    console.print("Add citizens with: [cyan]anthill spawn --count 5[/cyan]")
 
 
 @cli.command()
-@click.option("--count", default=1, help="Number of workers to spawn.")
-@click.option("--model", default=None, help="Model for new workers (defaults to config).")
-@click.option("--colony", "colony_name", default="default", help="Colony name.")
-def spawn(count: int, model: str | None, colony_name: str) -> None:
-    """Add new workers to the colony."""
+@click.option("--count", default=1, help="Number of citizens to spawn.")
+@click.option("--model", default=None, help="Model for new citizens (defaults to config).")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def spawn(count: int, model: str | None, nation_name: str) -> None:
+    """Add new citizens to the nation."""
     config = AnthillConfig.load()
     config.ensure_home()
-    colony = _load_or_create(colony_name, config)
+    nation = _load_or_create(nation_name, config)
     chosen_model = model or config.default_model
-    new_agents = colony.spawn(count=count, model=chosen_model)
-    save_colony(colony, config.home)
-    console.print(f"Spawned [bold]{len(new_agents)}[/bold] workers using [cyan]{chosen_model}[/cyan].")
-    console.print(f"Colony '{colony_name}' now has [bold]{len(colony.agents)}[/bold] agents.")
+    new_agents = nation.spawn(count=count, model=chosen_model)
+    save_nation(nation, config.home)
+    console.print(
+        f"Spawned [bold]{len(new_agents)}[/bold] citizens using [cyan]{chosen_model}[/cyan]."
+    )
+    console.print(f"Nation '{nation_name}' now has [bold]{len(nation.agents)}[/bold] citizens.")
 
 
 @cli.command()
 @click.argument("task")
 @click.option("--type", "task_type", default="general", help="Task type for pheromone tracking.")
-@click.option("--colony", "colony_name", default="default", help="Colony name.")
-def run(task: str, task_type: str, colony_name: str) -> None:
-    """Give the colony a task."""
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def run(task: str, task_type: str, nation_name: str) -> None:
+    """Run one typed task directly. For natural-language requests, use `anthill ask`."""
     config = AnthillConfig.load()
-    colony = load_colony(colony_name, config.home)
-    if colony is None or not colony.agents:
+    nation = load_nation(nation_name, config.home)
+    if nation is None or not nation.agents:
         console.print(
-            f"[red]No agents in colony '{colony_name}'.[/red] "
+            f"[red]No citizens in nation '{nation_name}'.[/red] "
             f"Run [cyan]anthill spawn --count 3[/cyan] first."
         )
         return
 
-    result = asyncio.run(colony.run(task_type, task))
-    save_colony(colony, config.home)
+    result = asyncio.run(nation.run(task_type, task))
+    save_nation(nation, config.home)
 
-    chosen = next((a for a in colony.agents if a.id == result.agent_id), None)
+    chosen = next((a for a in nation.agents if a.id == result.agent_id), None)
     model_name = chosen.model if chosen else "?"
 
-    console.print(f"[dim]agent[/dim]   {result.agent_id} ({model_name})")
+    console.print(f"[dim]citizen[/dim] {result.agent_id} ({model_name})")
     console.print(f"[dim]type[/dim]    {task_type}")
     console.print(f"[dim]score[/dim]   {result.success_score:.2f}")
     console.print(f"[dim]tokens[/dim]  in={result.input_tokens} out={result.output_tokens}")
@@ -107,21 +113,21 @@ def run(task: str, task_type: str, colony_name: str) -> None:
 
 
 @cli.command()
-@click.option("--colony", "colony_name", default="default", help="Colony name.")
-def trails(colony_name: str) -> None:
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def trails(nation_name: str) -> None:
     """Show the current pheromone map."""
     config = AnthillConfig.load()
-    colony = load_colony(colony_name, config.home)
-    if colony is None:
-        console.print(f"[red]No colony named '{colony_name}'.[/red]")
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
         return
 
-    table = Table(title=f"Pheromone Trails — {colony_name}")
-    table.add_column("Agent", style="cyan")
+    table = Table(title=f"Pheromone Trails — {nation_name}")
+    table.add_column("Citizen", style="cyan")
     table.add_column("Task Type", style="magenta")
     table.add_column("Strength", style="green", justify="right")
 
-    trails_list = list(colony.pheromones.trails())
+    trails_list = list(nation.pheromones.trails())
     if not trails_list:
         console.print(table)
         console.print("[dim]No trails yet. Run some tasks first.[/dim]")
@@ -134,50 +140,50 @@ def trails(colony_name: str) -> None:
 
 
 @cli.command()
-@click.option("--colony", "colony_name", default="default", help="Colony name.")
-def status(colony_name: str) -> None:
-    """Show colony status."""
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def status(nation_name: str) -> None:
+    """Show nation status."""
     config = AnthillConfig.load()
-    colony = load_colony(colony_name, config.home)
-    if colony is None:
-        console.print(f"[bold]Anthill[/bold] — colony '{colony_name}' not initialized")
-        console.print(f"Run [cyan]anthill init {colony_name}[/cyan] to create it.")
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[bold]Anthill[/bold] — nation '{nation_name}' not founded")
+        console.print(f"Run [cyan]anthill init {nation_name}[/cyan] to create it.")
         return
 
-    trails_count = len(list(colony.pheromones.trails()))
-    console.print(f"[bold]Anthill colony[/bold] — {colony_name}")
-    console.print(f"  Workers: {len(colony.agents)}")
-    console.print(f"  Trails:  {trails_count}")
-    console.print(f"  Home:    {config.home / 'colonies' / colony_name}")
+    trails_count = len(list(nation.pheromones.trails()))
+    console.print(f"[bold]Anthill nation[/bold] — {nation_name}")
+    console.print(f"  Citizens: {len(nation.agents)}")
+    console.print(f"  Trails:   {trails_count}")
+    console.print(f"  Home:     {config.home / 'nations' / nation_name}")
 
 
 @cli.command()
-@click.option("--colony", "colony_name", default="default", help="Colony name.")
-def identity(colony_name: str) -> None:
-    """Show who this colony has become."""
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def identity(nation_name: str) -> None:
+    """Show who this nation has become."""
     config = AnthillConfig.load()
-    colony = load_colony(colony_name, config.home)
-    if colony is None:
-        console.print(f"[red]No colony named '{colony_name}'.[/red]")
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
         return
 
-    console.print(f"[bold]Colony[/bold]   {colony_name}")
-    console.print(f"[bold]Workers[/bold]  {len(colony.agents)}")
+    console.print(f"[bold]Nation[/bold]    {nation_name}")
+    console.print(f"[bold]Citizens[/bold]  {len(nation.agents)}")
     console.print()
     console.print("[bold]Identity[/bold]")
-    console.print(f"  {colony.culture.summarize()}")
+    console.print(f"  {nation.culture.summarize()}")
     console.print()
 
-    if colony.culture.task_catalog:
+    if nation.culture.task_catalog:
         table = Table(title="Task vocabulary")
         table.add_column("Task type", style="magenta")
         table.add_column("Count", style="green", justify="right")
-        for tt, n in sorted(colony.culture.task_catalog.items(), key=lambda x: -x[1]):
+        for tt, n in sorted(nation.culture.task_catalog.items(), key=lambda x: -x[1]):
             table.add_row(tt, str(n))
         console.print(table)
         console.print()
 
-    style = colony.culture.house_style.strip()
+    style = nation.culture.house_style.strip()
     if style:
         console.print("[bold]House style[/bold]")
         for line in style.splitlines():
@@ -191,26 +197,26 @@ def identity(colony_name: str) -> None:
 
 @cli.group()
 def style() -> None:
-    """Inspect or edit the colony's house style."""
+    """Inspect or edit the nation's house style."""
 
 
 @style.command("edit")
-@click.option("--colony", "colony_name", default="default", help="Colony name.")
-def style_edit(colony_name: str) -> None:
-    """Open the colony's house_style.md in $EDITOR."""
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def style_edit(nation_name: str) -> None:
+    """Open the nation's house_style.md in $EDITOR."""
     config = AnthillConfig.load()
-    colony = load_colony(colony_name, config.home)
-    if colony is None:
-        console.print(f"[red]No colony named '{colony_name}'.[/red]")
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
         return
 
-    path = config.home / "colonies" / colony_name / "culture" / "house_style.md"
+    path = config.home / "nations" / nation_name / "culture" / "house_style.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         path.write_text(
             "# House style\n\n"
-            "Write the conventions this colony should follow.\n"
-            "These get injected into every worker's system prompt.\n\n"
+            "Write the conventions this nation should follow.\n"
+            "These get injected into every citizen's system prompt.\n\n"
             "Examples:\n"
             "- Prefer terse answers. No filler.\n"
             "- Always include a working code example.\n"
@@ -220,49 +226,49 @@ def style_edit(colony_name: str) -> None:
     editor = os.getenv("EDITOR", "vi")
     subprocess.run([editor, str(path)], check=False)
 
-    refreshed = load_colony(colony_name, config.home)
+    refreshed = load_nation(nation_name, config.home)
     if refreshed is not None:
-        save_colony(refreshed, config.home)
+        save_nation(refreshed, config.home)
     console.print(f"[green]House style saved to[/green] {path}")
 
 
 @style.command("show")
-@click.option("--colony", "colony_name", default="default", help="Colony name.")
-def style_show(colony_name: str) -> None:
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def style_show(nation_name: str) -> None:
     """Print the current house style."""
     config = AnthillConfig.load()
-    colony = load_colony(colony_name, config.home)
-    if colony is None:
-        console.print(f"[red]No colony named '{colony_name}'.[/red]")
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
         return
-    if not colony.culture.house_style.strip():
+    if not nation.culture.house_style.strip():
         console.print("[dim]No house style set.[/dim]")
         return
-    console.print(colony.culture.house_style)
+    console.print(nation.culture.house_style)
 
 
 @cli.command()
 @click.argument("request")
-@click.option("--colony", "colony_name", default="default", help="Colony name.")
-def ask(request: str, colony_name: str) -> None:
-    """Hand the colony a natural-language request. Scout decomposes; colony executes."""
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def ask(request: str, nation_name: str) -> None:
+    """Hand the king's request to the nation. Scout decomposes; nation executes."""
     config = AnthillConfig.load()
-    colony = load_colony(colony_name, config.home)
-    if colony is None or not colony.agents:
+    nation = load_nation(nation_name, config.home)
+    if nation is None or not nation.agents:
         console.print(
-            f"[red]No agents in colony '{colony_name}'.[/red] "
+            f"[red]No citizens in nation '{nation_name}'.[/red] "
             f"Run [cyan]anthill spawn --count 3[/cyan] first."
         )
         return
 
-    result = asyncio.run(colony.ask(request))
-    save_colony(colony, config.home)
+    result = asyncio.run(nation.ask(request))
+    save_nation(nation, config.home)
 
     console.print(f"[dim]request[/dim]  {request}")
     console.print(f"[dim]plan[/dim]     {len(result.plan)} subtask(s)")
     console.print()
     for i, (sub, res) in enumerate(zip(result.plan.subtasks, result.results), start=1):
-        agent = next((a for a in colony.agents if a.id == res.agent_id), None)
+        agent = next((a for a in nation.agents if a.id == res.agent_id), None)
         model = agent.model if agent else "?"
         console.print(
             f"[cyan]#{i}[/cyan] "

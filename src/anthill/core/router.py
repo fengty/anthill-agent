@@ -43,7 +43,7 @@ class Router:
     def assign(self, task_type: str) -> Agent:
         """Pick an agent for this task type."""
         if not self.agents:
-            raise RuntimeError("No agents in the colony.")
+            raise RuntimeError("No citizens in the nation.")
 
         # Exploration: occasionally pick a random agent to find better paths.
         if random.random() < self.config.exploration:

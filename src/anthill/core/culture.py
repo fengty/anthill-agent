@@ -1,14 +1,14 @@
-"""Culture — the colony-wide layer that turns experience into identity.
+"""Culture — the nation-wide layer that turns experience into identity.
 
 Two things live here, and they answer two different questions.
 
-The **task catalog** answers: *what does this colony do?*
-Every task type the colony has ever seen, with a count. Without this,
+The **task catalog** answers: *what does this nation do?*
+Every task type the nation has ever seen, with a count. Without this,
 Scout invents fresh labels for every request and the pheromone map
-fragments into useless dust. With it, Scout reuses the labels the colony
+fragments into useless dust. With it, Scout reuses the labels the nation
 already has expertise in.
 
-The **house style** answers: *how does this colony do things?*
+The **house style** answers: *how does this nation do things?*
 A free-form markdown blob that captures preferences — terse vs verbose,
 formal vs casual, code-with-examples vs explain-then-code. It gets
 injected as a soft constraint into every worker's system prompt.
@@ -27,7 +27,7 @@ from pathlib import Path
 
 @dataclass
 class Culture:
-    """The colony's accumulated identity, persisted to disk."""
+    """The nation's accumulated identity, persisted to disk."""
 
     task_catalog: dict[str, int] = field(default_factory=dict)
     house_style: str = ""
@@ -43,9 +43,9 @@ class Culture:
         return [tt for tt, _ in items]
 
     def summarize(self) -> str:
-        """A short paragraph describing the colony's identity. Used in CLI."""
+        """A short paragraph describing the nation's identity. Used in CLI."""
         if not self.task_catalog:
-            return "A young colony. No accumulated specialties yet."
+            return "A young nation. No accumulated specialties yet."
         top = self.known_task_types()[:5]
         total = sum(self.task_catalog.values())
         return (
@@ -54,19 +54,19 @@ class Culture:
         )
 
 
-def culture_dir(colony_dir: Path) -> Path:
-    return colony_dir / "culture"
+def culture_dir(nation_root: Path) -> Path:
+    return nation_root / "culture"
 
 
-def save_culture(culture: Culture, colony_dir: Path) -> None:
-    base = culture_dir(colony_dir)
+def save_culture(culture: Culture, nation_root: Path) -> None:
+    base = culture_dir(nation_root)
     base.mkdir(parents=True, exist_ok=True)
     (base / "catalog.json").write_text(json.dumps(culture.task_catalog, indent=2))
     (base / "house_style.md").write_text(culture.house_style)
 
 
-def load_culture(colony_dir: Path) -> Culture:
-    base = culture_dir(colony_dir)
+def load_culture(nation_root: Path) -> Culture:
+    base = culture_dir(nation_root)
     catalog: dict[str, int] = {}
     catalog_file = base / "catalog.json"
     if catalog_file.exists():

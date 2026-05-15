@@ -1,4 +1,14 @@
-"""Colony — the top-level container that ties agents, pheromones, and router together."""
+"""Nation — the top-level entity that organises agents, pheromones, and culture.
+
+A Nation is what the user actually owns. The framework supplies the
+mechanics — pheromone trails, scouts, routing — and the Nation is the
+living thing that grows on top of them. One user, one Nation, many
+agents serving the user the way citizens serve a king.
+
+There is no upper bound on size. A Nation can start with three workers
+and grow to thousands. The point of the design is that the same
+mechanism scales.
+"""
 
 from __future__ import annotations
 
@@ -30,11 +40,13 @@ class AskResult:
 
 
 @dataclass
-class Colony:
-    """A working ant colony.
+class Nation:
+    """A working ant nation — the user's AI organisation.
 
-    Holds the agents, the pheromone map, and the router. This is what users
-    interact with — `colony.run(task)` does the whole pheromone loop.
+    Holds the agents (citizens), the pheromone map (the nation's accumulated
+    expertise), the culture (its identity and conventions), and the router.
+    This is what users interact with — `nation.run(task)` does the whole
+    pheromone loop end-to-end.
     """
 
     name: str = "default"
@@ -50,7 +62,7 @@ class Colony:
         model: str = "deepseek-chat",
         persona: str | None = None,
     ) -> list[Agent]:
-        """Add new generic workers to the colony."""
+        """Add new citizens to the nation."""
         new_agents = [Agent(model=model, persona=persona) for _ in range(count)]
         self.agents.extend(new_agents)
         return new_agents
@@ -60,18 +72,18 @@ class Colony:
         return Router(self.pheromones, self.agents, self.router_config)
 
     def _compose_system(self, agent: Agent) -> str | None:
-        """Combine agent persona + colony house_style into a single system prompt.
+        """Combine agent persona + nation house_style into a single system prompt.
 
         Persona is the agent's individual disposition. House style is the
-        colony's shared voice. Both apply at once: the agent answers in its
-        own way, within the colony's conventions.
+        nation's shared voice. Both apply at once: the agent answers in its
+        own way, within the nation's conventions.
         """
         parts: list[str] = []
         if agent.persona:
             parts.append(agent.persona.strip())
         style = self.culture.house_style.strip() if self.culture.house_style else ""
         if style:
-            parts.append("Colony house style:\n" + style)
+            parts.append("Nation house style:\n" + style)
         return "\n\n".join(parts) or None
 
     async def run(self, task_type: str, prompt: str) -> TaskResult:
@@ -83,21 +95,21 @@ class Colony:
             task_type=result.task_type,
             success_score=result.success_score,
         )
-        # The catalog records every attempted task, not just successful ones,
-        # because the colony's vocabulary is what work it tries, not just what
-        # it succeeds at.
+        # The catalog records every attempted task, not just successful ones —
+        # the nation's vocabulary is the work it tries, not only what it
+        # succeeds at.
         self.culture.record(task_type)
         return result
 
     async def ask(self, request: str) -> AskResult:
-        """Execute a natural-language request.
+        """Execute a natural-language request from the king.
 
         The Scout decomposes the request into typed subtasks; each subtask
         runs through the normal pheromone-routed pipeline. Dependencies are
         respected by executing subtasks sequentially in plan order (a real
         DAG executor can replace this when subtasks need to run in parallel).
 
-        The colony's existing task-type vocabulary is fed to Scout so it
+        The nation's existing task-type vocabulary is fed to Scout so it
         prefers reusing established labels — keeping pheromone trails
         concentrated instead of fragmenting them into one-shot categories.
         """

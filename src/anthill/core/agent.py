@@ -26,15 +26,16 @@ class TaskResult:
 
 @dataclass
 class Agent:
-    """A worker in the colony.
+    """A citizen of a nation.
 
-    Agents start identical in the simple case. Specialization comes from the
-    pheromone trails they accumulate, not from a `role` field assigned by a
-    human.
+    Citizens start identical in the simple case. Specialization comes from
+    the pheromone trails they accumulate, not from a `role` field assigned
+    by a human.
 
-    For benchmarks and experiments, an agent can carry a `persona` — a system
-    prompt baked in at spawn time. This is what creates the latent capability
-    differences that the pheromone mechanism is supposed to discover.
+    For benchmarks and experiments, a citizen can carry a `persona` —
+    a system prompt baked in at spawn time. This is what creates the
+    latent capability differences that the pheromone mechanism is
+    supposed to discover.
     """
 
     id: str = field(default_factory=lambda: f"ant-{uuid.uuid4().hex[:8]}")
@@ -55,7 +56,7 @@ class Agent:
         *,
         system: str | None = None,
     ) -> TaskResult:
-        """Run one task. The colony scores the result and deposits pheromone.
+        """Run one task. The nation scores the result and deposits pheromone.
 
         Success scoring is intentionally crude in v0.0.2: a non-empty,
         non-error response scores 1.0; an exception scores 0.0. Real

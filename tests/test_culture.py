@@ -30,7 +30,7 @@ def test_min_count_filter() -> None:
 
 
 def test_summarize_empty() -> None:
-    assert "young colony" in Culture().summarize().lower()
+    assert "young nation" in Culture().summarize().lower()
 
 
 def test_summarize_with_history() -> None:
