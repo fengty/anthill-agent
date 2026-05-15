@@ -27,6 +27,7 @@ correctness, retries, and observability first; parallelism in v0.0.9.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
@@ -62,6 +63,7 @@ class RetryPolicy:
 
     max_attempts: int = 3
     skip_downstream_on_failure: bool = True
+    parallel: bool = True  # run independent subtasks via asyncio.gather
 
 
 @dataclass
@@ -167,6 +169,66 @@ def _was_successful(result: "TaskResult") -> bool:
     return result.success_score > 0.0
 
 
+async def _run_one_subtask(
+    i: int,
+    subtask: Subtask,
+    plan: Plan,
+    nation: "Nation",
+    outcomes: dict[int, SubtaskOutcome],
+    latest_by_type: dict[str, "TaskResult"],
+    policy: RetryPolicy,
+) -> None:
+    """Execute one subtask with retries; mutate outcomes in place."""
+    failed_dep = _find_failed_dependency(subtask, plan, outcomes)
+    if failed_dep is not None and policy.skip_downstream_on_failure:
+        outcomes[i].status = "skipped"
+        outcomes[i].skip_reason = f"dependency '{failed_dep}' failed"
+        return
+
+    context = build_context_block(subtask, latest_by_type)
+    augmented_prompt = context + subtask.prompt if context else subtask.prompt
+
+    forbid: set[str] = set()
+    succeeded = False
+    for _attempt in range(policy.max_attempts):
+        try:
+            result = await nation.run(subtask.task_type, augmented_prompt, forbid=forbid)
+        except RuntimeError:
+            break
+        outcomes[i].attempts.append(result)
+        if _was_successful(result):
+            latest_by_type[subtask.task_type] = result
+            succeeded = True
+            break
+        forbid.add(result.agent_id)
+    outcomes[i].status = "ok" if succeeded else "failed"
+
+
+def _waves_from_topological_order(plan: Plan, order: list[int]) -> list[list[int]]:
+    """Group subtasks into waves where every member of a wave is independent
+    of every other member, and depends only on members of earlier waves.
+
+    This is the natural shape of a DAG executed level-by-level. The first
+    wave is all subtasks with no dependencies. The second wave is everything
+    whose dependencies are all in wave 1. And so on.
+    """
+    depth_of: dict[int, int] = {}
+    for i in order:
+        deps_depth = -1
+        for dep_type in plan.subtasks[i].depends_on:
+            # Find the latest matching earlier subtask of this dep_type.
+            for j in range(i - 1, -1, -1):
+                if plan.subtasks[j].task_type == dep_type:
+                    deps_depth = max(deps_depth, depth_of.get(j, 0))
+                    break
+        depth_of[i] = deps_depth + 1
+
+    waves: dict[int, list[int]] = {}
+    for i, d in depth_of.items():
+        waves.setdefault(d, []).append(i)
+    return [sorted(waves[d]) for d in sorted(waves)]
+
+
 async def execute_plan(
     plan: Plan,
     nation: "Nation",
@@ -174,6 +236,12 @@ async def execute_plan(
     retry: RetryPolicy | None = None,
 ) -> list[SubtaskOutcome]:
     """Run a Plan with retries, citizen rotation, and graceful skipping.
+
+    When `retry.parallel` is true, independent subtasks within the same
+    DAG wave run via asyncio.gather. Subtasks across waves stay strictly
+    ordered — a downstream wave cannot start until its dependencies are
+    done. This matches the semantics of the sequential path exactly;
+    only the wall-clock cost of independent branches changes.
 
     Returns one SubtaskOutcome per subtask, in plan order.
     """
@@ -184,36 +252,22 @@ async def execute_plan(
     }
     latest_by_type: dict[str, "TaskResult"] = {}
 
-    for i in order:
-        subtask = plan.subtasks[i]
-
-        # Fail-fast: if any dependency was not successful, skip this subtask.
-        failed_dep = _find_failed_dependency(subtask, plan, outcomes)
-        if failed_dep is not None and policy.skip_downstream_on_failure:
-            outcomes[i].status = "skipped"
-            outcomes[i].skip_reason = f"dependency '{failed_dep}' failed"
-            continue
-
-        context = build_context_block(subtask, latest_by_type)
-        augmented_prompt = context + subtask.prompt if context else subtask.prompt
-
-        forbid: set[str] = set()
-        succeeded = False
-        for _attempt in range(policy.max_attempts):
-            try:
-                result = await nation.run(subtask.task_type, augmented_prompt, forbid=forbid)
-            except RuntimeError:
-                # No eligible citizen left — every candidate has already
-                # failed this attempt. Stop retrying.
-                break
-            outcomes[i].attempts.append(result)
-            if _was_successful(result):
-                latest_by_type[subtask.task_type] = result
-                succeeded = True
-                break
-            forbid.add(result.agent_id)
-
-        outcomes[i].status = "ok" if succeeded else "failed"
+    if policy.parallel:
+        waves = _waves_from_topological_order(plan, order)
+        for wave in waves:
+            await asyncio.gather(
+                *(
+                    _run_one_subtask(
+                        i, plan.subtasks[i], plan, nation, outcomes, latest_by_type, policy
+                    )
+                    for i in wave
+                )
+            )
+    else:
+        for i in order:
+            await _run_one_subtask(
+                i, plan.subtasks[i], plan, nation, outcomes, latest_by_type, policy
+            )
 
     return [outcomes[i] for i in range(len(plan.subtasks))]
 

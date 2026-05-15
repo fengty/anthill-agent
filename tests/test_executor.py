@@ -259,3 +259,75 @@ async def test_no_retry_when_max_attempts_is_one() -> None:
     outcomes = await execute_plan(p, nation, retry=RetryPolicy(max_attempts=1))  # type: ignore[arg-type]
     assert len(outcomes[0].attempts) == 1
     assert outcomes[0].status == "failed"
+
+
+# Parallel execution tests
+import asyncio  # noqa: E402
+
+from anthill.core.executor import _waves_from_topological_order  # noqa: E402
+
+
+def test_waves_groups_independent_subtasks_together() -> None:
+    """Two roots in wave 0; their fan-in child in wave 1."""
+    p = _plan(("a", []), ("b", []), ("c", ["a"]))
+    order = [0, 1, 2]
+    waves = _waves_from_topological_order(p, order)
+    assert waves[0] == [0, 1]
+    assert waves[1] == [2]
+
+
+def test_waves_chain_is_one_per_level() -> None:
+    p = _plan(("a", []), ("b", ["a"]), ("c", ["b"]))
+    order = [0, 1, 2]
+    waves = _waves_from_topological_order(p, order)
+    assert waves == [[0], [1], [2]]
+
+
+class _SlowFakeNation:
+    """Fake nation where each task takes a fixed real-time delay."""
+
+    def __init__(self, delay: float = 0.1) -> None:
+        self._delay = delay
+        self.calls: list[tuple[str, float]] = []  # (task_type, start time)
+
+    async def run(self, task_type: str, prompt: str, *, forbid=None):  # noqa: ANN201
+        import time as _time
+        self.calls.append((task_type, _time.perf_counter()))
+        await asyncio.sleep(self._delay)
+        return _FakeResult(output="ok", success_score=1.0, task_type=task_type)
+
+
+@pytest.mark.asyncio
+async def test_independent_subtasks_run_in_parallel_by_default() -> None:
+    """Three independent subtasks should finish in ~one delay, not three."""
+    p = _plan(("a", []), ("b", []), ("c", []))
+    nation = _SlowFakeNation(delay=0.1)
+    import time as _time
+    start = _time.perf_counter()
+    await execute_plan(p, nation)  # type: ignore[arg-type]
+    elapsed = _time.perf_counter() - start
+    # Sequential would be ~0.3s; parallel should be < 0.2s.
+    assert elapsed < 0.2
+
+
+@pytest.mark.asyncio
+async def test_parallel_can_be_disabled() -> None:
+    p = _plan(("a", []), ("b", []), ("c", []))
+    nation = _SlowFakeNation(delay=0.1)
+    import time as _time
+    start = _time.perf_counter()
+    await execute_plan(p, nation, retry=RetryPolicy(parallel=False))  # type: ignore[arg-type]
+    elapsed = _time.perf_counter() - start
+    assert elapsed >= 0.25  # ~0.3 expected; allow small slack
+
+
+@pytest.mark.asyncio
+async def test_parallel_still_respects_dependencies() -> None:
+    """A chain a -> b -> c cannot be parallelised, must take ~3 delays."""
+    p = _plan(("a", []), ("b", ["a"]), ("c", ["b"]))
+    nation = _SlowFakeNation(delay=0.1)
+    import time as _time
+    start = _time.perf_counter()
+    await execute_plan(p, nation)  # type: ignore[arg-type]
+    elapsed = _time.perf_counter() - start
+    assert elapsed >= 0.25
