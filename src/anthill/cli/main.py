@@ -266,12 +266,23 @@ def ask(request: str, nation_name: str) -> None:
 
     console.print(f"[dim]request[/dim]  {request}")
     console.print(f"[dim]plan[/dim]     {len(result.plan)} subtask(s)")
+    if len(result.plan) > 1:
+        console.print()
+        console.print("[bold]Plan[/bold]")
+        for i, sub in enumerate(result.plan.subtasks, start=1):
+            deps = f" [dim](depends on: {', '.join(sub.depends_on)})[/dim]" if sub.depends_on else ""
+            console.print(f"  [cyan]#{i}[/cyan] [magenta]{sub.task_type}[/magenta]{deps}")
+
     console.print()
-    for i, (sub, res) in enumerate(zip(result.plan.subtasks, result.results), start=1):
+    last_idx = len(result.results) - 1
+    for i, (sub, res) in enumerate(zip(result.plan.subtasks, result.results)):
         agent = next((a for a in nation.agents if a.id == res.agent_id), None)
         model = agent.model if agent else "?"
+        is_final = i == last_idx and len(result.results) > 1
+        header_style = "bold green" if is_final else "cyan"
+        label = "Final" if is_final else f"#{i + 1}"
         console.print(
-            f"[cyan]#{i}[/cyan] "
+            f"[{header_style}]{label}[/{header_style}] "
             f"[magenta]{sub.task_type}[/magenta] -> {res.agent_id} ({model})  "
             f"score={res.success_score:.1f}  {res.duration_seconds:.1f}s"
         )

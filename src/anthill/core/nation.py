@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from anthill.core.agent import Agent, TaskResult
 from anthill.core.culture import Culture
+from anthill.core.executor import execute_plan
 from anthill.core.pheromone import PheromoneTrail
 from anthill.core.router import Router, RouterConfig
 from anthill.core.scout import Plan, Scout
@@ -26,7 +27,9 @@ class AskResult:
     """The aggregated outcome of a natural-language request.
 
     A single user request may produce one or many subtask results. We keep
-    both so callers can either show a final answer or inspect what happened.
+    all of them so callers can show the whole trace, but `final_output`
+    surfaces what the user almost certainly came for: the last leaf of
+    the DAG, the synthesis step.
     """
 
     request: str
@@ -35,8 +38,15 @@ class AskResult:
 
     @property
     def final_output(self) -> str:
-        """Concatenate subtask outputs in plan order."""
-        return "\n\n".join(str(r.output) for r in self.results)
+        """The output of the last subtask — by convention, the synthesis step.
+
+        Scout is prompted to put the user-facing answer last. When that
+        convention holds, this returns exactly what the user wants. When
+        the plan is a single subtask, this returns that subtask's output.
+        """
+        if not self.results:
+            return ""
+        return str(self.results[-1].output)
 
 
 @dataclass
@@ -115,9 +125,5 @@ class Nation:
         """
         scout = Scout(model=self.scout_model)
         plan = await scout.plan(request, known_task_types=self.culture.known_task_types())
-
-        results: list[TaskResult] = []
-        for subtask in plan.subtasks:
-            result = await self.run(subtask.task_type, subtask.prompt)
-            results.append(result)
+        results = await execute_plan(plan, self)
         return AskResult(request=request, plan=plan, results=results)
