@@ -26,7 +26,16 @@ from rich.table import Table
 from anthill import __version__
 from anthill.bench.compare import benchmark
 from anthill.config import AnthillConfig
-from anthill.core.feedback import AskRecord, apply_rating, load_last_ask, save_last_ask
+from anthill.core.feedback import (
+    AskRecord,
+    Exemplar,
+    append_exemplar,
+    apply_rating,
+    load_exemplars,
+    load_last_ask,
+    save_last_ask,
+)
+from anthill.core.style_learner import suggest_house_style
 from anthill.core.nation import Nation
 from anthill.core.persistence import load_nation, nation_dir, save_nation
 from anthill.core.router import RouterConfig
@@ -234,6 +243,32 @@ def style_edit(nation_name: str) -> None:
     console.print(f"[green]House style saved to[/green] {path}")
 
 
+@style.command("learn")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+@click.option("--model", default="deepseek-chat", help="Model used to infer style.")
+def style_learn(nation_name: str, model: str) -> None:
+    """Mine rated exemplars into a suggested house style. Prints; does not apply."""
+    config = AnthillConfig.load()
+    if load_nation(nation_name, config.home) is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+
+    exemplars = load_exemplars(nation_dir(config.home, nation_name))
+    if not exemplars:
+        console.print(
+            "[yellow]No rated exemplars yet. Rate a few asks with [cyan]anthill rate up/down[/cyan] first.[/yellow]"
+        )
+        return
+
+    console.print(f"[dim]Reading {len(exemplars)} exemplars...[/dim]")
+    suggestion = asyncio.run(suggest_house_style(exemplars, model=model))
+    console.print()
+    console.print("[bold]Suggested house style[/bold]")
+    console.print(suggestion)
+    console.print()
+    console.print("[dim]Apply with [cyan]anthill style edit[/cyan] (paste in).[/dim]")
+
+
 @style.command("show")
 @click.option("--nation", "nation_name", default="default", help="Nation name.")
 def style_show(nation_name: str) -> None:
@@ -274,7 +309,12 @@ def ask(request: str, nation_name: str) -> None:
     ]
     if pairs:
         save_last_ask(
-            AskRecord(request=request, timestamp=time.time(), pairs=pairs),
+            AskRecord(
+                request=request,
+                timestamp=time.time(),
+                pairs=pairs,
+                final_output=result.final_output,
+            ),
             nation_dir(config.home, nation_name),
         )
 
@@ -356,7 +396,19 @@ def rate(verdict: str, nation_name: str, weight: float) -> None:
     touched = apply_rating(verdict, record, nation.pheromones, weight=weight)
     save_nation(nation, config.home)
 
-    icon = "👑" if verdict == "up" else "✗"
+    # Preserve the rated output as an exemplar for future style learning.
+    if record.final_output:
+        append_exemplar(
+            Exemplar(
+                rating=verdict,
+                request=record.request,
+                output=record.final_output,
+                timestamp=time.time(),
+            ),
+            nation_dir(config.home, nation_name),
+        )
+
+    icon = "+" if verdict == "up" else "-"
     color = "green" if verdict == "up" else "red"
     console.print(
         f"[bold {color}]{icon} Rating '{verdict}' applied[/bold {color}] "

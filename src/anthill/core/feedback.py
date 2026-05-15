@@ -37,17 +37,24 @@ Rating = Literal["up", "down"]
 
 @dataclass
 class AskRecord:
-    """A persistent record of a recent ask, used as the target of `rate`."""
+    """A persistent record of a recent ask, used as the target of `rate`.
+
+    `final_output` is preserved so a rating can ALSO save an exemplar of
+    "what the king approved" or "what the king rejected." Style learning
+    in v0.0.10 mines these exemplars to suggest house_style refinements.
+    """
 
     request: str
     timestamp: float
     pairs: list[tuple[str, str]]  # (agent_id, task_type) per executed subtask
+    final_output: str = ""
 
     def to_dict(self) -> dict:
         return {
             "request": self.request,
             "timestamp": self.timestamp,
             "pairs": [list(p) for p in self.pairs],
+            "final_output": self.final_output,
         }
 
     @classmethod
@@ -56,7 +63,52 @@ class AskRecord:
             request=data["request"],
             timestamp=data["timestamp"],
             pairs=[tuple(p) for p in data["pairs"]],
+            final_output=data.get("final_output", ""),
         )
+
+
+@dataclass
+class Exemplar:
+    """A rated output preserved for style learning."""
+
+    rating: Rating
+    request: str
+    output: str
+    timestamp: float
+
+
+def exemplars_path(nation_dir: Path) -> Path:
+    return nation_dir / "exemplars.json"
+
+
+def append_exemplar(exemplar: Exemplar, nation_dir: Path) -> None:
+    nation_dir.mkdir(parents=True, exist_ok=True)
+    path = exemplars_path(nation_dir)
+    existing = json.loads(path.read_text()) if path.exists() else []
+    existing.append(
+        {
+            "rating": exemplar.rating,
+            "request": exemplar.request,
+            "output": exemplar.output,
+            "timestamp": exemplar.timestamp,
+        }
+    )
+    path.write_text(json.dumps(existing, indent=2, ensure_ascii=False))
+
+
+def load_exemplars(nation_dir: Path) -> list[Exemplar]:
+    path = exemplars_path(nation_dir)
+    if not path.exists():
+        return []
+    return [
+        Exemplar(
+            rating=item["rating"],
+            request=item["request"],
+            output=item["output"],
+            timestamp=item["timestamp"],
+        )
+        for item in json.loads(path.read_text())
+    ]
 
 
 def save_last_ask(record: AskRecord, nation_dir: Path) -> None:
