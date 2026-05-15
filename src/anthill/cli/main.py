@@ -42,6 +42,7 @@ from anthill.core.history import (
     load_history,
     search_history,
 )
+from anthill.core.power import compute_power
 from anthill.core.style_learner import suggest_house_style
 from anthill.core.nation import Nation
 from anthill.core.persistence import load_nation, nation_dir, save_nation
@@ -387,6 +388,56 @@ def ask(request: str, nation_name: str) -> None:
     if not result.succeeded:
         console.print("[bold red]Request did not complete successfully.[/bold red]")
         console.print("Use [cyan]anthill trails[/cyan] to see how the failures landed in pheromones.")
+
+
+@cli.command()
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def power(nation_name: str) -> None:
+    """National strength — six dimensions of how capable the nation has become."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+
+    history = load_history(nation_dir(config.home, nation_name))
+    exemplars = load_exemplars(nation_dir(config.home, nation_name))
+    report = compute_power(nation, history, exemplars)
+
+    # Visual power bar (out of 100)
+    overall = report.overall
+    bar_width = 30
+    filled = int(round(overall / 100 * bar_width))
+    bar = "█" * filled + "░" * (bar_width - filled)
+    bar_color = "green" if overall >= 60 else "yellow" if overall >= 30 else "red"
+    console.print(f"[bold]{nation_name}[/bold]  national strength")
+    console.print(f"[{bar_color}]{bar}[/{bar_color}]  {overall:.1f} / 100")
+    console.print()
+
+    table = Table(show_header=False, box=None)
+    table.add_column("Metric", style="cyan", no_wrap=True)
+    table.add_column("Value", style="bold")
+    table.add_column("Meaning", style="dim")
+
+    table.add_row("Vocabulary", str(report.vocabulary), "distinct task types ever handled")
+    table.add_row("Specialists", str(report.specialists), "citizens with strong trails")
+    table.add_row(
+        "Success rate",
+        f"{report.success_rate:.1%}",
+        f"{report.total_tasks} subtasks across {report.total_asks} asks",
+    )
+    table.add_row("Max chain", str(report.max_chain), "longest successful multi-step plan")
+    table.add_row(
+        "Feedback",
+        f"{report.feedback_score:+d}",
+        "net rating volume (ups minus downs)",
+    )
+    table.add_row(
+        "Diversity",
+        f"{report.diversity:.2f}",
+        "how work spreads across citizens (0=concentrated, 1=spread)",
+    )
+    console.print(table)
 
 
 @cli.group()
