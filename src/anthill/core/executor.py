@@ -1,34 +1,34 @@
-"""Statecraft — execute a Plan as a DAG, with dependency-aware context passing.
+"""Statecraft — execute a Plan as a DAG, with retries and graceful failure.
 
-This is what turns Anthill from "a thing that routes single tasks" into
-"a thing that completes complex work." Before this module, a Plan with
-three subtasks ran like three independent calls; the second never saw
-the first's output. After this module, the second receives the first's
-output as context, the third receives both, and the final synthesis
-step has everything to draw on.
+Three problems this module solves at once:
 
-The mechanism is intentionally simple:
+1. **Dependency-aware context passing.** When subtask B depends on A, B's
+   prompt is prepended with A's output. Without this, multi-step plans
+   are just three independent calls.
 
-    1. Topological sort the subtasks by their declared depends_on.
-    2. For each subtask in order, build a context block of every
-       dependency's actual output, prepended to the prompt.
-    3. Run via the nation's normal pheromone-routed pipeline.
+2. **Retries with citizen rotation.** A transient API failure should not
+   kill the whole request. When a subtask fails, the executor tries the
+   same subtask on a *different* citizen, up to `max_attempts` times. The
+   router's `forbid` parameter is what makes "different citizen" possible.
+
+3. **Fail-fast on broken dependencies.** If `research` fails after all
+   retries, there is no point running `compare` and `recommend` — they
+   would receive garbage as context and produce garbage. The executor
+   marks downstream subtasks as `skipped` instead.
+
+A `SubtaskOutcome` carries the whole trace per subtask: every attempt
+(success or failure), the final status, and the result the user-facing
+output should draw on.
 
 The DAG is currently executed sequentially even when independent
-subtasks could run in parallel. That's deliberate for v0.0.7 —
-correctness and observability first, parallelism when the API budget
-and debugging story can absorb it.
-
-Dependency resolution is by task_type. When two subtasks share a
-task_type, "depends on X" resolves to the most recent X executed
-before this point. That's a simple rule, easy to reason about, and
-matches how a human reviewer would read the plan.
+subtasks could run in parallel. That's deliberate for v0.0.8 —
+correctness, retries, and observability first; parallelism in v0.0.9.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal
 
 from anthill.core.scout import Plan, Subtask
 
@@ -37,9 +37,12 @@ if TYPE_CHECKING:
     from anthill.core.nation import Nation
 
 
+SubtaskStatus = Literal["ok", "failed", "skipped"]
+
+
 @dataclass
 class ExecutorError(Exception):
-    """Raised when a Plan cannot be executed as written."""
+    """Raised when a Plan cannot be executed as written (structural error)."""
 
     message: str
 
@@ -47,20 +50,53 @@ class ExecutorError(Exception):
         return self.message
 
 
+@dataclass
+class RetryPolicy:
+    """How hard the executor tries before giving up on a subtask.
+
+    max_attempts counts the total number of tries including the first one.
+    A value of 1 means no retries; a value of 3 means one original + two
+    retries. Retries always pick a *different* citizen from the one that
+    just failed.
+    """
+
+    max_attempts: int = 3
+    skip_downstream_on_failure: bool = True
+
+
+@dataclass
+class SubtaskOutcome:
+    """Everything we know about how one subtask in a plan went."""
+
+    subtask: Subtask
+    attempts: list["TaskResult"] = field(default_factory=list)
+    status: SubtaskStatus = "ok"
+    skip_reason: str | None = None  # filled when status == "skipped"
+
+    @property
+    def final(self) -> "TaskResult | None":
+        if not self.attempts:
+            return None
+        return self.attempts[-1]
+
+    @property
+    def output(self) -> str:
+        if self.status == "skipped":
+            return f"[skipped: {self.skip_reason}]"
+        last = self.final
+        return str(last.output) if last is not None else ""
+
+
 def topological_order(plan: Plan) -> list[int]:
     """Return subtask indices in a valid execution order.
 
-    Edges run from `depends_on` task_types to the subtasks that depend on
-    them. A subtask depends on the most recent earlier subtask with a
-    matching task_type. If a cited dependency does not appear in the plan
-    at all, we surface that explicitly — silently ignoring it would let
-    Scout drift toward referencing made-up types.
+    A subtask depends on the most recent earlier subtask with a matching
+    task_type. Forward references (depending on something later) and
+    dangling references (depending on something that doesn't exist) both
+    raise — silently dropping them would let Scout's plans drift toward
+    referencing imagined types.
     """
     n = len(plan.subtasks)
-
-    # Build the edge set: for each subtask, the indices of subtasks it
-    # depends on. Walking depends_on in plan order means "latest matching
-    # task_type before me" — exactly what a reader expects.
     deps: list[set[int]] = [set() for _ in range(n)]
     declared_types: set[str] = {st.task_type for st in plan.subtasks}
 
@@ -71,7 +107,6 @@ def topological_order(plan: Plan) -> list[int]:
                     f"Subtask #{i} ({subtask.task_type}) depends on "
                     f"'{dep_type}', which no other subtask in this plan produces."
                 )
-            # Find the most recent prior subtask with this type.
             for j in range(i - 1, -1, -1):
                 if plan.subtasks[j].task_type == dep_type:
                     deps[i].add(j)
@@ -82,8 +117,6 @@ def topological_order(plan: Plan) -> list[int]:
                     f"'{dep_type}', but no earlier subtask of that type exists."
                 )
 
-    # Kahn's algorithm — pull in nodes with no remaining incoming edges,
-    # break ties by original plan order so output is deterministic.
     indegree = [len(d) for d in deps]
     ready = [i for i in range(n) if indegree[i] == 0]
     ordered: list[int] = []
@@ -108,11 +141,7 @@ def build_context_block(
     subtask: Subtask,
     completed: dict[str, "TaskResult"],
 ) -> str:
-    """Format the outputs this subtask depends on as a context block.
-
-    Empty string if the subtask has no dependencies — the worker should
-    not see a stray 'Previous results:' header for no reason.
-    """
+    """Format dependency outputs as a context block prepended to the prompt."""
     if not subtask.depends_on:
         return ""
 
@@ -120,31 +149,86 @@ def build_context_block(
     for dep_type in subtask.depends_on:
         result = completed.get(dep_type)
         if result is None:
-            continue  # topological_order already validated this; defensive only
+            continue
         sections.append(f"[{dep_type}]\n{result.output}")
 
     if not sections:
         return ""
-
     return "Previous results:\n\n" + "\n\n".join(sections) + "\n\n---\n\n"
 
 
-async def execute_plan(plan: Plan, nation: "Nation") -> list["TaskResult"]:
-    """Run a Plan with dependency-aware context passing.
+def _was_successful(result: "TaskResult") -> bool:
+    """A simple, deterministic success check.
 
-    Returns results in plan order (not topological order) so callers can
-    align them with the user-facing plan display.
+    The agent layer already collapses both exceptions and empty responses
+    to score=0.0. Using the score keeps the executor independent of the
+    failure mode.
     """
+    return result.success_score > 0.0
+
+
+async def execute_plan(
+    plan: Plan,
+    nation: "Nation",
+    *,
+    retry: RetryPolicy | None = None,
+) -> list[SubtaskOutcome]:
+    """Run a Plan with retries, citizen rotation, and graceful skipping.
+
+    Returns one SubtaskOutcome per subtask, in plan order.
+    """
+    policy = retry or RetryPolicy()
     order = topological_order(plan)
-    results_by_index: dict[int, "TaskResult"] = {}
+    outcomes: dict[int, SubtaskOutcome] = {
+        i: SubtaskOutcome(subtask=plan.subtasks[i]) for i in range(len(plan.subtasks))
+    }
     latest_by_type: dict[str, "TaskResult"] = {}
 
     for i in order:
         subtask = plan.subtasks[i]
+
+        # Fail-fast: if any dependency was not successful, skip this subtask.
+        failed_dep = _find_failed_dependency(subtask, plan, outcomes)
+        if failed_dep is not None and policy.skip_downstream_on_failure:
+            outcomes[i].status = "skipped"
+            outcomes[i].skip_reason = f"dependency '{failed_dep}' failed"
+            continue
+
         context = build_context_block(subtask, latest_by_type)
         augmented_prompt = context + subtask.prompt if context else subtask.prompt
-        result = await nation.run(subtask.task_type, augmented_prompt)
-        results_by_index[i] = result
-        latest_by_type[subtask.task_type] = result
 
-    return [results_by_index[i] for i in range(len(plan.subtasks))]
+        forbid: set[str] = set()
+        succeeded = False
+        for _attempt in range(policy.max_attempts):
+            try:
+                result = await nation.run(subtask.task_type, augmented_prompt, forbid=forbid)
+            except RuntimeError:
+                # No eligible citizen left — every candidate has already
+                # failed this attempt. Stop retrying.
+                break
+            outcomes[i].attempts.append(result)
+            if _was_successful(result):
+                latest_by_type[subtask.task_type] = result
+                succeeded = True
+                break
+            forbid.add(result.agent_id)
+
+        outcomes[i].status = "ok" if succeeded else "failed"
+
+    return [outcomes[i] for i in range(len(plan.subtasks))]
+
+
+def _find_failed_dependency(
+    subtask: Subtask,
+    plan: Plan,
+    outcomes: dict[int, SubtaskOutcome],
+) -> str | None:
+    """Return the task_type of the first failed/skipped dependency, or None."""
+    for dep_type in subtask.depends_on:
+        # Same resolution rule as topological_order: latest matching earlier.
+        for j in range(len(plan.subtasks) - 1, -1, -1):
+            if plan.subtasks[j].task_type == dep_type:
+                if outcomes[j].status != "ok":
+                    return dep_type
+                break
+    return None

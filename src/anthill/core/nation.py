@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 from anthill.core.agent import Agent, TaskResult
 from anthill.core.culture import Culture
-from anthill.core.executor import execute_plan
+from anthill.core.executor import SubtaskOutcome, execute_plan
 from anthill.core.pheromone import PheromoneTrail
 from anthill.core.router import Router, RouterConfig
 from anthill.core.scout import Plan, Scout
@@ -26,27 +26,44 @@ from anthill.core.scout import Plan, Scout
 class AskResult:
     """The aggregated outcome of a natural-language request.
 
-    A single user request may produce one or many subtask results. We keep
-    all of them so callers can show the whole trace, but `final_output`
-    surfaces what the user almost certainly came for: the last leaf of
-    the DAG, the synthesis step.
+    A single user request may produce one or many subtask outcomes. Each
+    outcome carries every attempt that was made (success or retry), the
+    final status, and the result the user-facing output should draw on.
+    `final_output` surfaces what the king almost certainly came for —
+    the synthesis step at the end of the chain.
     """
 
     request: str
     plan: Plan
-    results: list[TaskResult]
+    outcomes: list[SubtaskOutcome]
 
     @property
     def final_output(self) -> str:
         """The output of the last subtask — by convention, the synthesis step.
 
-        Scout is prompted to put the user-facing answer last. When that
-        convention holds, this returns exactly what the user wants. When
-        the plan is a single subtask, this returns that subtask's output.
+        If the last subtask failed or was skipped, we walk backward until
+        we find a step that did produce something — better to show partial
+        progress than an opaque error.
         """
-        if not self.results:
-            return ""
-        return str(self.results[-1].output)
+        for outcome in reversed(self.outcomes):
+            if outcome.status == "ok":
+                return outcome.output
+        # Nothing succeeded.
+        return "[No subtask completed successfully.]"
+
+    @property
+    def succeeded(self) -> bool:
+        """True only when every subtask reached status 'ok'."""
+        return all(o.status == "ok" for o in self.outcomes)
+
+    @property
+    def results(self) -> list[TaskResult]:
+        """Backwards-compatible flat view of final attempts (skipped -> None filtered).
+
+        Older callers expected a list[TaskResult]; we still surface that
+        view, but new code should iterate outcomes for full retry traces.
+        """
+        return [o.final for o in self.outcomes if o.final is not None]
 
 
 @dataclass
@@ -96,9 +113,19 @@ class Nation:
             parts.append("Nation house style:\n" + style)
         return "\n\n".join(parts) or None
 
-    async def run(self, task_type: str, prompt: str) -> TaskResult:
-        """Execute one typed task: route, run, deposit pheromone."""
-        agent = self.router.assign(task_type)
+    async def run(
+        self,
+        task_type: str,
+        prompt: str,
+        *,
+        forbid: set[str] | None = None,
+    ) -> TaskResult:
+        """Execute one typed task: route, run, deposit pheromone.
+
+        `forbid` lets a caller exclude specific citizens — typically used on
+        retry to avoid the citizen that just failed.
+        """
+        agent = self.router.assign(task_type, forbid=forbid)
         result = await agent.execute(task_type, prompt, system=self._compose_system(agent))
         self.pheromones.deposit(
             agent_id=result.agent_id,
@@ -125,5 +152,5 @@ class Nation:
         """
         scout = Scout(model=self.scout_model)
         plan = await scout.plan(request, known_task_types=self.culture.known_task_types())
-        results = await execute_plan(plan, self)
-        return AskResult(request=request, plan=plan, results=results)
+        outcomes = await execute_plan(plan, self)
+        return AskResult(request=request, plan=plan, outcomes=outcomes)

@@ -40,34 +40,49 @@ class Router:
         self.agents = agents
         self.config = config or RouterConfig()
 
-    def assign(self, task_type: str) -> Agent:
-        """Pick an agent for this task type."""
+    def assign(self, task_type: str, *, forbid: set[str] | None = None) -> Agent:
+        """Pick a citizen for this task type.
+
+        `forbid` is the set of citizen IDs that must NOT be picked — used
+        on retry, to try someone other than whoever just failed. If
+        forbidding everyone, raises RuntimeError; the executor catches it
+        and marks the subtask as unrecoverable.
+        """
         if not self.agents:
             raise RuntimeError("No citizens in the nation.")
 
-        # Exploration: occasionally pick a random agent to find better paths.
+        forbid = forbid or set()
+        candidates = [a for a in self.agents if a.id not in forbid]
+        if not candidates:
+            raise RuntimeError(
+                f"No citizens available for '{task_type}': every candidate is "
+                f"forbidden (likely all of them have already failed this attempt)."
+            )
+
+        # Exploration: occasionally pick a random eligible citizen.
         if random.random() < self.config.exploration:
-            return random.choice(self.agents)
+            return random.choice(candidates)
 
         # A trail with strength 0 means "tried and failed" — should not
-        # outrank agents that haven't tried at all. Treat zero-strength
-        # entries as untried so they don't block cold-start randomness.
-        ranking = [(aid, s) for aid, s in self.pheromones.ranking(task_type) if s > 0]
+        # outrank citizens that haven't tried at all.
+        ranking = [
+            (aid, s)
+            for aid, s in self.pheromones.ranking(task_type)
+            if s > 0 and aid not in forbid
+        ]
 
         tried_ids = {aid for aid, _ in self.pheromones.ranking(task_type)}
-        untried = [a for a in self.agents if a.id not in tried_ids]
+        untried = [a for a in candidates if a.id not in tried_ids]
         if untried and not ranking:
-            # Nobody has succeeded yet — explore among the agents that haven't
-            # been tried, instead of doubling down on a known failure.
             return random.choice(untried)
 
         if not ranking and self.config.cold_start_random:
-            return random.choice(self.agents)
+            return random.choice(candidates)
 
         if ranking:
             best_id = ranking[0][0]
-            for agent in self.agents:
+            for agent in candidates:
                 if agent.id == best_id:
                     return agent
 
-        return random.choice(self.agents)
+        return random.choice(candidates)

@@ -270,24 +270,56 @@ def ask(request: str, nation_name: str) -> None:
         console.print()
         console.print("[bold]Plan[/bold]")
         for i, sub in enumerate(result.plan.subtasks, start=1):
-            deps = f" [dim](depends on: {', '.join(sub.depends_on)})[/dim]" if sub.depends_on else ""
+            deps = (
+                f" [dim](depends on: {', '.join(sub.depends_on)})[/dim]"
+                if sub.depends_on
+                else ""
+            )
             console.print(f"  [cyan]#{i}[/cyan] [magenta]{sub.task_type}[/magenta]{deps}")
 
     console.print()
-    last_idx = len(result.results) - 1
-    for i, (sub, res) in enumerate(zip(result.plan.subtasks, result.results)):
-        agent = next((a for a in nation.agents if a.id == res.agent_id), None)
-        model = agent.model if agent else "?"
-        is_final = i == last_idx and len(result.results) > 1
-        header_style = "bold green" if is_final else "cyan"
-        label = "Final" if is_final else f"#{i + 1}"
-        console.print(
-            f"[{header_style}]{label}[/{header_style}] "
-            f"[magenta]{sub.task_type}[/magenta] -> {res.agent_id} ({model})  "
-            f"score={res.success_score:.1f}  {res.duration_seconds:.1f}s"
+    last_idx = len(result.outcomes) - 1
+    for i, outcome in enumerate(result.outcomes):
+        sub = outcome.subtask
+        is_final = i == last_idx and len(result.outcomes) > 1
+
+        # Choose header style by status, override to green for final-and-ok.
+        if outcome.status == "ok":
+            header_style = "bold green" if is_final else "cyan"
+        elif outcome.status == "failed":
+            header_style = "bold red"
+        else:
+            header_style = "yellow"
+        label = "Final" if (is_final and outcome.status == "ok") else f"#{i + 1}"
+        status_tag = {"ok": "", "failed": " FAILED", "skipped": " SKIPPED"}[outcome.status]
+
+        retry_note = (
+            f"  [dim](after {len(outcome.attempts)} attempts)[/dim]"
+            if len(outcome.attempts) > 1
+            else ""
         )
-        console.print(str(res.output))
+
+        if outcome.final is not None:
+            agent = next((a for a in nation.agents if a.id == outcome.final.agent_id), None)
+            model = agent.model if agent else "?"
+            console.print(
+                f"[{header_style}]{label}{status_tag}[/{header_style}] "
+                f"[magenta]{sub.task_type}[/magenta] -> {outcome.final.agent_id} ({model})  "
+                f"score={outcome.final.success_score:.1f}  "
+                f"{outcome.final.duration_seconds:.1f}s{retry_note}"
+            )
+        else:
+            console.print(
+                f"[{header_style}]{label}{status_tag}[/{header_style}] "
+                f"[magenta]{sub.task_type}[/magenta]"
+            )
+
+        console.print(outcome.output)
         console.print()
+
+    if not result.succeeded:
+        console.print("[bold red]Request did not complete successfully.[/bold red]")
+        console.print("Use [cyan]anthill trails[/cyan] to see how the failures landed in pheromones.")
 
 
 @cli.command()
