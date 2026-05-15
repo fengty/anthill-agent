@@ -42,6 +42,7 @@ from anthill.core.history import (
     load_history,
     search_history,
 )
+from anthill.core.costs import load_usage, summarise
 from anthill.core.power import compute_ages, compute_power
 from anthill.core.style_learner import suggest_house_style
 from anthill.core.nation import Nation
@@ -332,6 +333,24 @@ def ask(request: str, nation_name: str) -> None:
         nation_dir(config.home, nation_name),
     )
 
+    # Append per-attempt usage records for cost analysis.
+    from anthill.core.costs import UsageRecord, append_usage
+    for outcome in result.outcomes:
+        for attempt in outcome.attempts:
+            agent = next((a for a in nation.agents if a.id == attempt.agent_id), None)
+            model = agent.model if agent else "unknown"
+            append_usage(
+                UsageRecord(
+                    timestamp=time.time(),
+                    agent_id=attempt.agent_id,
+                    model=model,
+                    task_type=attempt.task_type,
+                    input_tokens=attempt.input_tokens,
+                    output_tokens=attempt.output_tokens,
+                ),
+                nation_dir(config.home, nation_name),
+            )
+
     console.print(f"[dim]request[/dim]  {request}")
     console.print(f"[dim]plan[/dim]     {len(result.plan)} subtask(s)")
     if len(result.plan) > 1:
@@ -388,6 +407,58 @@ def ask(request: str, nation_name: str) -> None:
     if not result.succeeded:
         console.print("[bold red]Request did not complete successfully.[/bold red]")
         console.print("Use [cyan]anthill trails[/cyan] to see how the failures landed in pheromones.")
+
+
+@cli.command()
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+@click.option("--since-days", default=0, help="Only count usage from last N days (0 = all).")
+def costs(nation_name: str, since_days: int) -> None:
+    """Show token usage and dollar cost, aggregated by model / task / citizen."""
+    import datetime
+
+    config = AnthillConfig.load()
+    if load_nation(nation_name, config.home) is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+
+    records = load_usage(nation_dir(config.home, nation_name))
+    if not records:
+        console.print("[dim]No usage recorded yet. Run [cyan]anthill ask[/cyan] first.[/dim]")
+        return
+
+    since = (time.time() - since_days * 86400) if since_days > 0 else None
+    report = summarise(records, since=since)
+
+    period = ""
+    if report.period_start and report.period_end:
+        start = datetime.datetime.fromtimestamp(report.period_start).strftime("%m-%d %H:%M")
+        end = datetime.datetime.fromtimestamp(report.period_end).strftime("%m-%d %H:%M")
+        period = f"  [dim]{start} – {end}[/dim]"
+
+    console.print(f"[bold]Costs[/bold] — {nation_name}{period}")
+    console.print(
+        f"  Tokens: [cyan]{report.total_input:,}[/cyan] in  +  "
+        f"[cyan]{report.total_output:,}[/cyan] out"
+    )
+    console.print(f"  Total:  [bold green]${report.total_cost_usd:.4f}[/bold green]")
+    console.print()
+
+    def _table(title: str, items: dict[str, float]) -> None:
+        if not items:
+            return
+        t = Table(title=title, show_header=True)
+        t.add_column("Key", style="cyan")
+        t.add_column("USD", style="green", justify="right")
+        t.add_column("Share", style="dim", justify="right")
+        for k, v in sorted(items.items(), key=lambda kv: -kv[1]):
+            share = (v / report.total_cost_usd * 100) if report.total_cost_usd else 0
+            t.add_row(k, f"${v:.4f}", f"{share:.1f}%")
+        console.print(t)
+        console.print()
+
+    _table("By model", report.by_model)
+    _table("By task type", report.by_task_type)
+    _table("By citizen", report.by_agent)
 
 
 @cli.command()
