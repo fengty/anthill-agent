@@ -1,0 +1,56 @@
+[project]
+name = "anthill-agent"
+version = "0.0.1"
+description = "Multi-agent framework where specialization emerges from pheromone trails"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Anthill contributors" }]
+keywords = ["ai", "agent", "multi-agent", "llm", "pheromone", "swarm"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+    "anthropic>=0.40.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+]
+
+[project.scripts]
+anthill = "anthill.cli.main:cli"
+
+[project.urls]
+Homepage = "https://github.com/anthill-agent/anthill"
+Repository = "https://github.com/anthill-agent/anthill"
+Documentation = "https://github.com/anthill-agent/anthill/tree/main/docs"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/anthill"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.mypy]
+strict = true
+python_version = "3.9"
