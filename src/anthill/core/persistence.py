@@ -14,6 +14,7 @@ from pathlib import Path
 
 from anthill.core.agent import Agent
 from anthill.core.colony import Colony
+from anthill.core.culture import load_culture, save_culture
 from anthill.core.pheromone import PheromoneTrail, Trail
 
 
@@ -47,6 +48,8 @@ def save_colony(colony: Colony, home: Path) -> Path:
         for t in colony.pheromones._trails.values()
     ]
     (directory / "pheromones.json").write_text(json.dumps(trails_data, indent=2))
+
+    save_culture(colony.culture, directory)
 
     return directory
 
@@ -83,4 +86,6 @@ def load_colony(name: str, home: Path) -> Colony | None:
                 last_updated=record.get("last_updated", time.time()),
             )
 
-    return Colony(name=name, agents=agents, pheromones=pheromones)
+    culture = load_culture(directory)
+
+    return Colony(name=name, agents=agents, pheromones=pheromones, culture=culture)

@@ -11,6 +11,8 @@ Commands:
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
 
 import click
 from rich.console import Console
@@ -147,6 +149,96 @@ def status(colony_name: str) -> None:
     console.print(f"  Workers: {len(colony.agents)}")
     console.print(f"  Trails:  {trails_count}")
     console.print(f"  Home:    {config.home / 'colonies' / colony_name}")
+
+
+@cli.command()
+@click.option("--colony", "colony_name", default="default", help="Colony name.")
+def identity(colony_name: str) -> None:
+    """Show who this colony has become."""
+    config = AnthillConfig.load()
+    colony = load_colony(colony_name, config.home)
+    if colony is None:
+        console.print(f"[red]No colony named '{colony_name}'.[/red]")
+        return
+
+    console.print(f"[bold]Colony[/bold]   {colony_name}")
+    console.print(f"[bold]Workers[/bold]  {len(colony.agents)}")
+    console.print()
+    console.print("[bold]Identity[/bold]")
+    console.print(f"  {colony.culture.summarize()}")
+    console.print()
+
+    if colony.culture.task_catalog:
+        table = Table(title="Task vocabulary")
+        table.add_column("Task type", style="magenta")
+        table.add_column("Count", style="green", justify="right")
+        for tt, n in sorted(colony.culture.task_catalog.items(), key=lambda x: -x[1]):
+            table.add_row(tt, str(n))
+        console.print(table)
+        console.print()
+
+    style = colony.culture.house_style.strip()
+    if style:
+        console.print("[bold]House style[/bold]")
+        for line in style.splitlines():
+            console.print(f"  {line}")
+    else:
+        console.print(
+            "[dim]No house style set. "
+            "Edit it with [cyan]anthill style edit[/cyan].[/dim]"
+        )
+
+
+@cli.group()
+def style() -> None:
+    """Inspect or edit the colony's house style."""
+
+
+@style.command("edit")
+@click.option("--colony", "colony_name", default="default", help="Colony name.")
+def style_edit(colony_name: str) -> None:
+    """Open the colony's house_style.md in $EDITOR."""
+    config = AnthillConfig.load()
+    colony = load_colony(colony_name, config.home)
+    if colony is None:
+        console.print(f"[red]No colony named '{colony_name}'.[/red]")
+        return
+
+    path = config.home / "colonies" / colony_name / "culture" / "house_style.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text(
+            "# House style\n\n"
+            "Write the conventions this colony should follow.\n"
+            "These get injected into every worker's system prompt.\n\n"
+            "Examples:\n"
+            "- Prefer terse answers. No filler.\n"
+            "- Always include a working code example.\n"
+            "- Default to Chinese for explanations.\n"
+        )
+
+    editor = os.getenv("EDITOR", "vi")
+    subprocess.run([editor, str(path)], check=False)
+
+    refreshed = load_colony(colony_name, config.home)
+    if refreshed is not None:
+        save_colony(refreshed, config.home)
+    console.print(f"[green]House style saved to[/green] {path}")
+
+
+@style.command("show")
+@click.option("--colony", "colony_name", default="default", help="Colony name.")
+def style_show(colony_name: str) -> None:
+    """Print the current house style."""
+    config = AnthillConfig.load()
+    colony = load_colony(colony_name, config.home)
+    if colony is None:
+        console.print(f"[red]No colony named '{colony_name}'.[/red]")
+        return
+    if not colony.culture.house_style.strip():
+        console.print("[dim]No house style set.[/dim]")
+        return
+    console.print(colony.culture.house_style)
 
 
 @cli.command()

@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from anthill.models import get_provider
 
 
-SCOUT_SYSTEM_PROMPT = """You are the Scout for an agent colony.
+SCOUT_SYSTEM_PROMPT_TEMPLATE = """You are the Scout for an agent colony.
 
 A user gives you one request in natural language. Your job is to break it
 into one or more concrete subtasks the colony can execute.
@@ -43,8 +43,7 @@ into one or more concrete subtasks the colony can execute.
 For each subtask, produce:
     - task_type: a short snake_case label that names what kind of work this is
                  (examples: translate, summarize, code_review, draft_email).
-                 Reuse the same label for similar work — the colony tracks
-                 expertise by label.
+                 Reuse labels — the colony tracks expertise by label.
     - prompt:    the actual instruction the worker agent will receive.
                  Make it self-contained; the worker has no context beyond it.
     - depends_on: an optional list of task_type strings this subtask waits on.
@@ -52,18 +51,39 @@ For each subtask, produce:
 
 Return ONLY a JSON object with this shape, no prose:
 
-{
+{{
   "plan": [
-    {"task_type": "<label>", "prompt": "<instruction>", "depends_on": []}
+    {{"task_type": "<label>", "prompt": "<instruction>", "depends_on": []}}
   ]
-}
+}}
 
 Rules:
 - Prefer fewer, larger subtasks over many tiny ones.
 - If the request is genuinely one task, return a single subtask.
 - Keep task_type labels short and reusable.
 - Never include explanations outside the JSON.
-"""
+
+{vocabulary_section}"""
+
+
+def build_system_prompt(known_task_types: list[str] | None = None) -> str:
+    """Inject the colony's existing task-type vocabulary into the Scout prompt.
+
+    Without this, the model invents a fresh label for every nuance of every
+    request, and the pheromone map fragments. With it, the colony's existing
+    expertise stays load-bearing.
+    """
+    if known_task_types:
+        listing = ", ".join(known_task_types)
+        section = (
+            "This colony has existing expertise in these task types — strongly "
+            "prefer reusing them when the work fits:\n"
+            f"  {listing}\n"
+            "Only invent a new task_type if no existing one is a good match."
+        )
+    else:
+        section = "This colony has no prior task types yet. Choose carefully — labels you pick today become the colony's permanent vocabulary."
+    return SCOUT_SYSTEM_PROMPT_TEMPLATE.format(vocabulary_section=section)
 
 
 @dataclass
@@ -87,11 +107,16 @@ class Scout:
     def __init__(self, model: str = "deepseek-chat") -> None:
         self.model = model
 
-    async def plan(self, request: str) -> Plan:
+    async def plan(
+        self,
+        request: str,
+        *,
+        known_task_types: list[str] | None = None,
+    ) -> Plan:
         provider = get_provider(self.model)
         response = await provider.complete(
             request,
-            system=SCOUT_SYSTEM_PROMPT,
+            system=build_system_prompt(known_task_types),
             temperature=0.2,  # decomposition wants determinism, not creativity
         )
         return self._parse(response.text)
