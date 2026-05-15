@@ -15,6 +15,7 @@ from anthill.core.agent import Agent
 from anthill.core.culture import load_culture, save_culture
 from anthill.core.nation import Nation
 from anthill.core.pheromone import PheromoneTrail, Trail
+from anthill.core.plan_cache import load_cache, save_cache
 
 
 def nation_dir(home: Path, name: str) -> Path:
@@ -49,6 +50,7 @@ def save_nation(nation: Nation, home: Path) -> Path:
     (directory / "pheromones.json").write_text(json.dumps(trails_data, indent=2))
 
     save_culture(nation.culture, directory)
+    save_cache(nation.plan_cache, directory)
 
     return directory
 
@@ -86,5 +88,12 @@ def load_nation(name: str, home: Path) -> Nation | None:
             )
 
     culture = load_culture(directory)
+    plan_cache = load_cache(directory)
 
-    return Nation(name=name, agents=agents, pheromones=pheromones, culture=culture)
+    return Nation(
+        name=name,
+        agents=agents,
+        pheromones=pheromones,
+        culture=culture,
+        plan_cache=plan_cache,
+    )

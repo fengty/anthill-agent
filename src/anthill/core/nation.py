@@ -18,6 +18,7 @@ from anthill.core.agent import Agent, TaskResult
 from anthill.core.culture import Culture
 from anthill.core.executor import SubtaskOutcome, execute_plan
 from anthill.core.pheromone import PheromoneTrail
+from anthill.core.plan_cache import CachedPlan, lookup as cache_lookup, remember as cache_remember
 from anthill.core.router import Router, RouterConfig
 from anthill.core.scout import Plan, Scout
 
@@ -82,6 +83,8 @@ class Nation:
     culture: Culture = field(default_factory=Culture)
     router_config: RouterConfig = field(default_factory=RouterConfig)
     scout_model: str = "deepseek-chat"
+    plan_cache: dict[str, CachedPlan] = field(default_factory=dict)
+    last_ask_cache_hit: bool = field(default=False, repr=False)
 
     def spawn(
         self,
@@ -150,7 +153,14 @@ class Nation:
         prefers reusing established labels — keeping pheromone trails
         concentrated instead of fragmenting them into one-shot categories.
         """
-        scout = Scout(model=self.scout_model)
-        plan = await scout.plan(request, known_task_types=self.culture.known_task_types())
+        cached = cache_lookup(request, self.plan_cache)
+        if cached is not None:
+            plan = cached.plan
+            self.last_ask_cache_hit = True
+        else:
+            scout = Scout(model=self.scout_model)
+            plan = await scout.plan(request, known_task_types=self.culture.known_task_types())
+            cache_remember(request, plan, self.plan_cache)
+            self.last_ask_cache_hit = False
         outcomes = await execute_plan(plan, self)
         return AskResult(request=request, plan=plan, outcomes=outcomes)
