@@ -35,6 +35,13 @@ from anthill.core.feedback import (
     load_last_ask,
     save_last_ask,
 )
+from anthill.core.history import (
+    append_history,
+    build_entry_from_ask,
+    find_by_id,
+    load_history,
+    search_history,
+)
 from anthill.core.style_learner import suggest_house_style
 from anthill.core.nation import Nation
 from anthill.core.persistence import load_nation, nation_dir, save_nation
@@ -318,6 +325,12 @@ def ask(request: str, nation_name: str) -> None:
             nation_dir(config.home, nation_name),
         )
 
+    # Append to permanent history — every ask gets remembered.
+    append_history(
+        build_entry_from_ask(request, result.plan.subtasks, result.outcomes),
+        nation_dir(config.home, nation_name),
+    )
+
     console.print(f"[dim]request[/dim]  {request}")
     console.print(f"[dim]plan[/dim]     {len(result.plan)} subtask(s)")
     if len(result.plan) > 1:
@@ -374,6 +387,89 @@ def ask(request: str, nation_name: str) -> None:
     if not result.succeeded:
         console.print("[bold red]Request did not complete successfully.[/bold red]")
         console.print("Use [cyan]anthill trails[/cyan] to see how the failures landed in pheromones.")
+
+
+@cli.group()
+def history() -> None:
+    """Browse the nation's permanent record of past asks."""
+
+
+@history.command("list")
+@click.option("--limit", default=20, help="Number of recent entries to show.")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def history_list(limit: int, nation_name: str) -> None:
+    """List recent asks (id, timestamp, request, status)."""
+    config = AnthillConfig.load()
+    entries = load_history(nation_dir(config.home, nation_name), limit=limit)
+    if not entries:
+        console.print("[dim]No history yet.[/dim]")
+        return
+
+    import datetime
+
+    table = Table(title=f"History — {nation_name}")
+    table.add_column("ID", style="cyan")
+    table.add_column("When", style="dim")
+    table.add_column("Status", justify="center")
+    table.add_column("Request")
+
+    for e in entries:
+        when = datetime.datetime.fromtimestamp(e.timestamp).strftime("%m-%d %H:%M")
+        statuses = [o["status"] for o in e.outcomes]
+        if all(s == "ok" for s in statuses):
+            status = "[green]ok[/green]"
+        elif any(s == "failed" for s in statuses):
+            status = "[red]failed[/red]"
+        else:
+            status = "[yellow]partial[/yellow]"
+        request_preview = e.request if len(e.request) <= 60 else e.request[:57] + "..."
+        table.add_row(e.id, when, status, request_preview)
+
+    console.print(table)
+
+
+@history.command("show")
+@click.argument("entry_id")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def history_show(entry_id: str, nation_name: str) -> None:
+    """Show full detail of one past ask."""
+    config = AnthillConfig.load()
+    entry = find_by_id(entry_id, nation_dir(config.home, nation_name))
+    if entry is None:
+        console.print(f"[red]No entry matching '{entry_id}'.[/red]")
+        return
+
+    import datetime
+    when = datetime.datetime.fromtimestamp(entry.timestamp).strftime("%Y-%m-%d %H:%M:%S")
+    console.print(f"[bold]Entry[/bold] {entry.id}  [dim]({when})[/dim]")
+    console.print(f"[bold]Request[/bold] {entry.request}")
+    console.print()
+    for i, outcome in enumerate(entry.outcomes, start=1):
+        color = {"ok": "green", "failed": "red", "skipped": "yellow"}[outcome["status"]]
+        console.print(
+            f"[cyan]#{i}[/cyan] [magenta]{outcome['task_type']}[/magenta] "
+            f"[{color}]{outcome['status']}[/{color}]  "
+            f"(attempts: {outcome['attempts']})"
+        )
+        if outcome.get("final_output"):
+            console.print(f"  {outcome['final_output']}")
+        elif outcome.get("skip_reason"):
+            console.print(f"  [dim]{outcome['skip_reason']}[/dim]")
+        console.print()
+
+
+@history.command("search")
+@click.argument("query")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def history_search(query: str, nation_name: str) -> None:
+    """Search past asks by substring of the request."""
+    config = AnthillConfig.load()
+    matches = search_history(query, nation_dir(config.home, nation_name))
+    if not matches:
+        console.print(f"[dim]No history matches '{query}'.[/dim]")
+        return
+    for e in matches:
+        console.print(f"[cyan]{e.id}[/cyan]  {e.request}")
 
 
 @cli.command()
