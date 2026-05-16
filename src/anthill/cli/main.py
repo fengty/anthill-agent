@@ -43,6 +43,11 @@ from anthill.core.history import (
     load_history,
     search_history,
 )
+from anthill.core.inflight import (
+    clear_inflight,
+    list_inflight,
+    load_inflight,
+)
 from anthill.core.costs import load_usage, summarise
 from anthill.core.facts import derive_facts, read_facts, write_facts
 from anthill.core.workflows import load_workflows, mine_workflows, save_workflows
@@ -338,21 +343,14 @@ def style_show(nation_name: str) -> None:
     console.print(nation.culture.house_style)
 
 
-@cli.command()
-@click.argument("request")
-@click.option("--nation", "nation_name", default="default", help="Nation name.")
-def ask(request: str, nation_name: str) -> None:
-    """Hand the king's request to the nation. Scout decomposes; nation executes."""
-    config = AnthillConfig.load()
-    nation = load_nation(nation_name, config.home)
-    if nation is None or not nation.agents:
-        console.print(
-            f"[red]No citizens in nation '{nation_name}'.[/red] "
-            f"Run [cyan]anthill spawn --count 3[/cyan] first."
-        )
-        return
+def _finalize_ask(nation: Nation, nation_name: str, config: AnthillConfig, result, request: str) -> None:
+    """Persist + render the outcome of an ask. Shared by `ask` and `resume`.
 
-    result = asyncio.run(nation.ask(request))
+    Both entry points need the same downstream effects — write the
+    last-ask record so `rate` has a target, append history, log usage,
+    and print the per-subtask result block. Keeping this in one place
+    means resume can never silently drift from ask in what gets stored.
+    """
     save_nation(nation, config.home)
 
     # Record the king's most recent request so `anthill rate` has a target.
@@ -398,6 +396,8 @@ def ask(request: str, nation_name: str) -> None:
 
     console.print(f"[dim]request[/dim]  {request}")
     console.print(f"[dim]plan[/dim]     {len(result.plan)} subtask(s)")
+    if result.ask_id:
+        console.print(f"[dim]ask_id[/dim]   {result.ask_id}")
     if len(result.plan) > 1:
         console.print()
         console.print("[bold]Plan[/bold]")
@@ -451,7 +451,144 @@ def ask(request: str, nation_name: str) -> None:
 
     if not result.succeeded:
         console.print("[bold red]Request did not complete successfully.[/bold red]")
-        console.print("Use [cyan]anthill trails[/cyan] to see how the failures landed in pheromones.")
+        console.print(
+            "Use [cyan]anthill trails[/cyan] to see how the failures landed in pheromones."
+        )
+        if result.ask_id:
+            console.print(
+                f"Resume with [cyan]anthill resume {result.ask_id}[/cyan]."
+            )
+
+
+@cli.command()
+@click.argument("request")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def ask(request: str, nation_name: str) -> None:
+    """Hand the king's request to the nation. Scout decomposes; nation executes."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None or not nation.agents:
+        console.print(
+            f"[red]No citizens in nation '{nation_name}'.[/red] "
+            f"Run [cyan]anthill spawn --count 3[/cyan] first."
+        )
+        return
+
+    result = asyncio.run(
+        nation.ask(request, nation_dir=nation_dir(config.home, nation_name))
+    )
+    _finalize_ask(nation, nation_name, config, result, request)
+
+
+@cli.command("resume")
+@click.argument("ask_id")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def resume_cmd(ask_id: str, nation_name: str) -> None:
+    """Resume an interrupted ask from its inflight checkpoint."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None or not nation.agents:
+        console.print(
+            f"[red]No citizens in nation '{nation_name}'.[/red] "
+            f"Run [cyan]anthill spawn --count 3[/cyan] first."
+        )
+        return
+
+    inflight = load_inflight(ask_id, nation_dir(config.home, nation_name))
+    if inflight is None:
+        console.print(f"[red]No inflight ask matching '{ask_id}'.[/red]")
+        console.print("List with [cyan]anthill inflight list[/cyan].")
+        return
+
+    done = len(inflight.completed)
+    total = len(inflight.plan.subtasks)
+    console.print(
+        f"[dim]resuming[/dim] {inflight.ask_id}  "
+        f"[dim]({done}/{total} subtasks already done)[/dim]"
+    )
+    result = asyncio.run(
+        nation.ask(
+            inflight.request,
+            resume=inflight,
+            nation_dir=nation_dir(config.home, nation_name),
+        )
+    )
+    _finalize_ask(nation, nation_name, config, result, inflight.request)
+
+
+@cli.group()
+def inflight() -> None:
+    """Inspect and manage in-flight (interrupted) asks."""
+
+
+@inflight.command("list")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def inflight_list(nation_name: str) -> None:
+    """List all in-flight checkpoints for the nation."""
+    config = AnthillConfig.load()
+    asks = list_inflight(nation_dir(config.home, nation_name))
+    if not asks:
+        console.print("[dim]No in-flight asks. All clean.[/dim]")
+        return
+
+    import datetime
+
+    table = Table(title=f"In-flight asks — {nation_name}")
+    table.add_column("ID", style="cyan")
+    table.add_column("Started", style="dim")
+    table.add_column("Done", justify="right")
+    table.add_column("Request")
+    for a in asks:
+        when = datetime.datetime.fromtimestamp(a.started_at).strftime("%m-%d %H:%M")
+        total = len(a.plan.subtasks)
+        done = len(a.completed)
+        preview = a.request if len(a.request) <= 60 else a.request[:57] + "..."
+        table.add_row(a.ask_id, when, f"{done}/{total}", preview)
+    console.print(table)
+
+
+@inflight.command("show")
+@click.argument("ask_id")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def inflight_show(ask_id: str, nation_name: str) -> None:
+    """Show one in-flight ask: plan + which subtasks have completed."""
+    config = AnthillConfig.load()
+    inf = load_inflight(ask_id, nation_dir(config.home, nation_name))
+    if inf is None:
+        console.print(f"[red]No in-flight ask matching '{ask_id}'.[/red]")
+        return
+
+    import datetime
+    when = datetime.datetime.fromtimestamp(inf.started_at).strftime("%Y-%m-%d %H:%M:%S")
+    console.print(f"[bold]Ask[/bold] {inf.ask_id}  [dim]({when})[/dim]")
+    console.print(f"[bold]Request[/bold] {inf.request}")
+    console.print()
+    done = inf.completed_indices()
+    for i, sub in enumerate(inf.plan.subtasks):
+        if i in done:
+            icon = "[green]✓[/green]"
+        else:
+            icon = "[dim]·[/dim]"
+        deps = (
+            f" [dim](depends on: {', '.join(sub.depends_on)})[/dim]"
+            if sub.depends_on
+            else ""
+        )
+        console.print(f"  {icon} [cyan]#{i + 1}[/cyan] [magenta]{sub.task_type}[/magenta]{deps}")
+    console.print()
+    console.print(f"Resume with [cyan]anthill resume {inf.ask_id}[/cyan].")
+
+
+@inflight.command("clear")
+@click.argument("ask_id")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def inflight_clear(ask_id: str, nation_name: str) -> None:
+    """Drop an in-flight checkpoint without resuming it."""
+    config = AnthillConfig.load()
+    if clear_inflight(ask_id, nation_dir(config.home, nation_name)):
+        console.print(f"[green]Cleared[/green] in-flight ask {ask_id}.")
+    else:
+        console.print(f"[red]No in-flight ask matching '{ask_id}'.[/red]")
 
 
 @cli.command()

@@ -21,7 +21,13 @@ from anthill.core.culture import Culture
 from anthill.core.episodic import find_similar, format_similar_for_scout
 from anthill.core.judge import judge_enabled, judge_output
 from anthill.core.workflows import format_templates_for_scout, load_workflows
-from anthill.core.executor import SubtaskOutcome, execute_plan
+from anthill.core.executor import ProgressEvent, SubtaskOutcome, execute_plan
+from anthill.core.inflight import (
+    CompletedStep,
+    InflightAsk,
+    clear_inflight,
+    save_inflight,
+)
 from anthill.core.pheromone import PheromoneTrail
 from anthill.core.plan_cache import CachedPlan, lookup as cache_lookup, remember as cache_remember
 from anthill.core.router import Router, RouterConfig
@@ -42,6 +48,7 @@ class AskResult:
     request: str
     plan: Plan
     outcomes: list[SubtaskOutcome]
+    ask_id: str | None = None  # filled when checkpoint was active
 
     @property
     def final_output(self) -> str:
@@ -160,7 +167,14 @@ class Nation:
         self.culture.record(task_type)
         return result
 
-    async def ask(self, request: str, *, on_progress=None) -> AskResult:
+    async def ask(
+        self,
+        request: str,
+        *,
+        on_progress=None,
+        resume: InflightAsk | None = None,
+        nation_dir: Path | None = None,
+    ) -> AskResult:
         """Execute a natural-language request from the king.
 
         The Scout decomposes the request into typed subtasks; each subtask
@@ -175,25 +189,118 @@ class Nation:
         on_progress: optional async callback receiving ProgressEvent
         objects as each subtask starts/retries/finishes. Use it to drive
         live UI; pass None for headless callers.
+
+        resume: when provided, treat that InflightAsk's completed steps
+        as already done; only the missing subtasks run. The plan from
+        the resume payload is used as-is (no re-planning) so that an
+        ask is reproducible across restarts.
+
+        nation_dir: where to write the in-flight checkpoint file. When
+        omitted, no checkpoint is written — useful for tests and for
+        callers that do their own persistence.
         """
-        cached = cache_lookup(request, self.plan_cache)
-        if cached is not None:
-            plan = cached.plan
-            self.last_ask_cache_hit = True
-        else:
-            similar_block = self._similar_past_block(request)
-            workflow_block = self._workflow_templates_block()
-            episodic_context = "\n\n".join(b for b in (workflow_block, similar_block) if b)
-            scout = Scout(model=self.scout_model)
-            plan = await scout.plan(
-                request,
-                known_task_types=self.culture.known_task_types(),
-                episodic_context=episodic_context,
-            )
-            cache_remember(request, plan, self.plan_cache)
+        if resume is not None:
+            plan = resume.plan
             self.last_ask_cache_hit = False
-        outcomes = await execute_plan(plan, self, on_progress=on_progress)
-        return AskResult(request=request, plan=plan, outcomes=outcomes)
+            inflight = resume
+        else:
+            cached = cache_lookup(request, self.plan_cache)
+            if cached is not None:
+                plan = cached.plan
+                self.last_ask_cache_hit = True
+            else:
+                similar_block = self._similar_past_block(request)
+                workflow_block = self._workflow_templates_block()
+                episodic_context = "\n\n".join(b for b in (workflow_block, similar_block) if b)
+                scout = Scout(model=self.scout_model)
+                plan = await scout.plan(
+                    request,
+                    known_task_types=self.culture.known_task_types(),
+                    episodic_context=episodic_context,
+                )
+                cache_remember(request, plan, self.plan_cache)
+                self.last_ask_cache_hit = False
+            inflight = InflightAsk.new(request=request, plan=plan) if nation_dir else None
+
+        # Pre-seed the executor with already-completed steps (resume only).
+        resume_state: dict[int, SubtaskOutcome] | None = None
+        if resume is not None and resume.completed:
+            resume_state = {}
+            for step in resume.completed:
+                if step.index < 0 or step.index >= len(plan.subtasks):
+                    continue  # plan/step mismatch — ignore the dangling entry
+                synthetic = TaskResult(
+                    task_id=f"resume-{step.index}",
+                    agent_id=step.agent_id,
+                    task_type=step.task_type,
+                    output=step.output,
+                    success_score=step.success_score,
+                    duration_seconds=step.duration_seconds,
+                    input_tokens=step.input_tokens,
+                    output_tokens=step.output_tokens,
+                )
+                outcome = SubtaskOutcome(
+                    subtask=plan.subtasks[step.index],
+                    attempts=[synthetic],
+                    status="ok",
+                    started_at=step.started_at,
+                    ended_at=step.ended_at,
+                )
+                resume_state[step.index] = outcome
+
+        # Write the initial checkpoint before any work starts so a crash
+        # during the very first subtask still leaves something resumable.
+        if nation_dir is not None and inflight is not None:
+            save_inflight(inflight, nation_dir)
+
+        async def _checkpointing_progress(event: ProgressEvent) -> None:
+            if on_progress is not None:
+                await on_progress(event)
+            if (
+                inflight is None
+                or nation_dir is None
+                or event.kind != "finished"
+                or event.outcome.status != "ok"
+                or event.outcome.final is None
+            ):
+                return
+            final = event.outcome.final
+            inflight.record_completed(
+                CompletedStep(
+                    index=event.index,
+                    task_type=event.subtask.task_type,
+                    output=str(final.output),
+                    agent_id=final.agent_id,
+                    started_at=event.outcome.started_at or 0.0,
+                    ended_at=event.outcome.ended_at or 0.0,
+                    attempts=len(event.outcome.attempts),
+                    success_score=final.success_score,
+                    input_tokens=final.input_tokens,
+                    output_tokens=final.output_tokens,
+                )
+            )
+            save_inflight(inflight, nation_dir)
+
+        progress_cb = _checkpointing_progress if inflight is not None else on_progress
+        outcomes = await execute_plan(
+            plan,
+            self,
+            on_progress=progress_cb,
+            resume_state=resume_state,
+        )
+
+        # Whole ask done — drop the checkpoint regardless of per-subtask
+        # status. Resume is for "didn't reach the cleanup", not "retry
+        # failures within an ask that ran to completion".
+        if nation_dir is not None and inflight is not None:
+            clear_inflight(inflight.ask_id, nation_dir)
+
+        return AskResult(
+            request=request,
+            plan=plan,
+            outcomes=outcomes,
+            ask_id=inflight.ask_id if inflight is not None else None,
+        )
 
     def _similar_past_block(self, request: str) -> str:
         """Pull a small context block of similar past asks, if history is available."""

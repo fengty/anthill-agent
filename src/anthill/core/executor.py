@@ -318,6 +318,7 @@ async def execute_plan(
     *,
     retry: RetryPolicy | None = None,
     on_progress: ProgressCallback | None = None,
+    resume_state: dict[int, SubtaskOutcome] | None = None,
 ) -> list[SubtaskOutcome]:
     """Run a Plan with retries, citizen rotation, and graceful skipping.
 
@@ -332,6 +333,14 @@ async def execute_plan(
     so callers can do I/O (print to terminal, push to a queue) without
     blocking the executor.
 
+    If `resume_state` is provided, each pre-completed outcome it carries
+    is treated as already-done: the subtask is not re-run, its output is
+    made available as context for downstream subtasks, and a single
+    'finished' ProgressEvent is emitted so UI consumers can render it.
+    Only outcomes with status='ok' are honored; the executor never
+    pre-loads failed/skipped state because resume's whole purpose is to
+    retry what didn't finish.
+
     Returns one SubtaskOutcome per subtask, in plan order.
     """
     policy = retry or RetryPolicy()
@@ -341,9 +350,35 @@ async def execute_plan(
     }
     latest_by_type: dict[str, "TaskResult"] = {}
 
+    resumed_indices: set[int] = set()
+    if resume_state:
+        for i, pre in resume_state.items():
+            if pre.status != "ok" or pre.final is None:
+                # Defensive: refuse to honor anything that isn't a clean win.
+                continue
+            outcomes[i] = pre
+            latest_by_type[plan.subtasks[i].task_type] = pre.final
+            resumed_indices.add(i)
+
+    # Surface the resumed steps as 'finished' events up front so consumers
+    # render them as done before we start working on the new waves.
+    if on_progress is not None:
+        for i in sorted(resumed_indices):
+            await on_progress(
+                ProgressEvent(
+                    kind="finished",
+                    index=i,
+                    subtask=plan.subtasks[i],
+                    outcome=outcomes[i],
+                )
+            )
+
     if policy.parallel:
         waves = _waves_from_topological_order(plan, order)
         for wave in waves:
+            pending = [i for i in wave if i not in resumed_indices]
+            if not pending:
+                continue
             await asyncio.gather(
                 *(
                     _run_one_subtask(
@@ -356,11 +391,13 @@ async def execute_plan(
                         policy,
                         on_progress,
                     )
-                    for i in wave
+                    for i in pending
                 )
             )
     else:
         for i in order:
+            if i in resumed_indices:
+                continue
             await _run_one_subtask(
                 i,
                 plan.subtasks[i],

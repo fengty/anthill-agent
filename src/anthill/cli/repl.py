@@ -174,7 +174,11 @@ async def _handle_ask(
                     f"[dim]failed after {len(outcome.attempts)} attempt(s)[/dim]"
                 )
 
-    result = await nation.ask(request, on_progress=on_progress)
+    result = await nation.ask(
+        request,
+        on_progress=on_progress,
+        nation_dir=nation_dir(config.home, nation.name),
+    )
     save_nation(nation, config.home)
 
     pairs = [
