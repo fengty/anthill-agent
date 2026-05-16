@@ -22,7 +22,6 @@ TUI is v0.2+ territory; today's priority is "you type, it works."
 from __future__ import annotations
 
 import asyncio
-import sys
 
 from rich.console import Console
 from rich.table import Table
