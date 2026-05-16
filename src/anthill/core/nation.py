@@ -19,6 +19,7 @@ from pathlib import Path
 from anthill.core.agent import Agent, TaskResult
 from anthill.core.culture import Culture
 from anthill.core.episodic import find_similar, format_similar_for_scout
+from anthill.core.judge import judge_enabled, judge_output
 from anthill.core.workflows import format_templates_for_scout, load_workflows
 from anthill.core.executor import SubtaskOutcome, execute_plan
 from anthill.core.pheromone import PheromoneTrail
@@ -91,6 +92,9 @@ class Nation:
     last_ask_cache_hit: bool = field(default=False, repr=False)
     # Path to history.jsonl so ask() can pull similar past examples.
     history_path: Path | None = field(default=None, repr=False)
+    # Judge config (LLM-based quality scoring).
+    use_judge: bool = field(default_factory=judge_enabled)
+    judge_model: str = "deepseek-chat"
 
     def spawn(
         self,
@@ -129,13 +133,22 @@ class Nation:
         *,
         forbid: set[str] | None = None,
     ) -> TaskResult:
-        """Execute one typed task: route, run, deposit pheromone.
+        """Execute one typed task: route, run, judge, deposit pheromone.
 
         `forbid` lets a caller exclude specific citizens — typically used on
         retry to avoid the citizen that just failed.
+
+        When use_judge is true, the LLM judge replaces the worker's binary
+        success score with a [0, 1] quality score. Pheromones now reinforce
+        quality rather than mere liveness.
         """
         agent = self.router.assign(task_type, forbid=forbid)
         result = await agent.execute(task_type, prompt, system=self._compose_system(agent))
+
+        if self.use_judge and result.success_score > 0:
+            verdict = await judge_output(prompt, str(result.output), model=self.judge_model)
+            result.success_score = verdict.score
+
         self.pheromones.deposit(
             agent_id=result.agent_id,
             task_type=result.task_type,
