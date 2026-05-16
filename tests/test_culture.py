@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from anthill.core.culture import Culture, load_culture, save_culture
 from anthill.core.scout import build_system_prompt

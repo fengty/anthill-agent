@@ -15,12 +15,6 @@ import pytest
 from anthill.plugins.documents import DocxReadPlugin, PdfReadPlugin, XlsxReadPlugin
 
 
-@pytest.fixture
-def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("ANTHILL_PLUGIN_WORKSPACE", str(tmp_path))
-    return tmp_path
-
-
 def test_pdf_read_missing_file(workspace: Path) -> None:
     """Either pypdf is installed and we get 'no such file', or it isn't
     and we get the install hint. Either is a safe-fail."""

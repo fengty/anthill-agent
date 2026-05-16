@@ -2,18 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
-import pytest
 from click.testing import CliRunner
 
 from anthill.cli.channel_cmd import build_channel, channel as channel_group
 from anthill.core.userconfig import load_config, load_secrets
-
-
-@pytest.fixture(autouse=True)
-def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ANTHILL_HOME", str(tmp_path))
 
 
 def test_list_empty_shows_hint() -> None:

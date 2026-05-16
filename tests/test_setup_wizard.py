@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from anthill.cli.providers_meta import PROVIDER_PRESETS
-from anthill.cli.setup import run_wizard
+from anthill.cli.setup_cmd import run_wizard
 
 
 @pytest.fixture(autouse=True)
@@ -32,7 +32,7 @@ def test_custom_preset_needs_base_url() -> None:
 
 
 def test_wizard_refuses_non_tty(monkeypatch: pytest.MonkeyPatch) -> None:
-    with patch("anthill.cli.setup._is_tty", return_value=False):
+    with patch("anthill.cli.setup_cmd._is_tty", return_value=False):
         code = run_wizard()
     assert code == 2
 
@@ -56,8 +56,8 @@ def test_wizard_aborts_when_existing_models_and_user_says_no(
             ],
         )
     )
-    with patch("anthill.cli.setup._is_tty", return_value=True), \
-         patch("anthill.cli.setup._prompt_yes_no", return_value=False):
+    with patch("anthill.cli.setup_cmd._is_tty", return_value=True), \
+         patch("anthill.cli.setup_cmd._prompt_yes_no", return_value=False):
         code = run_wizard()
     assert code == 0
 
@@ -79,11 +79,11 @@ def test_wizard_flow_writes_model_and_nation(
                 return v
         return default or ""
 
-    with patch("anthill.cli.setup._is_tty", return_value=True), \
-         patch("anthill.cli.setup._pick_provider", return_value="deepseek"), \
-         patch("anthill.cli.setup._prompt", side_effect=fake_prompt), \
-         patch("anthill.cli.setup._prompt_secret", return_value="sk-fake-key"), \
-         patch("anthill.cli.setup._prompt_yes_no", return_value=True):
+    with patch("anthill.cli.setup_cmd._is_tty", return_value=True), \
+         patch("anthill.cli.setup_cmd._pick_provider", return_value="deepseek"), \
+         patch("anthill.cli.setup_cmd._prompt", side_effect=fake_prompt), \
+         patch("anthill.cli.setup_cmd._prompt_secret", return_value="sk-fake-key"), \
+         patch("anthill.cli.setup_cmd._prompt_yes_no", return_value=True):
         code = run_wizard()
     assert code == 0
 

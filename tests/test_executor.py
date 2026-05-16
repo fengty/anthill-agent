@@ -5,7 +5,7 @@ We avoid live LLM calls. For execute_plan, we stub the nation's run method.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import pytest
 

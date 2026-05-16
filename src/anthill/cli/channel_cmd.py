@@ -172,7 +172,7 @@ def channel_add(
 
     # Interactive path when key fields are missing.
     if not name or not kind:
-        from anthill.cli.setup import _is_tty
+        from anthill.cli.setup_cmd import _is_tty
 
         if not _is_tty():
             console.print(

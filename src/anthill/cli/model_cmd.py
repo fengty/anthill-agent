@@ -21,7 +21,7 @@ from rich.console import Console
 from rich.table import Table
 
 from anthill.cli.providers_meta import PROVIDER_PRESETS
-from anthill.cli.setup import _add_model_interactive
+from anthill.cli.setup_cmd import _add_model_interactive
 from anthill.core.userconfig import (
     ModelEntry,
     load_config,
@@ -92,7 +92,7 @@ def model_add(
             console.print(
                 "[yellow]Partial flags — falling back to interactive prompts for the rest.[/yellow]"
             )
-        from anthill.cli.setup import _is_tty
+        from anthill.cli.setup_cmd import _is_tty
         if not _is_tty():
             console.print(
                 "[red]Non-interactive: pass --provider --model --key (and --base-url for custom) "

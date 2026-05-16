@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -15,11 +14,6 @@ from anthill.core.userconfig import (
     save_config,
     save_secrets,
 )
-
-
-@pytest.fixture(autouse=True)
-def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ANTHILL_HOME", str(tmp_path))
 
 
 def test_doctor_runs_without_crash(capsys: pytest.CaptureFixture[str]) -> None:

@@ -4,16 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from click.testing import CliRunner
 
 from anthill.cli.nation_cmd import nation as nation_group
 from anthill.core.persistence import load_nation, nation_dir
-
-
-@pytest.fixture(autouse=True)
-def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ANTHILL_HOME", str(tmp_path))
 
 
 def test_list_empty_shows_hint() -> None:

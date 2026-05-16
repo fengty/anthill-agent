@@ -107,7 +107,7 @@ def cli(ctx: click.Context) -> None:
 @click.option("--force", is_flag=True, help="Run even if models are already configured.")
 def setup(force: bool) -> None:
     """First-run wizard: pick a model, found a nation, optionally add an IM channel."""
-    from anthill.cli.setup import run_wizard
+    from anthill.cli.setup_cmd import run_wizard
     raise SystemExit(run_wizard(force=force))
 
 

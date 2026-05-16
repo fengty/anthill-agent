@@ -5,19 +5,12 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-import pytest
 
 from anthill.plugins.filesystem import (
     FileListPlugin,
     FileReadPlugin,
     FileWritePlugin,
 )
-
-
-@pytest.fixture
-def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("ANTHILL_PLUGIN_WORKSPACE", str(tmp_path))
-    return tmp_path
 
 
 def test_write_then_read(workspace: Path) -> None:
