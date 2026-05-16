@@ -74,6 +74,11 @@ class Agent:
     # lets a future `anthill citizen family` walk an ancestor tree.
     parent_id: str | None = None
     generation: int = 0
+    # v0.7.3+: which mutation produced this child from its parent.
+    # Empty / None for founder citizens. Used by
+    # reproduction.choose_mutation_weighted to make future reproductions
+    # bias toward mutations whose offspring have done well historically.
+    mutation_from_parent: str | None = None
     # Quarantine: v0.5+. Set by the immune system when the citizen's
     # recent failures cross a threshold. Distinct from retirement:
     # retirement is "user / lifecycle says this citizen is done";

@@ -227,29 +227,137 @@ def mutations_for_nation(nation: "Nation") -> list[Mutation]:
 # --- reproduction --------------------------------------------------------
 
 
+# v0.7.3 mutation chooser tunables.
+# - epsilon: with this probability we ignore history and pick uniformly,
+#   so a slightly-better mutation never permanently starves the others.
+# - cold_start_threshold: until we have at least this many observations
+#   per mutation, history is too noisy; default to uniform.
+MUTATION_EPSILON = 0.2
+MUTATION_COLD_START_THRESHOLD = 3
+
+
+def evaluate_mutation_outcomes(
+    nation: "Nation",
+    criteria: ReproductionCriteria | None = None,
+) -> dict[str, dict[str, float]]:
+    """For each mutation type observed on existing children, summarize fitness.
+
+    Returns a dict like:
+      {"persona-sharpen": {"count": 4, "avg_fitness": 2.3, "alive_rate": 1.0},
+       "model-swap":      {"count": 2, "avg_fitness": 0.5, "alive_rate": 0.5}}
+
+    Used by `choose_mutation_weighted` to bias future picks. "Alive" here
+    means the child is not retired or quarantined — a kill signal short
+    of measuring quality.
+    """
+    crit = criteria or ReproductionCriteria()
+    by_mutation: dict[str, list[FitnessScore]] = {}
+    alive_by_mutation: dict[str, list[bool]] = {}
+    for agent in nation.agents:
+        mut = getattr(agent, "mutation_from_parent", None)
+        if not mut:
+            continue
+        by_mutation.setdefault(mut, []).append(score_citizen(agent, nation, crit))
+        alive_by_mutation.setdefault(mut, []).append(
+            not (agent.is_retired or agent.is_quarantined)
+        )
+
+    out: dict[str, dict[str, float]] = {}
+    for mut, scores in by_mutation.items():
+        count = len(scores)
+        avg_fit = sum(s.score for s in scores) / count if count else 0.0
+        alives = alive_by_mutation.get(mut, [])
+        alive_rate = sum(1 for a in alives if a) / len(alives) if alives else 0.0
+        out[mut] = {
+            "count": float(count),
+            "avg_fitness": avg_fit,
+            "alive_rate": alive_rate,
+        }
+    return out
+
+
+def choose_mutation_weighted(
+    moves: list[Mutation],
+    nation: "Nation",
+    *,
+    rng: random.Random,
+    epsilon: float = MUTATION_EPSILON,
+) -> Mutation:
+    """ε-greedy weighted pick from the available mutations.
+
+    With probability `epsilon` we explore (uniform random). Otherwise
+    we exploit: weight each mutation by `avg_fitness * alive_rate` of
+    historical children. Mutations we've never tried still get the
+    average weight so they aren't starved at cold-start. Mutations
+    with too-few observations (under cold_start_threshold) also fall
+    back to the average — small samples are noisy.
+
+    Why ε-greedy and not Thompson / UCB: those need either Bayesian
+    priors per mutation or per-mutation variance, both of which are
+    overkill at the population sizes we expect (5–20 citizens per
+    nation). ε-greedy is one parameter, predictable, easy to inspect.
+    """
+    if not moves:
+        raise ValueError("choose_mutation_weighted called with empty moves")
+    if rng.random() < epsilon:
+        return rng.choice(moves)
+
+    outcomes = evaluate_mutation_outcomes(nation)
+    weights: list[float] = []
+    sample_sizes: list[int] = []
+    for m in moves:
+        stat = outcomes.get(m.name)
+        if not stat or stat["count"] < MUTATION_COLD_START_THRESHOLD:
+            # Not enough data — placeholder, replaced below with avg weight
+            weights.append(-1.0)
+            sample_sizes.append(int(stat["count"]) if stat else 0)
+            continue
+        # Combined score: how strong AND how alive. Both bounded so the
+        # combined weight stays modest, preserving exploration potential.
+        score = max(0.01, stat["avg_fitness"] * max(0.1, stat["alive_rate"]))
+        weights.append(score)
+        sample_sizes.append(int(stat["count"]))
+
+    # Fill cold-start placeholders with the AVERAGE of observed weights
+    # (so an untried mutation isn't penalized for being untried).
+    observed = [w for w in weights if w >= 0]
+    fill = sum(observed) / len(observed) if observed else 1.0
+    weights = [fill if w < 0 else w for w in weights]
+
+    return rng.choices(moves, weights=weights, k=1)[0]
+
+
 def reproduce(
     nation: "Nation",
     parent: "Agent",
     *,
     mutation: Mutation | None = None,
     rng: random.Random | None = None,
+    use_history: bool = True,
 ) -> Lineage:
     """Spawn a child of `parent` and add it to the nation.
 
-    When `mutation` is None we pick uniformly at random from
-    `mutations_for_nation`. Pass an explicit Mutation when you want
-    deterministic behavior (e.g. CLI flag, tests).
+    When `mutation` is None and `use_history` is True (default), we use
+    `choose_mutation_weighted` — ε-greedy biased by past offspring's
+    fitness. Pass `mutation=` for deterministic behavior (CLI flag, tests),
+    or `use_history=False` to fall back to the v0.3.1 uniform-random pick.
     """
     from anthill.core.agent import Agent  # local import — avoids cycles
     rng = rng or random.Random()
     moves = mutations_for_nation(nation)
-    chosen = mutation or rng.choice(moves)
+    if mutation is not None:
+        chosen = mutation
+    elif use_history:
+        chosen = choose_mutation_weighted(moves, nation, rng=rng)
+    else:
+        chosen = rng.choice(moves)
 
     child = Agent(
         model=parent.model,  # default; mutation may overwrite
         persona=parent.persona,
         parent_id=parent.id,
         generation=parent.generation + 1,
+        mutation_from_parent=chosen.name,
     )
     chosen.apply(parent, child)
     nation.agents.append(child)
@@ -342,6 +450,8 @@ __all__ = [
     "DEFAULT_MUTATIONS",
     "DEFAULT_MIN_FITNESS",
     "DEFAULT_MIN_TASK_TYPES",
+    "MUTATION_EPSILON",
+    "MUTATION_COLD_START_THRESHOLD",
     "score_citizen",
     "rank_citizens",
     "mutations_for_nation",
@@ -349,4 +459,6 @@ __all__ = [
     "auto_reproduce",
     "ancestors_of",
     "descendants_of",
+    "evaluate_mutation_outcomes",
+    "choose_mutation_weighted",
 ]

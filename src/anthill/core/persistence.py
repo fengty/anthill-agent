@@ -40,6 +40,7 @@ def save_nation(nation: Nation, home: Path) -> Path:
             "generation": a.generation,
             "quarantined_at": a.quarantined_at,
             "quarantine_reason": a.quarantine_reason,
+            "mutation_from_parent": a.mutation_from_parent,
         }
         for a in nation.agents
     ]
@@ -117,6 +118,8 @@ def load_nation(name: str, home: Path) -> Nation | None:
                 )
             if "quarantine_reason" in record:
                 kwargs["quarantine_reason"] = record["quarantine_reason"]
+            if "mutation_from_parent" in record:
+                kwargs["mutation_from_parent"] = record["mutation_from_parent"]
             agents.append(Agent(**kwargs))
 
     pheromones = PheromoneTrail()
