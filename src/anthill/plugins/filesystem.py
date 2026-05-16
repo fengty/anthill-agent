@@ -29,6 +29,11 @@ def _workspace_root() -> Path:
     return Path.home() / ".anthill" / "workspace"
 
 
+def resolve_in_workspace(rel_path: str) -> Path:
+    """Public API: same as _resolve_safely, exported for other plugins."""
+    return _resolve_safely(rel_path)
+
+
 def _resolve_safely(rel_path: str) -> Path:
     """Return absolute path inside workspace, or raise if escape attempted."""
     root = _workspace_root()
