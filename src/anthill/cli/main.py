@@ -101,6 +101,12 @@ def doctor() -> None:
     raise SystemExit(run_doctor())
 
 
+# 'anthill nation ...' subcommand group.
+from anthill.cli.nation_cmd import nation as _nation_group  # noqa: E402
+
+cli.add_command(_nation_group)
+
+
 @cli.command()
 @click.argument("name", default="default")
 def init(name: str) -> None:
