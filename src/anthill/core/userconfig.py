@@ -219,8 +219,29 @@ def load_secrets() -> dict[str, str]:
         return {}
     with path.open("rb") as fh:
         data = tomllib.load(fh)
-    # The file is a flat string-keyed table.
-    return {k: str(v) for k, v in data.items() if isinstance(v, (str, int, float))}
+    # The file is a flat string-keyed table — but dotted keys like
+    # 'model.foo' get parsed by TOML as nested tables. Flatten back to
+    # the original dotted form on read.
+    return dict(_flatten_strings(data))
+
+
+def _flatten_strings(data: dict, prefix: str = "") -> "list[tuple[str, str]]":
+    out: list[tuple[str, str]] = []
+    for k, v in data.items():
+        full = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            out.extend(_flatten_strings(v, full))
+        elif isinstance(v, (str, int, float)):
+            out.append((full, str(v)))
+    return out
+
+
+def _quote_key(key: str) -> str:
+    """Quote a TOML key so dots inside don't become nested-table separators."""
+    if key and all(c.isalnum() or c == "_" or c == "-" for c in key):
+        return key
+    escaped = key.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def save_secrets(secrets: dict[str, str]) -> Path:
@@ -233,7 +254,7 @@ def save_secrets(secrets: dict[str, str]) -> Path:
         "",
     ]
     for k, v in sorted(secrets.items()):
-        lines.append(f"{k} = {_emit_value(v)}")
+        lines.append(f"{_quote_key(k)} = {_emit_value(v)}")
     text = "\n".join(lines).rstrip() + "\n"
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text)
