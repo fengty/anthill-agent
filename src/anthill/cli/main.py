@@ -46,6 +46,7 @@ from anthill.core.history import (
 from anthill.core.costs import load_usage, summarise
 from anthill.core.facts import derive_facts, read_facts, write_facts
 from anthill.core.workflows import load_workflows, mine_workflows, save_workflows
+from anthill.plugins import default_registry
 from anthill.core.power import compute_ages, compute_power
 from anthill.core.snapshot import export_nation, import_nation
 from anthill.core.style_learner import suggest_house_style
@@ -418,6 +419,48 @@ def ask(request: str, nation_name: str) -> None:
     if not result.succeeded:
         console.print("[bold red]Request did not complete successfully.[/bold red]")
         console.print("Use [cyan]anthill trails[/cyan] to see how the failures landed in pheromones.")
+
+
+@cli.group()
+def plugins() -> None:
+    """Inspect and test built-in plugins (web_fetch, web_search, ...)."""
+
+
+@plugins.command("list")
+def plugins_list() -> None:
+    """List all registered plugins."""
+    console.print("[bold]Registered plugins[/bold]")
+    console.print(default_registry.describe())
+
+
+@plugins.command("call")
+@click.argument("name")
+@click.option("--arg", "args", multiple=True, help="key=value (repeatable)")
+def plugins_call(name: str, args: tuple[str, ...]) -> None:
+    """Call a plugin by name with key=value args.
+
+    Example:
+      anthill plugins call web_search --arg "query=anthill agent github"
+      anthill plugins call web_fetch  --arg "url=https://example.com"
+    """
+    plugin = default_registry.get(name)
+    if plugin is None:
+        console.print(f"[red]No plugin named '{name}'.[/red]")
+        return
+    kwargs: dict = {}
+    for raw in args:
+        if "=" not in raw:
+            console.print(f"[yellow]Skipping malformed arg: {raw!r}[/yellow]")
+            continue
+        k, v = raw.split("=", 1)
+        kwargs[k.strip()] = v
+    import asyncio as _asyncio
+    result = _asyncio.run(plugin.call(**kwargs))
+    if result.ok:
+        console.print(f"[green]ok[/green]  metadata={result.metadata}")
+        console.print(str(result.output)[:2000])
+    else:
+        console.print(f"[red]error: {result.error}[/red]")
 
 
 @cli.group()
