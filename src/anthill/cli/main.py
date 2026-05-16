@@ -421,6 +421,36 @@ def ask(request: str, nation_name: str) -> None:
         console.print("Use [cyan]anthill trails[/cyan] to see how the failures landed in pheromones.")
 
 
+@cli.command()
+@click.option("--host", default=None, help="Bind host (default 0.0.0.0).")
+@click.option("--port", default=None, type=int, help="Bind port (default 8765).")
+@click.option("--nation", "nation_name", default=None, help="Which nation to serve.")
+def serve(host: str | None, port: int | None, nation_name: str | None) -> None:
+    """Run the IM webhook daemon (FastAPI + uvicorn).
+
+    Configure inbound channels via env vars before launching:
+      ANTHILL_LARK_APP_ID
+      ANTHILL_LARK_APP_SECRET
+      ANTHILL_LARK_VERIFICATION_TOKEN
+
+    Then point your Lark bot's event subscription URL to:
+      http://<your-host>:<port>/lark/webhook
+    """
+    try:
+        from anthill.channels.daemon import DaemonConfig, serve as _serve
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        return
+    cfg = DaemonConfig.from_env()
+    if host is not None:
+        cfg.host = host
+    if port is not None:
+        cfg.port = port
+    if nation_name is not None:
+        cfg.nation_name = nation_name
+    _serve(cfg)
+
+
 @cli.group()
 def plugins() -> None:
     """Inspect and test built-in plugins (web_fetch, web_search, ...)."""
