@@ -45,6 +45,7 @@ from anthill.core.history import (
 )
 from anthill.core.costs import load_usage, summarise
 from anthill.core.facts import derive_facts, read_facts, write_facts
+from anthill.core.workflows import load_workflows, mine_workflows, save_workflows
 from anthill.core.power import compute_ages, compute_power
 from anthill.core.snapshot import export_nation, import_nation
 from anthill.core.style_learner import suggest_house_style
@@ -410,6 +411,49 @@ def ask(request: str, nation_name: str) -> None:
     if not result.succeeded:
         console.print("[bold red]Request did not complete successfully.[/bold red]")
         console.print("Use [cyan]anthill trails[/cyan] to see how the failures landed in pheromones.")
+
+
+@cli.group()
+def workflows() -> None:
+    """Inspect or mine recurring plan shapes the nation has discovered."""
+
+
+@workflows.command("show")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def workflows_show(nation_name: str) -> None:
+    """List the nation's stored workflow templates."""
+    config = AnthillConfig.load()
+    if load_nation(nation_name, config.home) is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+    templates = load_workflows(nation_dir(config.home, nation_name))
+    if not templates:
+        console.print(
+            "[dim]No workflows mined yet. Run [cyan]anthill workflows mine[/cyan].[/dim]"
+        )
+        return
+    table = Table(title="Workflow templates")
+    table.add_column("Shape", style="magenta")
+    table.add_column("Runs", justify="right")
+    table.add_column("Success", justify="right", style="green")
+    for t in templates:
+        table.add_row(t.signature, str(t.occurrences), f"{t.success_rate:.0%}")
+    console.print(table)
+
+
+@workflows.command("mine")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+@click.option("--min-recurrence", default=2, help="Minimum repeats to count.")
+def workflows_mine(nation_name: str, min_recurrence: int) -> None:
+    """Recompute workflow templates from current history."""
+    config = AnthillConfig.load()
+    if load_nation(nation_name, config.home) is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+    history = load_history(nation_dir(config.home, nation_name))
+    templates = mine_workflows(history, min_recurrence=min_recurrence)
+    save_workflows(templates, nation_dir(config.home, nation_name))
+    console.print(f"[green]Mined {len(templates)} workflow template(s).[/green]")
 
 
 @cli.group()

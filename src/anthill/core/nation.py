@@ -19,6 +19,7 @@ from pathlib import Path
 from anthill.core.agent import Agent, TaskResult
 from anthill.core.culture import Culture
 from anthill.core.episodic import find_similar, format_similar_for_scout
+from anthill.core.workflows import format_templates_for_scout, load_workflows
 from anthill.core.executor import SubtaskOutcome, execute_plan
 from anthill.core.pheromone import PheromoneTrail
 from anthill.core.plan_cache import CachedPlan, lookup as cache_lookup, remember as cache_remember
@@ -164,11 +165,13 @@ class Nation:
             self.last_ask_cache_hit = True
         else:
             similar_block = self._similar_past_block(request)
+            workflow_block = self._workflow_templates_block()
+            episodic_context = "\n\n".join(b for b in (workflow_block, similar_block) if b)
             scout = Scout(model=self.scout_model)
             plan = await scout.plan(
                 request,
                 known_task_types=self.culture.known_task_types(),
-                episodic_context=similar_block,
+                episodic_context=episodic_context,
             )
             cache_remember(request, plan, self.plan_cache)
             self.last_ask_cache_hit = False
@@ -185,3 +188,10 @@ class Nation:
             return ""
         hits = find_similar(request, entries, top_k=3, min_score=0.2)
         return format_similar_for_scout(hits)
+
+    def _workflow_templates_block(self) -> str:
+        """Context block listing this nation's known workflow shapes."""
+        if self.history_path is None:
+            return ""
+        templates = load_workflows(self.history_path.parent)
+        return format_templates_for_scout(templates, top_k=5)
