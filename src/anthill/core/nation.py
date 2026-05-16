@@ -32,7 +32,7 @@ from anthill.core.inflight import (
 from anthill.core.pheromone import PheromoneTrail
 from anthill.core.plan_cache import CachedPlan, lookup as cache_lookup, remember as cache_remember
 from anthill.core.router import Router, RouterConfig
-from anthill.core.scout import Plan, Scout
+from anthill.core.scout import Plan, Scout, Subtask
 
 
 @dataclass
@@ -51,6 +51,7 @@ class AskResult:
     outcomes: list[SubtaskOutcome]
     ask_id: str | None = None  # filled when checkpoint was active
     budget: BudgetSnapshot | None = None  # filled when a Budget was set
+    replans: int = 0  # number of self-correction passes that ran
 
     @property
     def final_output(self) -> str:
@@ -184,6 +185,7 @@ class Nation:
         resume: InflightAsk | None = None,
         nation_dir: Path | None = None,
         budget: Budget | None = None,
+        max_replans: int = 1,
     ) -> AskResult:
         """Execute a natural-language request from the king.
 
@@ -303,6 +305,25 @@ class Nation:
             budget=tracker,
         )
 
+        # Self-correction loop. When a subtask fails terminally, ask Scout
+        # to salvage the plan around it and re-execute. Capped at
+        # max_replans so a chronically broken request can't loop forever.
+        # Skipped when a budget cap blew — replanning would just burn more
+        # budget on the same dead end.
+        replans_done = 0
+        while (
+            replans_done < max_replans
+            and any(o.status == "failed" for o in outcomes)
+            and (tracker is None or tracker.may_run_next() is None)
+        ):
+            replan_result = await self._try_replan(
+                request, plan, outcomes, on_progress=progress_cb, budget=tracker
+            )
+            if replan_result is None:
+                break
+            plan, outcomes = replan_result
+            replans_done += 1
+
         # Whole ask done — drop the checkpoint regardless of per-subtask
         # status. Resume is for "didn't reach the cleanup", not "retry
         # failures within an ask that ran to completion".
@@ -315,7 +336,82 @@ class Nation:
             outcomes=outcomes,
             ask_id=inflight.ask_id if inflight is not None else None,
             budget=snapshot(tracker) if tracker is not None else None,
+            replans=replans_done,
         )
+
+    async def _try_replan(
+        self,
+        request: str,
+        plan: Plan,
+        outcomes: list[SubtaskOutcome],
+        *,
+        on_progress,
+        budget: BudgetTracker | None,
+    ) -> tuple[Plan, list[SubtaskOutcome]] | None:
+        """One self-correction pass.
+
+        Identifies the first failed subtask, asks Scout for a salvage
+        sub-plan, splices it in after the already-OK steps, and
+        re-executes only the spliced-in subtasks (the prior ones come
+        through as resume_state). Returns the new (plan, outcomes) on
+        success, or None when there is nothing useful to do — caller
+        keeps the original outcomes in that case.
+        """
+        first_failed = next(
+            (i for i, o in enumerate(outcomes) if o.status == "failed"),
+            None,
+        )
+        if first_failed is None:
+            return None
+
+        failed_outcome = outcomes[first_failed]
+        succeeded_pairs: list[tuple[Subtask, str]] = [
+            (plan.subtasks[i], outcomes[i].output)
+            for i in range(first_failed)
+            if outcomes[i].status == "ok"
+        ]
+        remaining = list(plan.subtasks[first_failed + 1 :])
+        failure_reason = (
+            f"after {len(failed_outcome.attempts)} attempt(s); "
+            "every available citizen returned an empty or error response"
+        )
+
+        scout = Scout(model=self.scout_model)
+        try:
+            salvage = await scout.replan(
+                request,
+                succeeded=succeeded_pairs,
+                failed=plan.subtasks[first_failed],
+                failure_reason=failure_reason,
+                remaining=remaining,
+                known_task_types=self.culture.known_task_types(),
+            )
+        except Exception:  # noqa: BLE001 — replan is best-effort
+            return None
+        if salvage is None or not salvage.subtasks:
+            return None
+
+        # Build the new full plan: kept-OK subtasks + salvage subtasks.
+        kept_subtasks = [plan.subtasks[i] for i in range(first_failed)
+                         if outcomes[i].status == "ok"]
+        new_subtasks = kept_subtasks + list(salvage.subtasks)
+        new_plan = Plan(subtasks=new_subtasks)
+
+        # Resume state covers the kept subtasks at their new indices.
+        new_resume: dict[int, SubtaskOutcome] = {}
+        for new_idx, old_idx in enumerate(
+            i for i in range(first_failed) if outcomes[i].status == "ok"
+        ):
+            new_resume[new_idx] = outcomes[old_idx]
+
+        new_outcomes = await execute_plan(
+            new_plan,
+            self,
+            on_progress=on_progress,
+            resume_state=new_resume,
+            budget=budget,
+        )
+        return new_plan, new_outcomes
 
     def _similar_past_block(self, request: str) -> str:
         """Pull a small context block of similar past asks, if history is available."""

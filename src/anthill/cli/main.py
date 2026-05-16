@@ -397,6 +397,10 @@ def _finalize_ask(nation: Nation, nation_name: str, config: AnthillConfig, resul
 
     console.print(f"[dim]request[/dim]  {request}")
     console.print(f"[dim]plan[/dim]     {len(result.plan)} subtask(s)")
+    if result.replans:
+        console.print(
+            f"[dim]replan[/dim]   [yellow]{result.replans}[/yellow] self-correction pass(es) applied"
+        )
     if result.ask_id:
         console.print(f"[dim]ask_id[/dim]   {result.ask_id}")
     if len(result.plan) > 1:
@@ -491,12 +495,19 @@ def _finalize_ask(nation: Nation, nation_name: str, config: AnthillConfig, resul
     default=None,
     help="Stop the ask once it has been running this many seconds.",
 )
+@click.option(
+    "--max-replans",
+    type=int,
+    default=1,
+    help="How many self-correction passes Scout may run when a subtask fails. 0 disables.",
+)
 def ask(
     request: str,
     nation_name: str,
     max_tokens: int | None,
     max_cost: float | None,
     max_seconds: float | None,
+    max_replans: int,
 ) -> None:
     """Hand the king's request to the nation. Scout decomposes; nation executes."""
     config = AnthillConfig.load()
@@ -518,6 +529,7 @@ def ask(
             request,
             nation_dir=nation_dir(config.home, nation_name),
             budget=budget if not budget.is_empty() else None,
+            max_replans=max_replans,
         )
     )
     _finalize_ask(nation, nation_name, config, result, request)
