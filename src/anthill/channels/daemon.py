@@ -28,6 +28,8 @@ from typing import Any
 
 from anthill.channels.base import Channel, ChannelMessage
 from anthill.channels.lark import LarkChannel
+from anthill.channels.slack import SlackChannel
+from anthill.channels.telegram import TelegramChannel
 from anthill.config import AnthillConfig
 from anthill.core.feedback import AskRecord, save_last_ask
 from anthill.core.history import append_history, build_entry_from_ask
@@ -49,6 +51,8 @@ class DaemonConfig:
     lark_app_id: str | None = None
     lark_app_secret: str | None = None
     lark_verification_token: str | None = None
+    telegram_bot_token: str | None = None
+    slack_bot_token: str | None = None
 
     @classmethod
     def from_env(cls) -> "DaemonConfig":
@@ -59,6 +63,8 @@ class DaemonConfig:
             lark_app_id=os.getenv("ANTHILL_LARK_APP_ID"),
             lark_app_secret=os.getenv("ANTHILL_LARK_APP_SECRET"),
             lark_verification_token=os.getenv("ANTHILL_LARK_VERIFICATION_TOKEN"),
+            telegram_bot_token=os.getenv("ANTHILL_TELEGRAM_BOT_TOKEN"),
+            slack_bot_token=os.getenv("ANTHILL_SLACK_BOT_TOKEN"),
         )
 
 
@@ -134,13 +140,20 @@ def build_app(daemon_config: DaemonConfig | None = None):
     config.ensure_home()
     nation = _load_or_create_nation(config, daemon.nation_name)
 
-    # Build Lark channel if creds are configured. Other channels follow
-    # the same pattern.
+    # Build channels for whichever credentials are present.
     lark: LarkChannel | None = None
     if daemon.lark_app_id and daemon.lark_app_secret:
         lark = LarkChannel(app_id=daemon.lark_app_id, app_secret=daemon.lark_app_secret)
 
-    app = FastAPI(title="Anthill daemon", version="0.0.27")
+    telegram: TelegramChannel | None = None
+    if daemon.telegram_bot_token:
+        telegram = TelegramChannel(bot_token=daemon.telegram_bot_token)
+
+    slack: SlackChannel | None = None
+    if daemon.slack_bot_token:
+        slack = SlackChannel(bot_token=daemon.slack_bot_token)
+
+    app = FastAPI(title="Anthill daemon", version="0.0.29")
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -148,28 +161,51 @@ def build_app(daemon_config: DaemonConfig | None = None):
             "ok": True,
             "nation": nation.name,
             "citizens": len(nation.agents),
-            "lark_enabled": lark is not None,
+            "channels": {
+                "lark": lark is not None,
+                "telegram": telegram is not None,
+                "slack": slack is not None,
+            },
         }
 
     @app.post("/lark/webhook")
     async def lark_webhook(request: Request) -> dict[str, Any]:
         payload = await request.json()
-        # Verification handshake — Lark sends `challenge` on URL setup.
         if payload.get("type") == "url_verification":
             return {"challenge": payload.get("challenge")}
         if lark is None:
             return {"error": "lark not configured"}
-        # Token check for safety.
         token = payload.get("header", {}).get("token") or payload.get("token")
         if daemon.lark_verification_token and token != daemon.lark_verification_token:
             return {"error": "bad verification token"}
-
         msg = LarkChannel.parse_event(payload)
         if msg is None:
             return {"ignored": True}
-        # Fire-and-forget so Lark gets a quick 200 OK (their webhooks
-        # retry on >3s response).
         asyncio.create_task(handle_message(msg, nation, lark, config))
+        return {"ok": True}
+
+    @app.post("/telegram/webhook")
+    async def telegram_webhook(request: Request) -> dict[str, Any]:
+        if telegram is None:
+            return {"error": "telegram not configured"}
+        payload = await request.json()
+        msg = TelegramChannel.parse_event(payload)
+        if msg is None:
+            return {"ignored": True}
+        asyncio.create_task(handle_message(msg, nation, telegram, config))
+        return {"ok": True}
+
+    @app.post("/slack/webhook")
+    async def slack_webhook(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        if payload.get("type") == "url_verification":
+            return {"challenge": payload.get("challenge")}
+        if slack is None:
+            return {"error": "slack not configured"}
+        msg = SlackChannel.parse_event(payload)
+        if msg is None:
+            return {"ignored": True}
+        asyncio.create_task(handle_message(msg, nation, slack, config))
         return {"ok": True}
 
     return app
