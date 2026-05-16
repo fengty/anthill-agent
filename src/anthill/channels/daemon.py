@@ -39,6 +39,7 @@ from anthill.channels.base import Channel, ChannelMessage
 from anthill.channels.lark import LarkChannel
 from anthill.channels.slack import SlackChannel
 from anthill.channels.telegram import TelegramChannel
+from anthill.channels.wecom import WeComChannel
 from anthill.config import AnthillConfig
 from anthill.core.feedback import AskRecord, save_last_ask
 from anthill.core.history import append_history, build_entry_from_ask
@@ -62,9 +63,13 @@ class DaemonConfig:
     lark_verification_token: str | None = None
     telegram_bot_token: str | None = None
     slack_bot_token: str | None = None
+    wecom_corp_id: str | None = None
+    wecom_corp_secret: str | None = None
+    wecom_agent_id: int | None = None
 
     @classmethod
     def from_env(cls) -> "DaemonConfig":
+        wecom_agent_raw = os.getenv("ANTHILL_WECOM_AGENT_ID")
         return cls(
             nation_name=os.getenv("ANTHILL_DAEMON_NATION", "default"),
             host=os.getenv("ANTHILL_DAEMON_HOST", "0.0.0.0"),
@@ -74,6 +79,9 @@ class DaemonConfig:
             lark_verification_token=os.getenv("ANTHILL_LARK_VERIFICATION_TOKEN"),
             telegram_bot_token=os.getenv("ANTHILL_TELEGRAM_BOT_TOKEN"),
             slack_bot_token=os.getenv("ANTHILL_SLACK_BOT_TOKEN"),
+            wecom_corp_id=os.getenv("ANTHILL_WECOM_CORP_ID"),
+            wecom_corp_secret=os.getenv("ANTHILL_WECOM_CORP_SECRET"),
+            wecom_agent_id=int(wecom_agent_raw) if wecom_agent_raw else None,
         )
 
 
@@ -163,7 +171,15 @@ def build_app(daemon_config: DaemonConfig | None = None):
     if daemon.slack_bot_token:
         slack = SlackChannel(bot_token=daemon.slack_bot_token)
 
-    app = FastAPI(title="Anthill daemon", version="0.0.29")
+    wecom: WeComChannel | None = None
+    if daemon.wecom_corp_id and daemon.wecom_corp_secret and daemon.wecom_agent_id:
+        wecom = WeComChannel(
+            corp_id=daemon.wecom_corp_id,
+            corp_secret=daemon.wecom_corp_secret,
+            agent_id=daemon.wecom_agent_id,
+        )
+
+    app = FastAPI(title="Anthill daemon", version="0.1.5")
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -175,6 +191,7 @@ def build_app(daemon_config: DaemonConfig | None = None):
                 "lark": lark is not None,
                 "telegram": telegram is not None,
                 "slack": slack is not None,
+                "wecom": wecom is not None,
             },
         }
 
@@ -216,6 +233,24 @@ def build_app(daemon_config: DaemonConfig | None = None):
         if msg is None:
             return {"ignored": True}
         asyncio.create_task(handle_message(msg, nation, slack, config))
+        return {"ok": True}
+
+    @app.post("/wecom/webhook")
+    async def wecom_webhook(request: _Request) -> dict[str, Any]:
+        """WeCom payload — assumes the caller already decrypted the XML.
+
+        WeCom's encrypted callbacks require an out-of-band decrypt step
+        with the Token+EncodingAESKey. A proxy or wxcrypt helper feeds
+        Anthill the plaintext dict; we focus on routing, not crypto.
+        Set ANTHILL_WECOM_ACCEPT_PLAINTEXT=1 to acknowledge this design.
+        """
+        if wecom is None:
+            return {"error": "wecom not configured"}
+        payload = await request.json()
+        msg = WeComChannel.parse_event(payload)
+        if msg is None:
+            return {"ignored": True}
+        asyncio.create_task(handle_message(msg, nation, wecom, config))
         return {"ok": True}
 
     return app
