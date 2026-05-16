@@ -57,6 +57,14 @@ from anthill.core.inflight import (
     list_inflight,
     load_inflight,
 )
+from anthill.core.recipes import (
+    Recipe,
+    list_recipes,
+    load_recipe,
+    record_run,
+    remove_recipe,
+    save_recipe,
+)
 from anthill.core.costs import load_usage, summarise
 from anthill.core.facts import derive_facts, read_facts, write_facts
 from anthill.core.workflows import load_workflows, mine_workflows, save_workflows
@@ -652,6 +660,181 @@ def inflight_clear(ask_id: str, nation_name: str) -> None:
         console.print(f"[green]Cleared[/green] in-flight ask {ask_id}.")
     else:
         console.print(f"[red]No in-flight ask matching '{ask_id}'.[/red]")
+
+
+@cli.group()
+def recipe() -> None:
+    """Save, list, and replay parameterized request templates."""
+
+
+@recipe.command("save")
+@click.argument("name")
+@click.argument("template")
+@click.option("--desc", "description", default="", help="Short human-readable note.")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def recipe_save(name: str, template: str, description: str, nation_name: str) -> None:
+    """Save a request template under a name.
+
+    Use {placeholders} for slots that change per run:
+
+        anthill recipe save brief "Research {topic} and write a one-page brief."
+        anthill recipe run brief --arg topic="quantum computing"
+    """
+    config = AnthillConfig.load()
+    target_dir = nation_dir(config.home, nation_name)
+    r = Recipe(name=name, template=template, description=description)
+    save_recipe(r, target_dir)
+    placeholders = r.placeholders()
+    if placeholders:
+        console.print(
+            f"[green]Saved[/green] recipe [cyan]{r.name}[/cyan]  "
+            f"[dim](placeholders: {', '.join(placeholders)})[/dim]"
+        )
+    else:
+        console.print(
+            f"[green]Saved[/green] recipe [cyan]{r.name}[/cyan]  "
+            f"[dim](no placeholders)[/dim]"
+        )
+
+
+@recipe.command("list")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def recipe_list(nation_name: str) -> None:
+    """Show every saved recipe."""
+    config = AnthillConfig.load()
+    items = list_recipes(nation_dir(config.home, nation_name))
+    if not items:
+        console.print("[dim]No recipes yet.[/dim]")
+        return
+    table = Table(title=f"Recipes — {nation_name}")
+    table.add_column("Name", style="cyan")
+    table.add_column("Placeholders", style="magenta")
+    table.add_column("Runs", justify="right")
+    table.add_column("Description", style="dim")
+    for r in items:
+        ph = ", ".join(r.placeholders()) or "—"
+        table.add_row(r.name, ph, str(r.run_count), r.description[:60])
+    console.print(table)
+
+
+@recipe.command("show")
+@click.argument("name")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def recipe_show(name: str, nation_name: str) -> None:
+    """Print one recipe's full template and metadata."""
+    config = AnthillConfig.load()
+    r = load_recipe(name, nation_dir(config.home, nation_name))
+    if r is None:
+        console.print(f"[red]No recipe named '{name}'.[/red]")
+        return
+    console.print(f"[bold]Recipe[/bold] {r.name}")
+    if r.description:
+        console.print(f"[dim]{r.description}[/dim]")
+    console.print()
+    console.print(f"[bold]Template[/bold]\n  {r.template}")
+    ph = r.placeholders()
+    if ph:
+        console.print(f"\n[bold]Placeholders[/bold]  {', '.join(ph)}")
+    if r.subtasks:
+        console.print("\n[bold]Explicit subtasks[/bold]")
+        for i, s in enumerate(r.subtasks, start=1):
+            deps = (
+                f" [dim](depends on: {', '.join(s.depends_on)})[/dim]"
+                if s.depends_on
+                else ""
+            )
+            console.print(f"  [cyan]#{i}[/cyan] [magenta]{s.task_type}[/magenta]{deps}")
+            console.print(f"     {s.prompt_template}")
+    console.print()
+    console.print(f"[dim]runs: {r.run_count}[/dim]")
+
+
+@recipe.command("remove")
+@click.argument("name")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def recipe_remove(name: str, nation_name: str) -> None:
+    """Delete a saved recipe."""
+    config = AnthillConfig.load()
+    if remove_recipe(name, nation_dir(config.home, nation_name)):
+        console.print(f"[green]Removed[/green] {name}.")
+    else:
+        console.print(f"[red]No recipe named '{name}'.[/red]")
+
+
+@recipe.command("run")
+@click.argument("name")
+@click.option(
+    "--arg",
+    "args_raw",
+    multiple=True,
+    help="key=value placeholder substitution (repeatable).",
+)
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+@click.option(
+    "--max-tokens", type=int, default=None,
+    help="Per-ask token cap (see `anthill ask --max-tokens`).",
+)
+@click.option(
+    "--max-cost", type=float, default=None,
+    help="Per-ask USD cap (see `anthill ask --max-cost`).",
+)
+@click.option(
+    "--max-seconds", type=float, default=None,
+    help="Per-ask wall-clock cap (see `anthill ask --max-seconds`).",
+)
+def recipe_run(
+    name: str,
+    args_raw: tuple[str, ...],
+    nation_name: str,
+    max_tokens: int | None,
+    max_cost: float | None,
+    max_seconds: float | None,
+) -> None:
+    """Execute a saved recipe with key=value substitutions."""
+    config = AnthillConfig.load()
+    target_dir = nation_dir(config.home, nation_name)
+    r = load_recipe(name, target_dir)
+    if r is None:
+        console.print(f"[red]No recipe named '{name}'.[/red]")
+        return
+
+    args: dict[str, str] = {}
+    for raw in args_raw:
+        if "=" not in raw:
+            console.print(f"[yellow]Skipping malformed arg: {raw!r}[/yellow]")
+            continue
+        k, v = raw.split("=", 1)
+        args[k.strip()] = v
+
+    try:
+        filled = r.fill(args)
+    except KeyError as e:
+        console.print(f"[red]{e}[/red]")
+        return
+
+    nation = load_nation(nation_name, config.home)
+    if nation is None or not nation.agents:
+        console.print(
+            f"[red]No citizens in nation '{nation_name}'.[/red] "
+            f"Run [cyan]anthill spawn --count 3[/cyan] first."
+        )
+        return
+
+    budget = Budget(
+        max_tokens=max_tokens,
+        max_cost_usd=max_cost,
+        max_seconds=max_seconds,
+    )
+    result = asyncio.run(
+        nation.ask(
+            filled.request,
+            nation_dir=target_dir,
+            budget=budget if not budget.is_empty() else None,
+            pre_plan=filled.plan,
+        )
+    )
+    record_run(r, target_dir)
+    _finalize_ask(nation, nation_name, config, result, filled.request)
 
 
 @cli.group()

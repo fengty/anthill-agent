@@ -186,6 +186,7 @@ class Nation:
         nation_dir: Path | None = None,
         budget: Budget | None = None,
         max_replans: int = 1,
+        pre_plan: Plan | None = None,
     ) -> AskResult:
         """Execute a natural-language request from the king.
 
@@ -215,6 +216,13 @@ class Nation:
             plan = resume.plan
             self.last_ask_cache_hit = False
             inflight = resume
+        elif pre_plan is not None:
+            # Recipe path: skip Scout entirely, use the user-supplied plan
+            # as-is. The cache is bypassed too — a recipe-run is the user
+            # saying "do exactly this," not "let the nation negotiate."
+            plan = pre_plan
+            self.last_ask_cache_hit = False
+            inflight = InflightAsk.new(request=request, plan=plan) if nation_dir else None
         else:
             cached = cache_lookup(request, self.plan_cache)
             if cached is not None:
