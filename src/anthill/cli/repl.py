@@ -13,7 +13,7 @@ Design notes:
   saves.
 - Lines starting with `/` are REPL commands (a small set: /help,
   /trails, /identity, /power, /quit). Anything else is an ask.
-- The REPL talks Chinese OR English — both routes the same.
+- Input language is irrelevant — routing is the same.
 
 We deliberately avoid a fancy TUI: this is a basic readline loop. A
 TUI is v0.2+ territory; today's priority is "you type, it works."
@@ -45,7 +45,7 @@ HELP_TEXT = """[bold]REPL commands[/bold]
 
   Just type a question to send it to the nation:
     > 用一句话解释什么是熵
-    > Translate hello to Chinese
+    > Translate hello to Japanese
 
   Slash commands:
     /help        show this help

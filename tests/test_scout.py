@@ -8,7 +8,7 @@ from anthill.core.scout import Scout
 
 
 def test_parse_single_subtask() -> None:
-    text = '{"plan": [{"task_type": "translate", "prompt": "Translate hello to Chinese", "depends_on": []}]}'
+    text = '{"plan": [{"task_type": "translate", "prompt": "Translate hello to French", "depends_on": []}]}'
     plan = Scout._parse(text)
     assert len(plan) == 1
     assert plan.subtasks[0].task_type == "translate"

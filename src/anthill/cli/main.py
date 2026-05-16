@@ -252,7 +252,7 @@ def style_edit(nation_name: str) -> None:
             "Examples:\n"
             "- Prefer terse answers. No filler.\n"
             "- Always include a working code example.\n"
-            "- Default to Chinese for explanations.\n"
+            "- Default to plain prose, no markdown.\n"
         )
 
     editor = os.getenv("EDITOR", "vi")

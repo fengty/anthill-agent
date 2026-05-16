@@ -34,9 +34,9 @@ _TOKEN_RE = re.compile(r"[一-鿿]|[a-zA-Z0-9_]+")
 def tokenize(text: str) -> list[str]:
     """Tokenise for TF-IDF.
 
-    Each CJK character is its own token (Chinese has no spaces, so
-    character-level works better than word-level), Latin tokens are
-    lowercased and split on word boundaries. Numbers are kept.
+    Each CJK character is its own token (CJK scripts lack reliable word
+    boundaries, so character-level works better than word-level). Latin
+    tokens are lowercased and split on word boundaries. Numbers kept.
     """
     return [t.lower() for t in _TOKEN_RE.findall(text or "")]
 

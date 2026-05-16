@@ -14,7 +14,7 @@ cache key.
 We do not try to be clever about semantic similarity yet. That requires
 embeddings, an extra service, and another failure mode. Exact-after-
 normalisation is a good first pass — common queries like 'translate X
-to Chinese' show up identically over and over and benefit immediately.
+to Y' show up identically over and over and benefit immediately.
 """
 
 from __future__ import annotations

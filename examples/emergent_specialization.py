@@ -28,10 +28,10 @@ from anthill.core.router import RouterConfig
 console = Console()
 
 TASKS = [
-    ("translate", "Translate 'hello world' to Chinese. Return only the translation."),
-    ("translate", "Translate 'good morning' to Chinese. Return only the translation."),
-    ("translate", "Translate 'thank you' to Chinese. Return only the translation."),
-    ("translate", "Translate 'see you tomorrow' to Chinese. Return only the translation."),
+    ("translate", "Translate 'hello world' to Japanese. Return only the translation."),
+    ("translate", "Translate 'good morning' to French. Return only the translation."),
+    ("translate", "Translate 'thank you' to German. Return only the translation."),
+    ("translate", "Translate 'see you tomorrow' to Spanish. Return only the translation."),
     ("explain", "Explain stigmergy in one sentence."),
     ("explain", "Explain pheromone trails in one sentence."),
     ("explain", "Explain ant nest optimization in one sentence."),

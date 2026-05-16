@@ -7,8 +7,8 @@ Search requires an API key in 2026: every free HTML endpoint
 (DuckDuckGo, Bing, Baidu) has either gone JavaScript-rendered or
 captcha-walls anonymous traffic. Anthill supports any of:
 
-    BOCHA_API_KEY     — recommended for China users (bochaai.com)
-    TAVILY_API_KEY    — recommended internationally, generous free tier
+    BOCHA_API_KEY     — Bocha web-search API (bochaai.com)
+    TAVILY_API_KEY    — Tavily search, generous free tier (tavily.com)
     SERPER_API_KEY    — Google results via serper.dev
     BRAVE_API_KEY     — Brave Search API
 
@@ -103,7 +103,7 @@ class WebSearchPlugin(Plugin):
                 "web_search needs an API key. Free HTML scraping no longer "
                 "works in 2026 (DuckDuckGo, Bing, Baidu all block or "
                 "require JS rendering). Set one of:\n"
-                "  export BOCHA_API_KEY=sk-...      (bochaai.com, CN friendly)\n"
+                "  export BOCHA_API_KEY=sk-...      (bochaai.com)\n"
                 "  export TAVILY_API_KEY=tvly-...   (tavily.com, free tier)\n"
                 "  export SERPER_API_KEY=...        (serper.dev, Google)\n"
                 "  export BRAVE_API_KEY=...         (Brave Search)"
@@ -112,7 +112,7 @@ class WebSearchPlugin(Plugin):
 
     @staticmethod
     async def _bocha(query: str, top_k: int, api_key: str) -> PluginResult:
-        """Bocha Web Search — Chinese-built, reachable from China, clean JSON.
+        """Bocha web-search API. Clean JSON, strong CJK results.
 
         Docs: https://api.bochaai.com/v1/web-search
         Returns up to 50 results per call. We slice to top_k.

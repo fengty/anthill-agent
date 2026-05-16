@@ -25,26 +25,34 @@ def test_tokenize_english() -> None:
     assert tokenize("Translate Hello, World!") == ["translate", "hello", "world"]
 
 
-def test_tokenize_chinese_character_level() -> None:
-    toks = tokenize("把英文翻译成中文")
-    assert "翻" in toks
-    assert "译" in toks
-    assert len(toks) == 8  # each CJK char is its own token
+def test_tokenize_cjk_character_level() -> None:
+    # CJK Unified Ideographs (U+4E00..U+9FFF) — characters used across
+    # Chinese, Japanese kanji, and Korean hanja. The tokenizer treats
+    # each one as its own token because CJK scripts lack reliable word
+    # boundaries.
+    toks = tokenize("文字解析機構")
+    assert "文" in toks
+    assert "析" in toks
+    assert len(toks) == 6
 
 
-def test_tokenize_mixed() -> None:
-    toks = tokenize("把 hello 翻译成中文")
-    assert "hello" in toks
+def test_tokenize_mixed_script() -> None:
+    toks = tokenize("text 翻 訳 entry")
+    assert "text" in toks
+    assert "entry" in toks
     assert "翻" in toks
+    assert "訳" in toks
+
+
 
 
 def test_index_finds_similar_doc() -> None:
     index = TfidfIndex([
-        "translate hello to chinese",
+        "translate hello to japanese",
         "summarise this PDF",
         "translate goodbye to japanese",
     ])
-    hits = index.query("translate good morning to chinese", top_k=2)
+    hits = index.query("translate good morning to japanese", top_k=2)
     assert len(hits) >= 1
     # Best match should be one of the translate ones.
     idx_best, _ = hits[0]
@@ -61,19 +69,19 @@ def test_index_returns_empty_on_empty_query() -> None:
 
 
 def test_find_similar_filters_by_min_score() -> None:
-    history = [_entry("translate hello to chinese")]
+    history = [_entry("translate hello to japanese")]
     hits = find_similar("unrelated meta-philosophy", history, min_score=0.5)
     assert hits == []
 
 
 def test_find_similar_returns_top_k() -> None:
     history = [
-        _entry("translate alpha to chinese", 1.0),
-        _entry("translate beta to chinese", 2.0),
-        _entry("translate gamma to chinese", 3.0),
+        _entry("translate alpha to japanese", 1.0),
+        _entry("translate beta to japanese", 2.0),
+        _entry("translate gamma to japanese", 3.0),
         _entry("write a poem about cats", 4.0),
     ]
-    hits = find_similar("translate delta to chinese", history, top_k=2, min_score=0.0)
+    hits = find_similar("translate delta to japanese", history, top_k=2, min_score=0.0)
     assert len(hits) == 2
     assert all("translate" in h.entry.request for h in hits)
 
@@ -83,7 +91,7 @@ def test_format_for_scout_omits_when_empty() -> None:
 
 
 def test_format_for_scout_includes_plan_types() -> None:
-    history = [_entry("translate hello to chinese")]
+    history = [_entry("translate hello to japanese")]
     history[0].plan = [
         {"task_type": "translate", "depends_on": []},
         {"task_type": "verify", "depends_on": ["translate"]},

@@ -4,7 +4,6 @@
 > to the model that does it best, and assembles the result.
 > Then it remembers, and gets better next time.
 
-[中文 README](README.zh.md)
 
 ---
 
@@ -66,7 +65,7 @@ Anthill — default (3 citizens)
 **2. One-shot CLI**
 
 ```bash
-anthill ask "Research the top 3 Chinese open-source LLMs and write a recommendation"
+anthill ask "Research the top 3 open-source LLMs and write a recommendation"
 ```
 
 **3. Lark / Telegram / Slack — let your nation answer from IM**
@@ -90,9 +89,9 @@ channels — your Lark bot and your Slack bot share one mind.
 ## What this is
 
 No single model is best at everything. Claude reasons better than DeepSeek
-on hard logic. DeepSeek is 10x cheaper on long Chinese text. Kimi has the
-largest context. GPT is the most reliable tool caller. Gemini sees images
-the others miss.
+on hard logic. DeepSeek is the cheapest of the major models with strong
+multilingual coverage. Kimi has the largest context. GPT is the most
+reliable tool caller. Gemini sees images the others miss.
 
 Today, you have to pick one. You buy a Claude subscription and use Claude
 for everything, including the things it's worst at. Or you pay six
@@ -139,7 +138,7 @@ Anthill brings it to AI.
 ## What one request looks like
 
 ```bash
-anthill ask "Research the top 3 Chinese open-source LLMs, compare their
+anthill ask "Research the top 3 open-source LLMs, compare their
               strengths, and write me a one-page recommendation."
 ```
 
@@ -150,7 +149,7 @@ Scout decomposes              4 subtasks
    ↓
 research        → Kimi      (2M-token context, best for source ingestion)
 compare         → Claude    (most reliable reasoning across many sources)
-draft           → DeepSeek  (cheap, fluent Chinese-English bilingual writer)
+draft           → DeepSeek  (cheap, fluent multilingual writer)
 polish          → GPT       (best at constraint following: format, length)
    ↓
 Outputs chain together via dependency-aware context passing.
@@ -277,7 +276,7 @@ export ANTHILL_DEEPSEEK_KEY="sk-..."
 anthill init my-nation
 anthill spawn --count 4 --nation my-nation
 
-anthill ask "Translate 'hello world' to Chinese, then explain the difference between the two characters" \
+anthill ask "Translate 'hello world' to Japanese, then explain each word" \
         --nation my-nation
 
 anthill trails --nation my-nation
