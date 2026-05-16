@@ -44,6 +44,7 @@ from anthill.core.history import (
     search_history,
 )
 from anthill.core.costs import load_usage, summarise
+from anthill.core.facts import derive_facts, read_facts, write_facts
 from anthill.core.power import compute_ages, compute_power
 from anthill.core.snapshot import export_nation, import_nation
 from anthill.core.style_learner import suggest_house_style
@@ -409,6 +410,43 @@ def ask(request: str, nation_name: str) -> None:
     if not result.succeeded:
         console.print("[bold red]Request did not complete successfully.[/bold red]")
         console.print("Use [cyan]anthill trails[/cyan] to see how the failures landed in pheromones.")
+
+
+@cli.group()
+def facts() -> None:
+    """Inspect or refresh the nation's distilled facts."""
+
+
+@facts.command("show")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def facts_show(nation_name: str) -> None:
+    """Print facts.md."""
+    config = AnthillConfig.load()
+    if load_nation(nation_name, config.home) is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+    content = read_facts(nation_dir(config.home, nation_name))
+    if not content.strip():
+        console.print(
+            "[dim]No facts yet. Run [cyan]anthill facts refresh[/cyan] after some asks.[/dim]"
+        )
+        return
+    console.print(content)
+
+
+@facts.command("refresh")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def facts_refresh(nation_name: str) -> None:
+    """Recompute deterministic facts from current history + pheromones."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+    history = load_history(nation_dir(config.home, nation_name))
+    discovered = derive_facts(history, nation.pheromones)
+    write_facts(discovered, nation_dir(config.home, nation_name))
+    console.print(f"[green]Wrote {len(discovered)} fact(s).[/green]")
 
 
 @cli.command()
