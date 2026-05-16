@@ -1,25 +1,75 @@
 # Anthill
 
-> You are the king. The nation grows around you.
+> Give Anthill one request. It splits the work, dispatches each piece
+> to the model that does it best, and assembles the result.
+> Then it remembers, and gets better next time.
 
 ---
 
 ## What this is
 
-Anthill is a different kind of AI tool. You don't tell it which agent to
-use. You don't define roles. You give it your work, day after day. Over
-time, your nation grows: citizens specialize, vocabulary stabilizes,
-a culture forms. What you end up with is not a generic assistant — it is
-**a real AI organisation, shaped by you, that gets bigger and better at
-serving you the longer it runs.**
+No single model is best at everything. Claude reasons better than DeepSeek
+on hard logic. DeepSeek is 10x cheaper on long Chinese text. Kimi has the
+largest context. GPT is the most reliable tool caller. Gemini sees images
+the others miss.
 
-The mechanism is simple and ancient:
+Today, you have to pick one. You buy a Claude subscription and use Claude
+for everything, including the things it's worst at. Or you pay six
+different vendors and switch by hand.
+
+**Anthill takes a request, splits it into the right subtasks, and lets
+multiple models collaborate on it — each model handling the piece it does
+best.** Research goes to the long-context specialist. Code review goes to
+the reasoning specialist. Translation goes to the cheapest reliable model.
+A final synthesis step pulls everything together.
+
+You ask once. Six models work in concert. You see one answer.
+
+And it gets better the longer you use it. Over time, the system learns
+from experience: which model is actually best at what, which subtasks
+your particular workflow needs, which style of answer you prefer.
+
+The result is not a smarter assistant. It is **an AI organisation —
+shaped by you, made of many models, growing the longer it runs.**
+
+The mechanism is ancient:
 
 > Agents leave traces. Traces become paths. Paths become organisation.
 
-This is the same mechanism — pheromones, citations, footpaths, prices,
-customs — that every form of large-scale coordination in nature settles
-on. Anthill brings it to AI.
+The same mechanism — pheromones, citations, footpaths, prices, customs —
+is what every form of large-scale coordination in nature settles on.
+Anthill brings it to AI.
+
+---
+
+## What one request looks like
+
+```bash
+anthill ask "Research the top 3 Chinese open-source LLMs, compare their
+              strengths, and write me a one-page recommendation."
+```
+
+What happens inside:
+
+```
+Scout decomposes              4 subtasks
+   ↓
+research        → Kimi      (2M-token context, best for source ingestion)
+compare         → Claude    (most reliable reasoning across many sources)
+draft           → DeepSeek  (cheap, fluent Chinese-English bilingual writer)
+polish          → GPT       (best at constraint following: format, length)
+   ↓
+Outputs chain together via dependency-aware context passing.
+   ↓
+You see one final document.
+```
+
+You did not assign anyone to anything. The nation chose.
+
+Next time you ask a similar question, it routes faster — the pheromone
+trails from this run carry forward. Three months in, your nation has
+quietly built up a stable preference for which model handles which kind
+of subtask, calibrated to **your** workflow, not the leaderboard.
 
 ---
 
@@ -40,18 +90,30 @@ The framework stays small so your nation does not have to.
 
 ## Why it's different
 
-Every multi-agent framework today is a planned economy. A human decides:
-this one is the researcher, this one is the coder, this one is the
-reviewer. You ship with an org chart.
+Other tools force a single-vendor or single-model commitment.
 
-Real organisations don't work this way. A startup doesn't begin with an
-org chart; the org chart emerges from who turns out to be good at what.
-A jazz band doesn't write a script. A city doesn't design its
-neighborhoods — they grow.
+OpenAI Agents SDK speaks only to OpenAI. Claude's SDK speaks only to
+Anthropic. OpenRouter and Portkey route across vendors, but **you write
+the routing rules** — they don't learn.
 
-Anthill applies that pattern to agents. Specialization is **discovered,
-not assigned.** Culture is **inherited, not designed.** Capability is
-**accumulated, not configured.**
+LangGraph and CrewAI let you wire up multiple models, but **you decide
+upfront** which agent uses which model. The decision is frozen at design
+time, made by a human guessing what works.
+
+Anthill is the only tool where:
+
+1. **One request fans out** across multiple vendors automatically.
+2. **The system learns** which model is actually best at which kind of
+   subtask, based on real outcomes, not benchmarks.
+3. **Routing adapts over time** — as new models get added, as old models
+   drift, as your workflow changes, the assignments self-correct.
+
+You no longer choose between Claude and DeepSeek and Kimi. You use all
+of them, and the nation figures out who does what.
+
+The same pattern that makes ant colonies discover the shortest food path
+without a planner — pheromone trails, exploration, decay — is what makes
+your nation discover which model wins on each kind of work in your hands.
 
 ---
 
