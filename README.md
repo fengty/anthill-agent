@@ -25,6 +25,31 @@ Re-run the installer any time to upgrade.
 
 ---
 
+## Run with Docker
+
+```bash
+docker build -t anthill-agent .
+docker run --rm -p 8765:8765 \
+  -e ANTHILL_DEEPSEEK_KEY=sk-... \
+  -e ANTHILL_LARK_APP_ID=cli_... \
+  -e ANTHILL_LARK_APP_SECRET=... \
+  -v anthill-state:/home/anthill/.anthill \
+  anthill-agent
+```
+
+Or with compose:
+
+```bash
+cp .env.example .env  # fill in your model + IM keys
+docker compose up -d
+```
+
+The webhook server listens on port 8765, and all nation state (citizens,
+pheromones, history, culture, plan cache) lives in the named volume so
+restarts do not lose memory.
+
+---
+
 ## Three ways to talk to it
 
 **1. Terminal REPL**

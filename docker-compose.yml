@@ -1,0 +1,49 @@
+# Anthill daemon in a docker-compose deployment.
+#
+# Usage:
+#   1. Create a .env file in the same directory with your secrets:
+#        ANTHILL_DEEPSEEK_KEY=sk-...
+#        ANTHILL_LARK_APP_ID=cli_...
+#        ANTHILL_LARK_APP_SECRET=...
+#        # Optional channels:
+#        # ANTHILL_TELEGRAM_BOT_TOKEN=...
+#        # ANTHILL_SLACK_BOT_TOKEN=xoxb-...
+#        # ANTHILL_WECOM_CORP_ID=...
+#        # ANTHILL_WECOM_CORP_SECRET=...
+#        # ANTHILL_WECOM_AGENT_ID=1000002
+#
+#   2. docker compose up -d
+#
+#   3. Point your bot's webhook at http://your-host:8765/<channel>/webhook
+#
+# State (nations, pheromones, history) lives in the named volume
+# `anthill-state` and survives container restarts.
+
+version: "3.9"
+
+services:
+  anthill:
+    build: .
+    image: anthill-agent:0.1.8
+    container_name: anthill
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    env_file:
+      - .env
+    environment:
+      ANTHILL_DAEMON_NATION: ${ANTHILL_DAEMON_NATION:-default}
+      ANTHILL_DAEMON_HOST: 0.0.0.0
+      ANTHILL_DAEMON_PORT: 8765
+    volumes:
+      - anthill-state:/home/anthill/.anthill
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8765/health').read()\""
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  anthill-state:
