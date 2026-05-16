@@ -7,9 +7,15 @@ You should see one citizen dominate "translate" and another dominate
 "explain" purely from random cold-start choices followed by trail
 reinforcement.
 
-Requires:
-    ANTHILL_DEEPSEEK_KEY=...
-    optionally: ANTHILL_MINIMAX_KEY=...  ANTHILL_MINIMAX_GROUP=...
+Requires at least one configured model. Set them up once with:
+
+    anthill model add deepseek --provider deepseek \\
+      --model deepseek-chat --key sk-... --set-default
+
+Optional second provider so the router actually has a choice:
+
+    anthill model add minimax --provider minimax \\
+      --model MiniMax-M2-Stable --key ... --group-id ...
 
 Run:
     python examples/emergent_specialization.py
@@ -18,12 +24,12 @@ Run:
 from __future__ import annotations
 
 import asyncio
-import os
 from rich.console import Console
 from rich.table import Table
 
 from anthill.core.nation import Nation
 from anthill.core.router import RouterConfig
+from anthill.core.userconfig import load_config
 
 console = Console()
 
@@ -54,16 +60,28 @@ def print_trails(nation: Nation, title: str) -> None:
 
 
 async def main() -> None:
+    cfg = load_config()
+    if not cfg.models:
+        console.print(
+            "[red]No models configured.[/red] Run "
+            "[cyan]anthill model add deepseek --provider deepseek "
+            "--model deepseek-chat --key sk-... --set-default[/cyan] first."
+        )
+        return
+
     nation = Nation(name="demo", router_config=RouterConfig(exploration=0.10))
 
-    # DeepSeek is required; MiniMax is optional.
+    # DeepSeek is the default route; MiniMax slots in only when configured.
     nation.spawn(count=2, model="deepseek-chat")
-    if os.getenv("ANTHILL_MINIMAX_KEY") and os.getenv("ANTHILL_MINIMAX_GROUP"):
+    if cfg.find_model("minimax") is not None:
         nation.spawn(count=2, model="minimax")
         console.print("[dim]Spawned 2 DeepSeek + 2 MiniMax citizens.[/dim]")
     else:
         nation.spawn(count=2, model="deepseek-chat")
-        console.print("[dim]Spawned 4 DeepSeek citizens (MiniMax keys not set).[/dim]")
+        console.print(
+            "[dim]Spawned 4 DeepSeek citizens "
+            "(add a second provider with `anthill model add minimax ...`).[/dim]"
+        )
 
     console.print()
     for i, (task_type, prompt) in enumerate(TASKS, start=1):

@@ -13,12 +13,28 @@
 curl -fsSL https://raw.githubusercontent.com/fengty/anthill-agent/main/scripts/install.sh | bash
 ```
 
-Then:
+Then configure a model and drop into the REPL:
 
 ```bash
-export ANTHILL_DEEPSEEK_KEY="sk-..."
+anthill model add deepseek \
+  --provider deepseek \
+  --model deepseek-chat \
+  --key sk-... \
+  --set-default
+
 anthill                  # drops into an interactive REPL
 ```
+
+Or run the one-shot wizard for an interactive walkthrough:
+
+```bash
+anthill setup
+```
+
+Your key is written to `~/.anthill/secrets.toml` (chmod 600, auto-added
+to `.gitignore`) so you never have to re-export it. Configure more
+providers with `anthill model add <name>` and list them with
+`anthill model list`. No environment variables, no dotfile edits.
 
 The installer detects Python 3.9+, clones into `~/.anthill-agent/`,
 sets up an isolated venv, and drops a wrapper at `~/.local/bin/anthill`.
@@ -30,24 +46,24 @@ Re-run the installer any time to upgrade.
 
 ```bash
 docker build -t anthill-agent .
-docker run --rm -p 8765:8765 \
-  -e ANTHILL_DEEPSEEK_KEY=sk-... \
-  -e ANTHILL_LARK_APP_ID=cli_... \
-  -e ANTHILL_LARK_APP_SECRET=... \
+
+# 1. Start the container with the state volume mounted.
+docker run -d --name anthill -p 8765:8765 \
   -v anthill-state:/home/anthill/.anthill \
   anthill-agent
-```
 
-Or with compose:
-
-```bash
-cp .env.example .env  # fill in your model + IM keys
-docker compose up -d
+# 2. Configure model + channel inside the container — written into the
+#    volume, so subsequent restarts inherit the config.
+docker exec -it anthill anthill model add deepseek \
+  --provider deepseek --model deepseek-chat --key sk-... --set-default
+docker exec -it anthill anthill channel add larkbot \
+  --kind lark --app-id cli_... --app-secret ...
 ```
 
 The webhook server listens on port 8765, and all nation state (citizens,
-pheromones, history, culture, plan cache) lives in the named volume so
-restarts do not lose memory.
+pheromones, history, culture, plan cache, secrets) lives in the named
+volume so restarts do not lose memory — and you only configure each
+provider once.
 
 ---
 
@@ -73,9 +89,9 @@ anthill ask "Research the top 3 open-source LLMs and write a recommendation"
 ```bash
 pip install 'anthill-agent[daemon]'
 
-export ANTHILL_LARK_APP_ID=cli_...
-export ANTHILL_LARK_APP_SECRET=...
-# (or ANTHILL_TELEGRAM_BOT_TOKEN, ANTHILL_SLACK_BOT_TOKEN)
+anthill channel add larkbot --kind lark \
+  --app-id cli_... --app-secret ...
+# (or --kind telegram --bot-token ..., or --kind slack --bot-token ...)
 
 anthill serve
 ```
@@ -271,7 +287,8 @@ See [`docs/benchmark.md`](docs/benchmark.md) for the experimental setup.
 ```bash
 pip install anthill-agent
 
-export ANTHILL_DEEPSEEK_KEY="sk-..."
+anthill model add deepseek --provider deepseek --model deepseek-chat \
+  --key sk-... --set-default
 
 anthill init my-nation
 anthill spawn --count 4 --nation my-nation
@@ -283,13 +300,16 @@ anthill trails --nation my-nation
 anthill identity --nation my-nation
 ```
 
-Optional MiniMax:
+Add MiniMax as a second provider so the router can specialize:
 
 ```bash
-export ANTHILL_MINIMAX_KEY="..."
-export ANTHILL_MINIMAX_GROUP="..."
+anthill model add minimax --provider minimax --model MiniMax-M2-Stable \
+  --key ... --group-id ...
 anthill spawn --count 2 --model minimax --nation my-nation
 ```
+
+`anthill model list` and `anthill model show <name>` confirm what's
+configured (keys are masked on display).
 
 After a few dozen requests, `anthill identity` will start telling you who
 your nation has become.

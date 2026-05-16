@@ -33,7 +33,12 @@ class DeepSeekProvider(ModelProvider):
         self.api_key = api_key or os.getenv("ANTHILL_DEEPSEEK_KEY") or os.getenv("DEEPSEEK_API_KEY")
         if not self.api_key:
             raise RuntimeError(
-                "DeepSeek API key not found. Set ANTHILL_DEEPSEEK_KEY or pass api_key=..."
+                "DeepSeek API key not found. Configure it with "
+                "`anthill model add deepseek --provider deepseek "
+                "--model deepseek-chat --key sk-... --set-default` "
+                "(written to ~/.anthill/secrets.toml, chmod 600). "
+                "ANTHILL_DEEPSEEK_KEY / DEEPSEEK_API_KEY env vars are still "
+                "honored as a fallback for CI / scripted use."
             )
         self.model = model
         self.timeout = timeout

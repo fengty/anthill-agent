@@ -32,11 +32,18 @@ class MiniMaxProvider(ModelProvider):
         self.group_id = group_id or os.getenv("ANTHILL_MINIMAX_GROUP") or os.getenv("MINIMAX_GROUP_ID")
         if not self.api_key:
             raise RuntimeError(
-                "MiniMax API key not found. Set ANTHILL_MINIMAX_KEY or pass api_key=..."
+                "MiniMax API key not found. Configure it with "
+                "`anthill model add minimax --provider minimax "
+                "--model MiniMax-M2-Stable --key ... --group-id ...` "
+                "(written to ~/.anthill/secrets.toml, chmod 600). "
+                "ANTHILL_MINIMAX_KEY / MINIMAX_API_KEY env vars are still "
+                "honored as a fallback for CI / scripted use."
             )
         if not self.group_id:
             raise RuntimeError(
-                "MiniMax group_id not found. Set ANTHILL_MINIMAX_GROUP or pass group_id=..."
+                "MiniMax group_id not found. Pass `--group-id ...` to "
+                "`anthill model add minimax`. ANTHILL_MINIMAX_GROUP / "
+                "MINIMAX_GROUP_ID env vars are honored as a fallback."
             )
         self.model = model
         self.timeout = timeout

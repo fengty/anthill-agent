@@ -12,9 +12,15 @@ What's printed:
 3. Each subtask's output
 4. The budget summary if a cap was set
 
-Requires:
-    ANTHILL_DEEPSEEK_KEY=...
-    optionally: ANTHILL_MINIMAX_KEY=...  ANTHILL_MINIMAX_GROUP=...
+Requires at least one configured model. Set it up once with:
+
+    anthill model add deepseek --provider deepseek \\
+      --model deepseek-chat --key sk-... --set-default
+
+Optional second provider so the router has a real choice to make:
+
+    anthill model add minimax --provider minimax \\
+      --model MiniMax-M2-Stable --key ... --group-id ...
 
 Run:
     python examples/multi_step_research.py
@@ -23,7 +29,6 @@ Run:
 from __future__ import annotations
 
 import asyncio
-import os
 
 from rich.console import Console
 
@@ -31,6 +36,7 @@ from anthill.core.budget import Budget
 from anthill.core.executor import ProgressEvent
 from anthill.core.nation import Nation
 from anthill.core.router import RouterConfig
+from anthill.core.userconfig import load_config
 
 
 console = Console()
@@ -42,13 +48,15 @@ REQUEST = (
 
 
 async def main() -> None:
-    if not os.getenv("ANTHILL_DEEPSEEK_KEY"):
+    cfg = load_config()
+    if not cfg.models:
         console.print(
-            "[red]ANTHILL_DEEPSEEK_KEY not set — this example needs a real model.[/red]"
+            "[red]No models configured.[/red] This example needs a real model."
         )
         console.print(
-            "[dim]Configure with [cyan]anthill model add deepseek "
-            "--provider deepseek --model deepseek-chat --key sk-...[/cyan][/dim]"
+            "Configure with [cyan]anthill model add deepseek "
+            "--provider deepseek --model deepseek-chat --key sk-... "
+            "--set-default[/cyan]."
         )
         return
 
@@ -58,7 +66,7 @@ async def main() -> None:
         scout_model="deepseek-chat",
     )
     nation.spawn(count=2, model="deepseek-chat")
-    if os.getenv("ANTHILL_MINIMAX_KEY") and os.getenv("ANTHILL_MINIMAX_GROUP"):
+    if cfg.find_model("minimax") is not None:
         nation.spawn(count=1, model="minimax")
         console.print("[dim]Nation: 2 DeepSeek + 1 MiniMax.[/dim]")
     else:

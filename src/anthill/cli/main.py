@@ -958,13 +958,19 @@ def bg_clear(job_id: str, nation_name: str) -> None:
 def serve(host: str | None, port: int | None, nation_name: str | None) -> None:
     """Run the IM webhook daemon (FastAPI + uvicorn).
 
-    Configure inbound channels via env vars before launching:
-      ANTHILL_LARK_APP_ID
-      ANTHILL_LARK_APP_SECRET
-      ANTHILL_LARK_VERIFICATION_TOKEN
+    Configure inbound channels with the CLI first:
+      anthill channel add larkbot --kind lark --app-id ... --app-secret ...
+      anthill channel add tgbot   --kind telegram --bot-token ...
+      anthill channel add slackbot --kind slack   --bot-token ...
 
-    Then point your Lark bot's event subscription URL to:
+    Then point each bot's webhook at the matching endpoint:
       http://<your-host>:<port>/lark/webhook
+      http://<your-host>:<port>/telegram/webhook
+      http://<your-host>:<port>/slack/events
+
+    (Env vars like ANTHILL_LARK_APP_ID are still honored as a fallback
+    so containers and CI can wire channels without touching the CLI,
+    but the CLI is the recommended path for normal use.)
     """
     try:
         from anthill.channels.daemon import DaemonConfig, serve as _serve

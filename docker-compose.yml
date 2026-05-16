@@ -1,23 +1,25 @@
 # Anthill daemon in a docker-compose deployment.
 #
-# Usage:
-#   1. Create a .env file in the same directory with your secrets:
-#        ANTHILL_DEEPSEEK_KEY=sk-...
-#        ANTHILL_LARK_APP_ID=cli_...
-#        ANTHILL_LARK_APP_SECRET=...
-#        # Optional channels:
-#        # ANTHILL_TELEGRAM_BOT_TOKEN=...
-#        # ANTHILL_SLACK_BOT_TOKEN=xoxb-...
-#        # ANTHILL_WECOM_CORP_ID=...
-#        # ANTHILL_WECOM_CORP_SECRET=...
-#        # ANTHILL_WECOM_AGENT_ID=1000002
+# Recommended bring-up (CLI-first, config persists in the volume):
 #
-#   2. docker compose up -d
+#   1. docker compose up -d                   # start with empty config
+#   2. docker compose exec anthill anthill model add deepseek \
+#        --provider deepseek --model deepseek-chat \
+#        --key sk-... --set-default
+#   3. docker compose exec anthill anthill channel add larkbot \
+#        --kind lark --app-id cli_... --app-secret ...
+#   4. Point each bot's webhook at http://your-host:8765/<channel>/webhook
 #
-#   3. Point your bot's webhook at http://your-host:8765/<channel>/webhook
+# The model + channel config is written to ~/.anthill/secrets.toml inside
+# the volume, so step 2-3 only need to run once. Subsequent `docker
+# compose up -d` invocations inherit everything.
 #
-# State (nations, pheromones, history) lives in the named volume
-# `anthill-state` and survives container restarts.
+# For CI / scripted deployments you can also seed config via .env vars
+# (see .env.example) — the daemon reads CLI config first and falls back
+# to env vars when nothing is configured.
+#
+# State (nations, pheromones, history, secrets) lives in the named
+# volume `anthill-state` and survives container restarts.
 
 version: "3.9"
 

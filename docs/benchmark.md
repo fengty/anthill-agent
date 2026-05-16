@@ -98,7 +98,9 @@ These are good follow-ups, not weaknesses of the basic claim.
 ## How to reproduce
 
 ```bash
-export ANTHILL_DEEPSEEK_KEY="..."
+# Configure your model once — written to ~/.anthill/secrets.toml.
+anthill model add deepseek --provider deepseek --model deepseek-chat \
+  --key sk-... --set-default
 
 # Default benchmark — same parameters as seed 42 above
 anthill bench

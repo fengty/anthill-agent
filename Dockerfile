@@ -8,7 +8,15 @@
 # Build:
 #   docker build -t anthill-agent .
 #
-# Run (daemon serving Lark + DeepSeek):
+# Recommended bring-up (CLI-first; config persists in the named volume):
+#   docker run -d --name anthill -p 8765:8765 \
+#     -v anthill-state:/root/.anthill anthill-agent
+#   docker exec -it anthill anthill model add deepseek \
+#     --provider deepseek --model deepseek-chat --key sk-... --set-default
+#   docker exec -it anthill anthill channel add larkbot \
+#     --kind lark --app-id cli_... --app-secret ...
+#
+# Or, for CI / one-shot bring-up, env vars are honored as a fallback:
 #   docker run --rm -p 8765:8765 \
 #     -e ANTHILL_DEEPSEEK_KEY=sk-... \
 #     -e ANTHILL_LARK_APP_ID=cli_... \
@@ -16,10 +24,8 @@
 #     -v anthill-state:/root/.anthill \
 #     anthill-agent
 #
-# Run interactive REPL one-shot:
-#   docker run --rm -it \
-#     -e ANTHILL_DEEPSEEK_KEY=sk-... \
-#     anthill-agent anthill
+# Run interactive REPL one-shot (config from the volume):
+#   docker run --rm -it -v anthill-state:/root/.anthill anthill-agent anthill
 
 ARG PYTHON_VERSION=3.11
 
