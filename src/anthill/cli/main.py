@@ -1076,8 +1076,18 @@ def plugins_list() -> None:
 @plugins.command("call")
 @click.argument("name")
 @click.option("--arg", "args", multiple=True, help="key=value (repeatable)")
-def plugins_call(name: str, args: tuple[str, ...]) -> None:
+@click.option(
+    "--nation",
+    "nation_name",
+    default="default",
+    help="Record usage telemetry against this nation (v0.7.2+).",
+)
+def plugins_call(name: str, args: tuple[str, ...], nation_name: str) -> None:
     """Call a plugin by name with key=value args.
+
+    v0.7.2+: every invocation appends a record to
+    ~/.anthill/nations/<name>/plugin_usage.jsonl so Scout can later
+    weigh which plugins this nation has had luck with.
 
     Example:
       anthill plugins call web_search --arg "query=anthill agent github"
@@ -1094,13 +1104,43 @@ def plugins_call(name: str, args: tuple[str, ...]) -> None:
             continue
         k, v = raw.split("=", 1)
         kwargs[k.strip()] = v
+    config = AnthillConfig.load()
+    target_dir = nation_dir(config.home, nation_name)
     import asyncio as _asyncio
-    result = _asyncio.run(plugin.call(**kwargs))
+    from anthill.core.plugin_usage import record_plugin_call
+    result = _asyncio.run(record_plugin_call(plugin, target_dir, **kwargs))
     if result.ok:
         console.print(f"[green]ok[/green]  metadata={result.metadata}")
         console.print(str(result.output)[:2000])
     else:
         console.print(f"[red]error: {result.error}[/red]")
+
+
+@plugins.command("stats")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def plugins_stats(nation_name: str) -> None:
+    """v0.7.2 — show per-plugin usage statistics for the nation."""
+    from anthill.core.plugin_usage import aggregate_usage, load_plugin_usage
+    config = AnthillConfig.load()
+    records = load_plugin_usage(nation_dir(config.home, nation_name))
+    if not records:
+        console.print(
+            "[dim]No plugin usage recorded yet for this nation.[/dim]"
+        )
+        return
+    stats = aggregate_usage(records)
+    table = Table(title=f"Plugin usage — {nation_name}")
+    table.add_column("Plugin", style="cyan")
+    table.add_column("Calls", justify="right")
+    table.add_column("Success", justify="right", style="green")
+    table.add_column("Avg time", justify="right")
+    table.add_column("Top error", style="yellow")
+    for s in sorted(stats.values(), key=lambda x: -x.calls):
+        rate = f"{s.success_rate * 100:.0f}%"
+        avg = f"{s.avg_duration:.2f}s"
+        err = (s.top_error or "—")[:40]
+        table.add_row(s.plugin_name, str(s.calls), rate, avg, err)
+    console.print(table)
 
 
 @cli.group()

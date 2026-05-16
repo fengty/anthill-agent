@@ -376,7 +376,10 @@ class Nation:
             else:
                 similar_block = self._similar_past_block(request)
                 workflow_block = self._workflow_templates_block()
-                episodic_context = "\n\n".join(b for b in (workflow_block, similar_block) if b)
+                plugin_block = self._plugin_stats_block()
+                episodic_context = "\n\n".join(
+                    b for b in (workflow_block, plugin_block, similar_block) if b
+                )
                 scout = Scout(model=self.scout_model)
                 plan = await scout.plan(
                     request,
@@ -583,3 +586,23 @@ class Nation:
             return ""
         templates = load_workflows(self.history_path.parent)
         return format_templates_for_scout(templates, top_k=5)
+
+    def _plugin_stats_block(self) -> str:
+        """v0.7.2 — plugin usage summary fed into Scout's planning context.
+
+        Without this, Scout proposes plugin usage based only on its
+        prompt and the plugin description. With it, Scout sees evidence
+        of what has actually worked for THIS nation — closing the loop
+        between past plugin telemetry and future plan choices.
+        """
+        if self.history_path is None:
+            return ""
+        from anthill.core.plugin_usage import (
+            aggregate_usage,
+            format_plugin_stats_for_scout,
+            load_plugin_usage,
+        )
+        records = load_plugin_usage(self.history_path.parent)
+        if not records:
+            return ""
+        return format_plugin_stats_for_scout(aggregate_usage(records))

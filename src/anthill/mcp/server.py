@@ -59,7 +59,18 @@ async def _handle(method: str, params: dict, registry: PluginRegistry) -> dict:
                 "content": [{"type": "text", "text": f"unknown tool: {name!r}"}],
                 "isError": True,
             }
-        result = await plugin.call(**args)
+        # v0.7.2 — when the caller passes a nation_dir via the special
+        # `_anthill_nation_dir` argument key, route the call through
+        # `record_plugin_call` so usage telemetry lands on disk. Without
+        # the key we fall back to the plain call() path (used by tests
+        # and by callers that don't track usage yet).
+        nation_dir = args.pop("_anthill_nation_dir", None)
+        if nation_dir is not None:
+            from pathlib import Path as _Path
+            from anthill.core.plugin_usage import record_plugin_call
+            result = await record_plugin_call(plugin, _Path(nation_dir), **args)
+        else:
+            result = await plugin.call(**args)
         text = str(result.output) if result.output is not None else (result.error or "")
         return {
             "content": [{"type": "text", "text": text}],
