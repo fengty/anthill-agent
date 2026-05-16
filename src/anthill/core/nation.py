@@ -158,7 +158,12 @@ class Nation:
 
     @property
     def router(self) -> Router:
-        return Router(self.pheromones, self.agents, self.router_config)
+        return Router(
+            self.pheromones,
+            self.agents,
+            self.router_config,
+            dim_weights=dict(self.dimension_catalog.weights),
+        )
 
     def _compose_system(self, agent: Agent) -> str | None:
         """Combine agent persona + nation house_style into a single system prompt.

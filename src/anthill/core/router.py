@@ -35,10 +35,17 @@ class Router:
         pheromones: PheromoneTrail,
         agents: list[Agent],
         config: RouterConfig | None = None,
+        *,
+        dim_weights: dict[str, float] | None = None,
     ) -> None:
         self.pheromones = pheromones
         self.agents = agents
         self.config = config or RouterConfig()
+        # Per-dimension routing weights, typically passed in from
+        # nation.dimension_catalog.weights. When empty / None the
+        # router behaves exactly as it did pre-v0.4 — strength minus
+        # alarm only, no dimensional bias.
+        self.dim_weights = dim_weights or {}
 
     def assign(self, task_type: str, *, forbid: set[str] | None = None) -> Agent:
         """Pick a citizen for this task type.
@@ -74,11 +81,11 @@ class Router:
         # outrank citizens that haven't tried at all.
         ranking = [
             (aid, s)
-            for aid, s in self.pheromones.ranking(task_type)
+            for aid, s in self.pheromones.ranking(task_type, dim_weights=self.dim_weights)
             if s > 0 and aid not in forbid
         ]
 
-        tried_ids = {aid for aid, _ in self.pheromones.ranking(task_type)}
+        tried_ids = {aid for aid, _ in self.pheromones.ranking(task_type, dim_weights=self.dim_weights)}
         untried = [a for a in candidates if a.id not in tried_ids]
         if untried and not ranking:
             return random.choice(untried)

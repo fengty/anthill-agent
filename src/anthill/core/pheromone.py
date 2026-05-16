@@ -178,8 +178,24 @@ class PheromoneTrail:
         candidates.sort(key=lambda x: x[0], reverse=True)
         return candidates[0][1]
 
-    def ranking(self, task_type: str) -> list[tuple[str, float]]:
-        """All citizens ranked by net routing score for this task type."""
+    def ranking(
+        self,
+        task_type: str,
+        *,
+        dim_weights: dict[str, float] | None = None,
+    ) -> list[tuple[str, float]]:
+        """All citizens ranked by net routing score for this task type.
+
+        When `dim_weights` is provided and non-empty, each trail's base
+        score (strength - alarm) is multiplied by a dimension modifier
+        derived from `trail.dim_scores`. Trails lacking dimension data
+        keep their base score unchanged — so a fresh citizen with no
+        per-dimension scores yet doesn't get penalized for absence of
+        information; absence is treated as "neutral", not "bad."
+
+        See `dimension_modifier` for the exact math. The output is
+        sorted descending, same as before.
+        """
         ranked: list[tuple[str, float]] = []
         for (_, tt), t in self._trails.items():
             if tt != task_type:
@@ -189,6 +205,8 @@ class PheromoneTrail:
                 self._apply_decay(t.strength, t.last_updated)
                 - self._apply_decay(t.alarm, t.last_updated),
             )
+            if dim_weights and t.dim_scores:
+                net *= dimension_modifier(t.dim_scores, dim_weights)
             ranked.append((t.agent_id, net))
         ranked.sort(key=lambda x: x[1], reverse=True)
         return ranked
@@ -206,3 +224,42 @@ class PheromoneTrail:
         if hours_elapsed <= 0:
             return value
         return value * math.exp(-self.decay_rate * hours_elapsed)
+
+
+def dimension_modifier(
+    dim_scores: dict[str, float],
+    dim_weights: dict[str, float],
+) -> float:
+    """Translate (per-trail dimension scores × user weights) into a routing multiplier.
+
+    Math:
+        modifier = 1.0 + Σ(weight_k * (score_k - 0.5)) / Σ(|weight_k|)
+        clamped to [0.5, 1.5]
+
+    Intuition:
+        - A dimension whose score is 0.5 is "average" — no nudge.
+        - A dimension scoring 1.0 with weight 2.0 contributes
+          (2.0 * 0.5) / 2.0 = +0.5 to the modifier (50% boost capped).
+        - A dimension scoring 0.0 with weight 1.0 contributes
+          (1.0 * -0.5) / 1.0 = -0.5 (50% penalty capped).
+        - A negative weight inverts: it's how the user says "I want
+          LESS of this dimension." Useful for things like verbosity:
+          set weight to -1 to penalize high scores.
+
+    Only dimensions appearing in BOTH dicts contribute. Dimensions the
+    trail has but the user hasn't weighted: ignored (no opinion). Dimensions
+    the user weighted but this trail has no data on: ignored (absence is
+    neutral, not bad). This is what keeps new citizens from being
+    crushed by their lack of dimension history.
+    """
+    relevant: list[tuple[float, float]] = []
+    for k, w in dim_weights.items():
+        if k in dim_scores and w != 0:
+            relevant.append((dim_scores[k], float(w)))
+    if not relevant:
+        return 1.0
+    total_abs = sum(abs(w) for _, w in relevant)
+    if total_abs <= 0:
+        return 1.0
+    weighted_deviation = sum((s - 0.5) * w for s, w in relevant) / total_abs
+    return max(0.5, min(1.5, 1.0 + weighted_deviation))
