@@ -162,6 +162,11 @@ def start_background(
     )
 
     env = os.environ.copy()
+    # v0.7.1: propagate the job_id so the child's history entry can
+    # back-reference which bg job produced it. Without this, bg jobs
+    # write history entries that look identical to foreground asks —
+    # data exists but is disconnected from the bg surface.
+    env["ANTHILL_BG_JOB_ID"] = job_id
     if extra_env:
         env.update(extra_env)
 

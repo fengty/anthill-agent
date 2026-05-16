@@ -973,6 +973,20 @@ def bg_show(job_id: str, nation_name: str) -> None:
         return
     console.print(f"[bold]Job[/bold] {job.job_id}  [dim]({job.status})[/dim]")
     console.print(f"[bold]Request[/bold] {job.request}")
+
+    # v0.7.1: surface the history entries this bg job produced — the
+    # bg log shows raw stdout, but the structured ask records sit in
+    # history.jsonl and are what `anthill rate`, the auditor, and the
+    # immune system actually consume.
+    from anthill.core.history import find_by_bg_job
+    linked = find_by_bg_job(job.job_id, nation_dir(config.home, nation_name))
+    if linked:
+        ids = ", ".join(e.id for e in linked)
+        console.print(
+            f"[dim]history entries:[/dim] [cyan]{ids}[/cyan]  "
+            f"[dim](use `anthill history show <id>`)[/dim]"
+        )
+
     console.print()
     text = read_log(job)
     if text:
@@ -1308,6 +1322,7 @@ def history_list(limit: int, nation_name: str) -> None:
     table.add_column("ID", style="cyan")
     table.add_column("When", style="dim")
     table.add_column("Status", justify="center")
+    table.add_column("Src", style="yellow", justify="center")
     table.add_column("Request")
 
     for e in entries:
@@ -1320,7 +1335,10 @@ def history_list(limit: int, nation_name: str) -> None:
         else:
             status = "[yellow]partial[/yellow]"
         request_preview = e.request if len(e.request) <= 60 else e.request[:57] + "..."
-        table.add_row(e.id, when, status, request_preview)
+        # v0.7.1: mark bg-spawned entries so the user can spot which
+        # history came from `anthill bg ask` vs interactive.
+        src = f"bg:{e.bg_job_id[:6]}" if e.bg_job_id else "—"
+        table.add_row(e.id, when, status, src, request_preview)
 
     console.print(table)
 

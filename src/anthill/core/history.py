@@ -83,6 +83,10 @@ class HistoryEntry:
     prev_hash: str = ""
     chain_hash: str = ""
     chain_version: str = ""
+    # v0.7.1+ — when set, this ask was produced by a background job.
+    # The job_id flows in through the ANTHILL_BG_JOB_ID env var that
+    # core/background.py sets when spawning the child process.
+    bg_job_id: str | None = None
 
     @staticmethod
     def make_id(request: str, timestamp: float) -> str:
@@ -98,6 +102,7 @@ class HistoryEntry:
             "chain_version": self.chain_version,
             "prev_hash": self.prev_hash,
             "chain_hash": self.chain_hash,
+            "bg_job_id": self.bg_job_id,
         }
 
     @classmethod
@@ -111,6 +116,7 @@ class HistoryEntry:
             prev_hash=str(data.get("prev_hash") or ""),
             chain_hash=str(data.get("chain_hash") or ""),
             chain_version=str(data.get("chain_version") or ""),
+            bg_job_id=data.get("bg_job_id"),
         )
 
 
@@ -184,16 +190,35 @@ def search_history(query: str, nation_dir: Path) -> list[HistoryEntry]:
     return [e for e in load_history(nation_dir) if needle in e.request.lower()]
 
 
+def find_by_bg_job(bg_job_id: str, nation_dir: Path) -> list[HistoryEntry]:
+    """v0.7.1 — return every history entry produced by this bg job.
+
+    Used by `anthill bg show` to surface the matching ask records so
+    a user looking at a bg job's terminal output can also see the
+    structured outcome that went into the nation's memory.
+    """
+    return [
+        e for e in load_history(nation_dir)
+        if e.bg_job_id and e.bg_job_id == bg_job_id
+    ]
+
+
 def build_entry_from_ask(
     request: str,
     plan_subtasks: list,  # list of Subtask
     outcomes: list,  # list of SubtaskOutcome
 ) -> HistoryEntry:
+    import os
     ts = time.time()
+    # If this process was spawned by `anthill bg ask`, the parent set
+    # ANTHILL_BG_JOB_ID so we can back-reference. Foreground asks have
+    # this unset and bg_job_id stays None — same JSON shape, just empty.
+    bg_job_id = os.environ.get("ANTHILL_BG_JOB_ID") or None
     return HistoryEntry(
         id=HistoryEntry.make_id(request, ts),
         timestamp=ts,
         request=request,
+        bg_job_id=bg_job_id,
         plan=[
             {"task_type": s.task_type, "depends_on": list(s.depends_on)}
             for s in plan_subtasks
