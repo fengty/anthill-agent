@@ -19,6 +19,12 @@ from pathlib import Path
 
 from anthill.core.agent import Agent, TaskResult
 from anthill.core.budget import Budget, BudgetSnapshot, BudgetTracker, snapshot
+from anthill.core.cost_signal import (
+    COST_DIMENSION,
+    compute_cost_usd,
+    cost_efficiency,
+    update_baseline,
+)
 from anthill.core.culture import Culture
 from anthill.core.values import DimensionCatalog
 from anthill.core.episodic import find_similar, format_similar_for_scout
@@ -102,6 +108,10 @@ class Nation:
     # judge verdicts + user `anthill rate --dim` calls. Empty by default;
     # the LLM judge invents dimensions over time.
     dimension_catalog: DimensionCatalog = field(default_factory=DimensionCatalog)
+    # Per-task_type rolling baseline USD cost. Each attempt updates the
+    # baseline via EWMA; cost-efficiency for a single attempt is computed
+    # by comparing to this. v0.4.3+ — see core/cost_signal.
+    cost_baselines: dict[str, float] = field(default_factory=dict)
     router_config: RouterConfig = field(default_factory=RouterConfig)
     scout_model: str = "deepseek-chat"
     plan_cache: dict[str, CachedPlan] = field(default_factory=dict)
@@ -225,6 +235,28 @@ class Nation:
         if result.scores:
             self.pheromones.record_dimensions(
                 result.agent_id, result.task_type, result.scores
+            )
+        # Cost-efficiency as an open-vocabulary dimension (v0.4.3). The
+        # router won't use it until the user sets a weight on `cost` via
+        # `anthill values weight cost ...` — so the default behavior is
+        # unchanged. What v0.4.3 supplies is the *signal*, not the policy.
+        cost = compute_cost_usd(
+            result.input_tokens, result.output_tokens, agent.model
+        )
+        baseline_before = self.cost_baselines.get(task_type)
+        efficiency = cost_efficiency(cost, baseline_before)
+        update_baseline(self.cost_baselines, task_type, cost)
+        if cost > 0 or baseline_before is not None:
+            # Skip when both this attempt and the baseline are zero
+            # (e.g. fake providers in tests). No signal worth recording.
+            result.scores[COST_DIMENSION] = efficiency
+            self.pheromones.record_dimensions(
+                result.agent_id, result.task_type, {COST_DIMENSION: efficiency}
+            )
+            self.dimension_catalog.observe(
+                COST_DIMENSION,
+                score=efficiency,
+                description="cost-efficiency relative to recent baseline for this task type",
             )
         # The catalog records every attempted task, not just successful ones —
         # the nation's vocabulary is the work it tries, not only what it

@@ -61,6 +61,12 @@ def save_nation(nation: Nation, home: Path) -> Path:
     (directory / "values.json").write_text(
         json.dumps(nation.dimension_catalog.to_dict(), indent=2)
     )
+    # Cost baselines (v0.4.3) — per-task_type EWMA used by cost_signal.
+    # Stored separately from values.json so the open-vocabulary catalog
+    # stays semantically about "what good means", not "what good costs".
+    (directory / "cost_baselines.json").write_text(
+        json.dumps(dict(nation.cost_baselines), indent=2)
+    )
 
     return directory
 
@@ -124,6 +130,20 @@ def load_nation(name: str, home: Path) -> Nation | None:
         except (OSError, json.JSONDecodeError):
             pass
 
+    cost_baselines: dict[str, float] = {}
+    cost_file = directory / "cost_baselines.json"
+    if cost_file.exists():
+        try:
+            raw = json.loads(cost_file.read_text())
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    try:
+                        cost_baselines[str(k)] = float(v)
+                    except (TypeError, ValueError):
+                        continue
+        except (OSError, json.JSONDecodeError):
+            pass
+
     return Nation(
         name=name,
         agents=agents,
@@ -132,4 +152,5 @@ def load_nation(name: str, home: Path) -> Nation | None:
         plan_cache=plan_cache,
         history_path=directory / "history.jsonl",
         dimension_catalog=dimension_catalog,
+        cost_baselines=cost_baselines,
     )
