@@ -110,6 +110,14 @@ class Subtask:
     task_type: str
     prompt: str
     depends_on: list[str]
+    # v0.6+: ensemble execution.
+    # `fanout` is the number of parallel attempts on different citizens
+    # for this subtask. 1 keeps current behavior. >1 runs in parallel
+    # and uses `strategy` to pick the winner. None of this is required
+    # to be set by Scout — recipes can set it, the CLI can set it, or
+    # Scout can include it explicitly when the plan calls for it.
+    fanout: int = 1
+    strategy: str = "first_success"
 
 
 @dataclass
@@ -316,11 +324,21 @@ def _try_parse_strict(text: str) -> Plan | None:
             return None
         if not isinstance(prompt, str) or not prompt.strip():
             return None
+        fanout = entry.get("fanout", 1)
+        try:
+            fanout = max(1, int(fanout))
+        except (TypeError, ValueError):
+            fanout = 1
+        strategy = entry.get("strategy", "first_success")
+        if not isinstance(strategy, str) or not strategy.strip():
+            strategy = "first_success"
         subtasks.append(
             Subtask(
                 task_type=task_type.strip(),
                 prompt=prompt.strip(),
                 depends_on=list(depends_on),
+                fanout=fanout,
+                strategy=strategy.strip(),
             )
         )
     return Plan(subtasks=subtasks)

@@ -529,6 +529,17 @@ def _finalize_ask(nation: Nation, nation_name: str, config: AnthillConfig, resul
     default=1,
     help="How many self-correction passes Scout may run when a subtask fails. 0 disables.",
 )
+@click.option(
+    "--ensemble",
+    type=int,
+    default=1,
+    help="v0.6 — run every subtask K times in parallel on distinct citizens.",
+)
+@click.option(
+    "--strategy",
+    default="first_success",
+    help="Winner selection when --ensemble > 1: first_success / highest_score / shortest_correct / majority",
+)
 def ask(
     request: str,
     nation_name: str,
@@ -536,6 +547,8 @@ def ask(
     max_cost: float | None,
     max_seconds: float | None,
     max_replans: int,
+    ensemble: int,
+    strategy: str,
 ) -> None:
     """Hand the king's request to the nation. Scout decomposes; nation executes."""
     config = AnthillConfig.load()
@@ -552,14 +565,54 @@ def ask(
         max_cost_usd=max_cost,
         max_seconds=max_seconds,
     )
-    result = asyncio.run(
-        nation.ask(
+    async def _run():
+        result = await nation.ask(
             request,
             nation_dir=nation_dir(config.home, nation_name),
             budget=budget if not budget.is_empty() else None,
             max_replans=max_replans,
         )
-    )
+        # Apply the CLI-level ensemble override AFTER planning but before
+        # execution? We can't — nation.ask already ran. So instead we
+        # stamp the plan's subtasks before passing through. Simpler path:
+        # mutate plan subtasks in the AskResult and surface them is wrong;
+        # we want the plan to be built with fanout already set. Re-do as
+        # pre_plan approach below.
+        return result
+
+    # If user asked for ensemble, we need fanout set BEFORE plan executes.
+    # Do this by intercepting the plan: pre-plan via Scout, stamp fanout
+    # on every subtask, then pass pre_plan to nation.ask.
+    if ensemble > 1:
+        from anthill.core.ensemble import known_strategies
+        if strategy not in known_strategies():
+            console.print(
+                f"[red]Unknown --strategy '{strategy}'.[/red] "
+                f"Available: {', '.join(known_strategies())}"
+            )
+            return
+        from anthill.core.scout import Scout
+
+        async def _ensemble_run():
+            scout = Scout(model=nation.scout_model)
+            plan = await scout.plan(
+                request,
+                known_task_types=nation.culture.known_task_types(),
+            )
+            for st in plan.subtasks:
+                st.fanout = ensemble
+                st.strategy = strategy
+            return await nation.ask(
+                request,
+                nation_dir=nation_dir(config.home, nation_name),
+                budget=budget if not budget.is_empty() else None,
+                max_replans=max_replans,
+                pre_plan=plan,
+            )
+
+        result = asyncio.run(_ensemble_run())
+    else:
+        result = asyncio.run(_run())
     _finalize_ask(nation, nation_name, config, result, request)
 
 

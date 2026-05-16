@@ -274,38 +274,75 @@ async def _run_one_subtask(
     context = build_context_block(subtask, latest_by_type)
     augmented_prompt = context + subtask.prompt if context else subtask.prompt
 
-    forbid: set[str] = set()
     succeeded = False
-    for attempt_idx in range(policy.max_attempts):
-        try:
-            result = await nation.run(subtask.task_type, augmented_prompt, forbid=forbid)
-        except RuntimeError:
-            break
-        outcome.attempts.append(result)
+    fanout = max(1, getattr(subtask, "fanout", 1))
+
+    if fanout > 1:
+        # v0.6 ensemble path — parallel K-way fan-out + strategy pick.
+        from anthill.core.ensemble import run_fanout, select_winner
+        attempts_in_wave = await run_fanout(
+            nation, subtask, augmented_prompt, fanout
+        )
+        # All attempts get recorded — the selector picks one to be the
+        # "winner" whose output feeds downstream; the others stay in
+        # outcome.attempts for transparency.
+        outcome.attempts.extend(attempts_in_wave)
         if budget is not None:
-            budget.record_attempt(
-                result.agent_id, result.input_tokens, result.output_tokens
-            )
-        attempt_ok = _was_successful(result)
+            for r in attempts_in_wave:
+                budget.record_attempt(r.agent_id, r.input_tokens, r.output_tokens)
         if on_progress is not None:
-            await on_progress(
-                ProgressEvent(
-                    kind="attempt",
-                    index=i,
-                    subtask=subtask,
-                    outcome=outcome,
-                    attempt_number=attempt_idx + 1,
-                    success=attempt_ok,
+            for attempt_idx, r in enumerate(attempts_in_wave, start=1):
+                await on_progress(
+                    ProgressEvent(
+                        kind="attempt",
+                        index=i,
+                        subtask=subtask,
+                        outcome=outcome,
+                        attempt_number=attempt_idx,
+                        success=_was_successful(r),
+                    )
                 )
+        if attempts_in_wave:
+            winner = select_winner(
+                attempts_in_wave,
+                strategy=getattr(subtask, "strategy", "first_success"),
             )
-        if attempt_ok:
-            latest_by_type[subtask.task_type] = result
-            succeeded = True
-            break
-        forbid.add(result.agent_id)
-        # Don't burn another retry attempt past the budget cap.
-        if budget is not None and budget.may_run_next() is not None:
-            break
+            if _was_successful(winner):
+                latest_by_type[subtask.task_type] = winner
+                succeeded = True
+    else:
+        # Legacy serial retry path — unchanged behavior for fanout=1.
+        forbid: set[str] = set()
+        for attempt_idx in range(policy.max_attempts):
+            try:
+                result = await nation.run(subtask.task_type, augmented_prompt, forbid=forbid)
+            except RuntimeError:
+                break
+            outcome.attempts.append(result)
+            if budget is not None:
+                budget.record_attempt(
+                    result.agent_id, result.input_tokens, result.output_tokens
+                )
+            attempt_ok = _was_successful(result)
+            if on_progress is not None:
+                await on_progress(
+                    ProgressEvent(
+                        kind="attempt",
+                        index=i,
+                        subtask=subtask,
+                        outcome=outcome,
+                        attempt_number=attempt_idx + 1,
+                        success=attempt_ok,
+                    )
+                )
+            if attempt_ok:
+                latest_by_type[subtask.task_type] = result
+                succeeded = True
+                break
+            forbid.add(result.agent_id)
+            # Don't burn another retry attempt past the budget cap.
+            if budget is not None and budget.may_run_next() is not None:
+                break
 
     outcome.status = "ok" if succeeded else "failed"
     outcome.ended_at = time.time()
