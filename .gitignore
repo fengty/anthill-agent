@@ -33,6 +33,13 @@ htmlcov/
 *.db
 *.sqlite
 
+# Secrets — never commit. ~/.anthill/secrets.toml lives outside the repo,
+# but if anyone copies it in during debugging this catches it.
+secrets.toml
+**/secrets.toml
+*.key
+*.pem
+
 # OS
 .DS_Store
 Thumbs.db
