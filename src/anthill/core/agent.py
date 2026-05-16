@@ -51,6 +51,12 @@ class Agent:
     private_memory: dict[str, Any] = field(default_factory=dict)
     born_at: float = field(default_factory=time.time)
     retired_at: float | None = None
+    # Lineage: parent_id is the citizen that spawned this one via
+    # reproduction (v0.3.1). generation is 0 for citizens spawned by the
+    # user via `anthill spawn`, +1 for each descendant step. The pair
+    # lets a future `anthill citizen family` walk an ancestor tree.
+    parent_id: str | None = None
+    generation: int = 0
     _provider: ModelProvider | None = field(default=None, repr=False)
 
     @property

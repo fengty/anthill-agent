@@ -23,6 +23,14 @@ from anthill.core.lifecycle import (
     snapshot_nation,
 )
 from anthill.core.persistence import load_nation, nation_dir, save_nation
+from anthill.core.reproduction import (
+    ReproductionCriteria,
+    ancestors_of,
+    auto_reproduce,
+    descendants_of,
+    rank_citizens,
+    reproduce,
+)
 
 
 console = Console()
@@ -269,3 +277,184 @@ def citizen_retire_stale(
     console.print(f"[yellow]Retired {len(retired)} citizen(s).[/yellow]")
     when = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     console.print(f"[dim]({when})[/dim]")
+
+
+@citizen.command("rank")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+@click.option(
+    "--min-fitness", type=float, default=None,
+    help="Override the qualifying fitness threshold (default 0.5).",
+)
+def citizen_rank(nation_name: str, min_fitness: float | None) -> None:
+    """Rank citizens by fitness — who would qualify to reproduce."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+
+    crit = ReproductionCriteria()
+    if min_fitness is not None:
+        crit.min_fitness = min_fitness
+
+    scores = rank_citizens(nation, crit)
+    if not scores:
+        console.print("[dim]No citizens to rank.[/dim]")
+        return
+
+    table = Table(title=f"Citizen fitness — {nation_name}")
+    table.add_column("ID", style="cyan")
+    table.add_column("Model", style="magenta")
+    table.add_column("Fitness", style="green", justify="right")
+    table.add_column("Trails", justify="right")
+    table.add_column("Qualifies")
+    table.add_column("Notes", style="dim")
+    for s in scores:
+        ok = "[green]yes[/green]" if s.qualifies else "[dim]no[/dim]"
+        table.add_row(
+            s.agent_id,
+            s.model,
+            f"{s.score:.2f}",
+            str(s.task_type_count),
+            ok,
+            s.reason(),
+        )
+    console.print(table)
+    console.print(
+        f"[dim]threshold: fitness ≥ {crit.min_fitness:.2f}, "
+        f"task_types ≥ {crit.min_task_types}[/dim]"
+    )
+
+
+@citizen.command("reproduce")
+@click.argument("agent_id")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def citizen_reproduce(agent_id: str, nation_name: str) -> None:
+    """Spawn a mutated child of a specific citizen."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+
+    parent = nation.find_agent(agent_id)
+    if parent is None:
+        console.print(f"[red]No citizen matching '{agent_id}'.[/red]")
+        return
+    if parent.is_retired:
+        console.print(
+            f"[yellow]Refusing to reproduce a retired citizen.[/yellow] "
+            f"[dim](unretire {parent.id} first if you really want this.)[/dim]"
+        )
+        return
+
+    lineage = reproduce(nation, parent)
+    save_nation(nation, config.home)
+    console.print(
+        f"[green]Born[/green] {lineage.child.id}  "
+        f"[dim](generation {lineage.child.generation}, "
+        f"mutation: {lineage.mutation.name})[/dim]"
+    )
+    for note in lineage.notes:
+        console.print(f"  • {note}")
+    console.print(f"[dim]parent: {parent.id}[/dim]")
+
+
+@citizen.command("reproduce-fit")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+@click.option(
+    "--min-fitness", type=float, default=None, help="Override default 0.5."
+)
+@click.option(
+    "--max-births", type=int, default=None,
+    help="Cap the total number of children spawned in this pass.",
+)
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+def citizen_reproduce_fit(
+    nation_name: str,
+    min_fitness: float | None,
+    max_births: int | None,
+    yes: bool,
+) -> None:
+    """Reproduce every qualifying citizen in one pass."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+
+    crit = ReproductionCriteria()
+    if min_fitness is not None:
+        crit.min_fitness = min_fitness
+
+    ranked = rank_citizens(nation, crit)
+    qualifiers = [s for s in ranked if s.qualifies]
+    if max_births is not None:
+        qualifiers = qualifiers[:max_births]
+    if not qualifiers:
+        console.print("[yellow]No citizens qualify for reproduction.[/yellow]")
+        return
+
+    console.print(f"[bold]Would reproduce {len(qualifiers)} citizen(s):[/bold]")
+    for s in qualifiers:
+        console.print(f"  - {s.agent_id} ({s.model})  fitness {s.score:.2f}")
+    if not yes:
+        if not click.confirm("Proceed?"):
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    lineages = auto_reproduce(nation, criteria=crit, max_births=max_births)
+    save_nation(nation, config.home)
+    console.print(f"[green]Spawned {len(lineages)} child(ren).[/green]")
+    for lin in lineages:
+        console.print(
+            f"  • {lin.child.id}  [dim](parent {lin.parent.id}, "
+            f"mutation {lin.mutation.name})[/dim]"
+        )
+
+
+@citizen.command("family")
+@click.argument("agent_id")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def citizen_family(agent_id: str, nation_name: str) -> None:
+    """Show the ancestry and descendants of one citizen."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+
+    target = nation.find_agent(agent_id)
+    if target is None:
+        console.print(f"[red]No citizen matching '{agent_id}'.[/red]")
+        return
+
+    ancestors = ancestors_of(nation, target.id)
+    descendants = descendants_of(nation, target.id)
+
+    console.print(
+        f"[bold]{target.id}[/bold] [dim]({target.model}, "
+        f"generation {target.generation})[/dim]"
+    )
+    console.print()
+
+    if ancestors:
+        console.print("[bold]Ancestors[/bold] (oldest first)")
+        for a in reversed(ancestors):
+            retired = " [red](retired)[/red]" if a.is_retired else ""
+            console.print(
+                f"  ↑ {a.id} [dim]({a.model}, gen {a.generation})[/dim]{retired}"
+            )
+    else:
+        console.print("[dim]No recorded ancestors — likely a founder.[/dim]")
+
+    console.print()
+    if descendants:
+        console.print(f"[bold]Descendants[/bold] ({len(descendants)})")
+        for d in descendants:
+            retired = " [red](retired)[/red]" if d.is_retired else ""
+            console.print(
+                f"  ↓ {d.id} [dim]({d.model}, gen {d.generation})[/dim]{retired}"
+            )
+    else:
+        console.print("[dim]No descendants yet.[/dim]")

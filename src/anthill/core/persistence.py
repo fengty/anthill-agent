@@ -35,6 +35,8 @@ def save_nation(nation: Nation, home: Path) -> Path:
             "private_memory": a.private_memory,
             "born_at": a.born_at,
             "retired_at": a.retired_at,
+            "parent_id": a.parent_id,
+            "generation": a.generation,
         }
         for a in nation.agents
     ]
@@ -85,6 +87,10 @@ def load_nation(name: str, home: Path) -> Nation | None:
                 kwargs["retired_at"] = (
                     None if record["retired_at"] is None else float(record["retired_at"])
                 )
+            if "parent_id" in record:
+                kwargs["parent_id"] = record["parent_id"]
+            if "generation" in record and record["generation"] is not None:
+                kwargs["generation"] = int(record["generation"])
             agents.append(Agent(**kwargs))
 
     pheromones = PheromoneTrail()
