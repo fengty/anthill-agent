@@ -18,7 +18,6 @@ missing, rather than crashing the agent loop.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from anthill.plugins.base import Plugin, PluginResult
