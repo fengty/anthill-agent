@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from anthill.plugins.base import PluginRegistry
+from anthill.plugins.browser import BrowserRenderPlugin, BrowserScreenshotPlugin
 from anthill.plugins.code_exec import CodeExecPlugin
 from anthill.plugins.documents import DocxReadPlugin, PdfReadPlugin, XlsxReadPlugin
 from anthill.plugins.filesystem import FileListPlugin, FileReadPlugin, FileWritePlugin
@@ -22,6 +23,8 @@ def _build_default() -> PluginRegistry:
     reg.register(PdfReadPlugin())
     reg.register(DocxReadPlugin())
     reg.register(XlsxReadPlugin())
+    reg.register(BrowserRenderPlugin())
+    reg.register(BrowserScreenshotPlugin())
     return reg
 
 
