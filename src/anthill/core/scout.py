@@ -120,12 +120,19 @@ class Scout:
         request: str,
         *,
         known_task_types: list[str] | None = None,
+        episodic_context: str = "",
     ) -> Plan:
         provider = get_provider(self.model)
+        # Episodic hints are placed in the user message rather than the
+        # system prompt so they cannot be cached, and so Scout treats them
+        # as case-by-case context rather than enduring rules.
+        user_message = request
+        if episodic_context:
+            user_message = f"{episodic_context}\n\n---\n\nNew request:\n{request}"
         response = await provider.complete(
-            request,
+            user_message,
             system=build_system_prompt(known_task_types),
-            temperature=0.2,  # decomposition wants determinism, not creativity
+            temperature=0.2,
         )
         return self._parse(response.text)
 

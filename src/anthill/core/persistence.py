@@ -98,4 +98,5 @@ def load_nation(name: str, home: Path) -> Nation | None:
         pheromones=pheromones,
         culture=culture,
         plan_cache=plan_cache,
+        history_path=directory / "history.jsonl",
     )

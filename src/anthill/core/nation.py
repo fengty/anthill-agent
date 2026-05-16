@@ -14,8 +14,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from pathlib import Path
+
 from anthill.core.agent import Agent, TaskResult
 from anthill.core.culture import Culture
+from anthill.core.episodic import find_similar, format_similar_for_scout
 from anthill.core.executor import SubtaskOutcome, execute_plan
 from anthill.core.pheromone import PheromoneTrail
 from anthill.core.plan_cache import CachedPlan, lookup as cache_lookup, remember as cache_remember
@@ -85,6 +88,8 @@ class Nation:
     scout_model: str = "deepseek-chat"
     plan_cache: dict[str, CachedPlan] = field(default_factory=dict)
     last_ask_cache_hit: bool = field(default=False, repr=False)
+    # Path to history.jsonl so ask() can pull similar past examples.
+    history_path: Path | None = field(default=None, repr=False)
 
     def spawn(
         self,
@@ -158,9 +163,25 @@ class Nation:
             plan = cached.plan
             self.last_ask_cache_hit = True
         else:
+            similar_block = self._similar_past_block(request)
             scout = Scout(model=self.scout_model)
-            plan = await scout.plan(request, known_task_types=self.culture.known_task_types())
+            plan = await scout.plan(
+                request,
+                known_task_types=self.culture.known_task_types(),
+                episodic_context=similar_block,
+            )
             cache_remember(request, plan, self.plan_cache)
             self.last_ask_cache_hit = False
         outcomes = await execute_plan(plan, self)
         return AskResult(request=request, plan=plan, outcomes=outcomes)
+
+    def _similar_past_block(self, request: str) -> str:
+        """Pull a small context block of similar past asks, if history is available."""
+        if self.history_path is None or not self.history_path.exists():
+            return ""
+        from anthill.core.history import load_history
+        entries = load_history(self.history_path.parent, limit=200)
+        if not entries:
+            return ""
+        hits = find_similar(request, entries, top_k=3, min_score=0.2)
+        return format_similar_for_scout(hits)
