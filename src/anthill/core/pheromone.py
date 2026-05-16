@@ -30,6 +30,12 @@ class Trail:
     `alarm`    accumulates failure (repellor) — separate from strength so
                a chronic failure agent does not just lose ground, it
                actively repels new attempts.
+    `dim_scores` carries a running average of each open-vocabulary
+               value dimension this (citizen, task_type) pair has been
+               scored on (v0.4+). Routers that care about specific
+               dimensions can read this map; routers that don't see
+               only `strength`/`alarm` as before, so the existing
+               routing behavior is unchanged when no dimensions exist.
     """
 
     agent_id: str
@@ -37,11 +43,27 @@ class Trail:
     strength: float = 0.0
     alarm: float = 0.0
     last_updated: float = field(default_factory=time.time)
+    dim_scores: dict[str, float] = field(default_factory=dict)
 
     @property
     def net(self) -> float:
         """Routing score: attraction minus repulsion. Never negative."""
         return max(0.0, self.strength - self.alarm)
+
+    def update_dim(self, dim: str, score: float, *, alpha: float = 0.3) -> None:
+        """Bring one dimension toward the new observation via EWMA.
+
+        alpha=0.3 means recent observations have most of the weight but
+        history isn't thrown away. Same coefficient as common bandit
+        smoothing — concrete enough to be predictable, conservative
+        enough not to thrash.
+        """
+        score = max(0.0, min(1.0, float(score)))
+        prev = self.dim_scores.get(dim)
+        if prev is None:
+            self.dim_scores[dim] = score
+        else:
+            self.dim_scores[dim] = (1 - alpha) * prev + alpha * score
 
 
 class PheromoneTrail:
@@ -98,6 +120,28 @@ class PheromoneTrail:
             # Negative score: explicit erosion (e.g. king's thumbs-down).
             trail.strength = max(0.0, trail.strength + self.deposit_amount * success_score)
 
+        trail.last_updated = time.time()
+        self._trails[key] = trail
+
+    def record_dimensions(
+        self,
+        agent_id: str,
+        task_type: str,
+        scores: dict[str, float],
+    ) -> None:
+        """Stamp per-dimension scores onto the (citizen, task_type) trail.
+
+        Independent of deposit() — a single attempt typically calls
+        both, but a re-rating (`anthill rate --dim`) only updates
+        dimensions without bumping strength. Creating a fresh trail
+        with zero strength is fine; the dimensions exist on their own.
+        """
+        if not scores:
+            return
+        key = (agent_id, task_type)
+        trail = self._trails.get(key) or Trail(agent_id=agent_id, task_type=task_type)
+        for dim, value in scores.items():
+            trail.update_dim(dim, value)
         trail.last_updated = time.time()
         self._trails[key] = trail
 

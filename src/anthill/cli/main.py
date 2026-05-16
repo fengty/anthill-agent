@@ -141,6 +141,12 @@ from anthill.cli.citizen_cmd import citizen as _citizen_group  # noqa: E402
 cli.add_command(_citizen_group)
 
 
+# 'anthill values ...' subcommand group (v0.4 — open-vocabulary dimensions).
+from anthill.cli.values_cmd import values as _values_group  # noqa: E402
+
+cli.add_command(_values_group)
+
+
 @cli.command()
 @click.argument("name", default="default")
 def init(name: str) -> None:

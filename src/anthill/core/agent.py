@@ -12,7 +12,16 @@ from anthill.models import ModelProvider, get_provider
 
 @dataclass
 class TaskResult:
-    """The outcome of an agent attempting a task."""
+    """The outcome of an agent attempting a task.
+
+    `success_score` stays a single [0, 1] scalar — it answers the binary
+    "did this attempt produce something usable" question and drives the
+    pheromone deposit/alarm decision. `scores` is the open-vocabulary
+    multi-dim view: whichever dimensions the judge or the user actually
+    talked about (correctness, conciseness, citation_quality, whatever).
+    `scores` can be empty when no judge ran; it isn't a failure signal,
+    just absence of multi-dim data.
+    """
 
     task_id: str
     agent_id: str
@@ -22,6 +31,10 @@ class TaskResult:
     duration_seconds: float
     input_tokens: int = 0
     output_tokens: int = 0
+    # Open-vocabulary dimension scores from v0.4 onward. Whatever the
+    # judge (or the user, via `anthill rate --dim`) named, lives here.
+    # Keys are normalized via core.values.normalize_dim.
+    scores: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass

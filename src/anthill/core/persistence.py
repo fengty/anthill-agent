@@ -16,6 +16,7 @@ from anthill.core.culture import load_culture, save_culture
 from anthill.core.nation import Nation
 from anthill.core.pheromone import PheromoneTrail, Trail
 from anthill.core.plan_cache import load_cache, save_cache
+from anthill.core.values import DimensionCatalog
 
 
 def nation_dir(home: Path, name: str) -> Path:
@@ -49,6 +50,7 @@ def save_nation(nation: Nation, home: Path) -> Path:
             "strength": t.strength,
             "alarm": t.alarm,
             "last_updated": t.last_updated,
+            "dim_scores": dict(t.dim_scores),
         }
         for t in nation.pheromones._trails.values()
     ]
@@ -56,6 +58,9 @@ def save_nation(nation: Nation, home: Path) -> Path:
 
     save_culture(nation.culture, directory)
     save_cache(nation.plan_cache, directory)
+    (directory / "values.json").write_text(
+        json.dumps(nation.dimension_catalog.to_dict(), indent=2)
+    )
 
     return directory
 
@@ -103,10 +108,21 @@ def load_nation(name: str, home: Path) -> Nation | None:
                 strength=record["strength"],
                 alarm=record.get("alarm", 0.0),
                 last_updated=record.get("last_updated", time.time()),
+                dim_scores=dict(record.get("dim_scores") or {}),
             )
 
     culture = load_culture(directory)
     plan_cache = load_cache(directory)
+
+    values_file = directory / "values.json"
+    dimension_catalog = DimensionCatalog()
+    if values_file.exists():
+        try:
+            dimension_catalog = DimensionCatalog.from_dict(
+                json.loads(values_file.read_text())
+            )
+        except (OSError, json.JSONDecodeError):
+            pass
 
     return Nation(
         name=name,
@@ -115,4 +131,5 @@ def load_nation(name: str, home: Path) -> Nation | None:
         culture=culture,
         plan_cache=plan_cache,
         history_path=directory / "history.jsonl",
+        dimension_catalog=dimension_catalog,
     )

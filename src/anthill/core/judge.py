@@ -24,35 +24,54 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from anthill.core.values import normalize_dim
 from anthill.models import get_provider
 
 
 JUDGE_SYSTEM_PROMPT = """You are a strict, fair judge of agent output quality.
 
-You will be shown a TASK and an OUTPUT. Score how well the output
-satisfies the task on a 0-1 scale.
+You will be shown a TASK and an OUTPUT. Your job is to evaluate the
+output along whichever quality dimensions are most relevant — you
+pick the dimensions, you score each on a 0.0 to 1.0 scale, and you
+give a one-line explanation of what each dimension means in the
+context of THIS task.
 
-Rubric:
-  1.00  Perfect: directly satisfies the task with no extra noise.
-  0.75  Good:    satisfies the task, minor flaws or verbosity.
-  0.50  Mixed:   partially satisfies, missing or wrong pieces.
-  0.25  Weak:    barely related to the task.
-  0.00  Useless: empty, off-topic, error message, or refusal.
+Examples of dimensions you might use (you are not limited to these):
+  correctness     — does it actually solve the task?
+  conciseness     — is it free of filler and repetition?
+  depth           — does it engage with the problem at the right level?
+  tone            — does its register match the request?
+  factual_grounding — are claims supported by visible evidence?
+  citation        — when sources matter, are they given?
+  formatting      — is the output structured the way the user asked?
+  refusal_quality — when refusing, is the refusal helpful and specific?
 
-Return ONLY a JSON object with this exact shape:
+Use whichever 2-5 dimensions matter most for this task. Invent a new
+dimension name if the standard ones don't fit — short, lowercase,
+snake_case, no spaces.
 
-{"score": <float in [0,1]>, "reason": "<one short sentence>"}
+Also produce a single OVERALL score (0.0 to 1.0) that summarizes the
+output for routing decisions.
 
-No prose outside the JSON. No code fences.
+Return ONLY a JSON object with this exact shape, no prose, no code fences:
+
+{
+  "overall": <float in [0,1]>,
+  "scores": {"<dim_name>": <float in [0,1]>, ...},
+  "explanations": {"<dim_name>": "<short sentence>", ...},
+  "reason": "<one-line summary>"
+}
 """
 
 
 @dataclass
 class Verdict:
-    score: float
+    score: float  # the overall scalar; preserved for back-compat
     reason: str
+    scores: dict[str, float] = field(default_factory=dict)
+    explanations: dict[str, str] = field(default_factory=dict)
 
 
 def judge_enabled() -> bool:
@@ -60,8 +79,28 @@ def judge_enabled() -> bool:
     return os.getenv("ANTHILL_USE_JUDGE", "").lower() in ("1", "true", "yes", "on")
 
 
+def _coerce_score(raw: object) -> float | None:
+    """Coerce a JSON value into a [0, 1] float, or None when nonsensical."""
+    try:
+        score = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(1.0, score))
+
+
 def parse_verdict(text: str) -> Verdict:
-    """Robust JSON extraction. Falls back to 0.5 if anything goes wrong."""
+    """Robust JSON extraction supporting both old (single-score) and new (multi-dim) shapes.
+
+    The new shape is `{"overall": x, "scores": {...}, "explanations": {...}, "reason": "..."}`.
+    The old shape `{"score": x, "reason": "..."}` is still accepted — Anthill
+    used to ship that one and a judge that hasn't been re-prompted yet will
+    keep returning it. We treat the legacy single score as `overall` with
+    no per-dimension breakdown.
+
+    Any failure (no JSON / bad types / empty payload) falls back to a
+    neutral 0.5 verdict rather than crashing — a misbehaving judge is
+    its own bug, not the worker's.
+    """
     cleaned = text.strip()
     fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", cleaned, flags=re.DOTALL)
     if fence:
@@ -69,8 +108,7 @@ def parse_verdict(text: str) -> Verdict:
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError:
-        # Try to find a JSON object embedded in prose.
-        match = re.search(r"\{[^{}]*\}", cleaned, flags=re.DOTALL)
+        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
         if match:
             try:
                 data = json.loads(match.group(0))
@@ -79,14 +117,46 @@ def parse_verdict(text: str) -> Verdict:
         else:
             return Verdict(score=0.5, reason="judge returned no JSON")
 
-    raw_score = data.get("score", 0.5)
-    try:
-        score = float(raw_score)
-    except (TypeError, ValueError):
-        return Verdict(score=0.5, reason="judge score not numeric")
-    score = max(0.0, min(1.0, score))
+    if not isinstance(data, dict):
+        return Verdict(score=0.5, reason="judge returned non-object JSON")
+
+    # Per-dimension scores: normalize keys via the same path that the
+    # DimensionCatalog uses, so judge wording variance doesn't fragment trails.
+    raw_scores = data.get("scores") if isinstance(data.get("scores"), dict) else {}
+    scores: dict[str, float] = {}
+    for k, v in raw_scores.items():
+        if not isinstance(k, str):
+            continue
+        key = normalize_dim(k)
+        if not key:
+            continue
+        coerced = _coerce_score(v)
+        if coerced is None:
+            continue
+        scores[key] = coerced
+
+    raw_expl = data.get("explanations") if isinstance(data.get("explanations"), dict) else {}
+    explanations: dict[str, str] = {}
+    for k, v in raw_expl.items():
+        if not isinstance(k, str):
+            continue
+        key = normalize_dim(k)
+        if not key:
+            continue
+        explanations[key] = str(v).strip()
+
+    # Overall: prefer explicit field, fall back to legacy "score", fall back
+    # to mean of dimension scores, fall back to 0.5.
+    overall = _coerce_score(data.get("overall"))
+    if overall is None:
+        overall = _coerce_score(data.get("score"))
+    if overall is None and scores:
+        overall = sum(scores.values()) / len(scores)
+    if overall is None:
+        overall = 0.5
+
     reason = str(data.get("reason", "")).strip() or "no reason given"
-    return Verdict(score=score, reason=reason)
+    return Verdict(score=overall, reason=reason, scores=scores, explanations=explanations)
 
 
 async def judge_output(
@@ -106,7 +176,7 @@ async def judge_output(
             prompt,
             system=JUDGE_SYSTEM_PROMPT,
             temperature=0.0,
-            max_tokens=120,
+            max_tokens=400,  # room for multi-dim breakdown + explanations
         )
     except Exception as e:  # noqa: BLE001
         return Verdict(score=0.5, reason=f"judge unavailable: {e}")

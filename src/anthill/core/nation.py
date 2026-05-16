@@ -20,6 +20,7 @@ from pathlib import Path
 from anthill.core.agent import Agent, TaskResult
 from anthill.core.budget import Budget, BudgetSnapshot, BudgetTracker, snapshot
 from anthill.core.culture import Culture
+from anthill.core.values import DimensionCatalog
 from anthill.core.episodic import find_similar, format_similar_for_scout
 from anthill.core.judge import judge_enabled, judge_output
 from anthill.core.workflows import format_templates_for_scout, load_workflows
@@ -97,6 +98,10 @@ class Nation:
     agents: list[Agent] = field(default_factory=list)
     pheromones: PheromoneTrail = field(default_factory=PheromoneTrail)
     culture: Culture = field(default_factory=Culture)
+    # Open-vocabulary quality dimensions the nation has accumulated from
+    # judge verdicts + user `anthill rate --dim` calls. Empty by default;
+    # the LLM judge invents dimensions over time.
+    dimension_catalog: DimensionCatalog = field(default_factory=DimensionCatalog)
     router_config: RouterConfig = field(default_factory=RouterConfig)
     scout_model: str = "deepseek-chat"
     plan_cache: dict[str, CachedPlan] = field(default_factory=dict)
@@ -192,12 +197,30 @@ class Nation:
         if self.use_judge and result.success_score > 0:
             verdict = await judge_output(prompt, str(result.output), model=self.judge_model)
             result.success_score = verdict.score
+            # Whichever dimensions the judge invented (or used) get
+            # mirrored onto the TaskResult. The catalog auto-registers
+            # them — Anthill is the mechanism; the LLM decides what
+            # "good" means for this nation's work.
+            if verdict.scores:
+                result.scores.update(verdict.scores)
+                for dim_name, score in verdict.scores.items():
+                    self.dimension_catalog.observe(
+                        dim_name,
+                        score=score,
+                        description=verdict.explanations.get(dim_name, ""),
+                    )
 
         self.pheromones.deposit(
             agent_id=result.agent_id,
             task_type=result.task_type,
             success_score=result.success_score,
         )
+        # If we got per-dimension scores, fold them into the trail too so
+        # future routing decisions can ask "who scores well on X here?"
+        if result.scores:
+            self.pheromones.record_dimensions(
+                result.agent_id, result.task_type, result.scores
+            )
         # The catalog records every attempted task, not just successful ones —
         # the nation's vocabulary is the work it tries, not only what it
         # succeeds at.
