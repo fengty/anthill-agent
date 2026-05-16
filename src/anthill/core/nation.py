@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from anthill.core.agent import Agent, TaskResult
+from anthill.core.budget import Budget, BudgetSnapshot, BudgetTracker, snapshot
 from anthill.core.culture import Culture
 from anthill.core.episodic import find_similar, format_similar_for_scout
 from anthill.core.judge import judge_enabled, judge_output
@@ -49,6 +50,7 @@ class AskResult:
     plan: Plan
     outcomes: list[SubtaskOutcome]
     ask_id: str | None = None  # filled when checkpoint was active
+    budget: BudgetSnapshot | None = None  # filled when a Budget was set
 
     @property
     def final_output(self) -> str:
@@ -167,6 +169,13 @@ class Nation:
         self.culture.record(task_type)
         return result
 
+    def _model_for_agent(self, agent_id: str) -> str:
+        """Look up the model name for an agent_id. 'unknown' if not found."""
+        for a in self.agents:
+            if a.id == agent_id:
+                return a.model
+        return "unknown"
+
     async def ask(
         self,
         request: str,
@@ -174,6 +183,7 @@ class Nation:
         on_progress=None,
         resume: InflightAsk | None = None,
         nation_dir: Path | None = None,
+        budget: Budget | None = None,
     ) -> AskResult:
         """Execute a natural-language request from the king.
 
@@ -282,11 +292,15 @@ class Nation:
             save_inflight(inflight, nation_dir)
 
         progress_cb = _checkpointing_progress if inflight is not None else on_progress
+        tracker: BudgetTracker | None = None
+        if budget is not None and not budget.is_empty():
+            tracker = BudgetTracker(budget, model_lookup=self._model_for_agent)
         outcomes = await execute_plan(
             plan,
             self,
             on_progress=progress_cb,
             resume_state=resume_state,
+            budget=tracker,
         )
 
         # Whole ask done — drop the checkpoint regardless of per-subtask
@@ -300,6 +314,7 @@ class Nation:
             plan=plan,
             outcomes=outcomes,
             ask_id=inflight.ask_id if inflight is not None else None,
+            budget=snapshot(tracker) if tracker is not None else None,
         )
 
     def _similar_past_block(self, request: str) -> str:

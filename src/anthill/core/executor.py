@@ -36,6 +36,7 @@ from anthill.core.scout import Plan, Subtask
 
 if TYPE_CHECKING:
     from anthill.core.agent import TaskResult
+    from anthill.core.budget import BudgetTracker
     from anthill.core.nation import Nation
 
 
@@ -210,12 +211,18 @@ async def _run_one_subtask(
     latest_by_type: dict[str, "TaskResult"],
     policy: RetryPolicy,
     on_progress: ProgressCallback | None = None,
+    budget: "BudgetTracker | None" = None,
 ) -> None:
     """Execute one subtask with retries; mutate outcomes in place.
 
     Emits ProgressEvents at three points: started, after each attempt,
     and once final status is known. Callers (REPL, CLI, web) subscribe
     to these to render progress live.
+
+    When `budget` is provided, the tracker is consulted before any
+    work runs and after each attempt. An exhausted budget converts the
+    subtask into a 'skipped' outcome with a reason that names which
+    cap blew (tokens/cost/time).
     """
     outcome = outcomes[i]
     failed_dep = _find_failed_dependency(subtask, plan, outcomes)
@@ -233,6 +240,25 @@ async def _run_one_subtask(
                 )
             )
         return
+
+    # Pre-flight budget check — never start a subtask we can't afford.
+    if budget is not None:
+        from anthill.core.budget import reason_label
+        why = budget.may_run_next()
+        if why is not None:
+            outcome.status = "skipped"
+            outcome.skip_reason = reason_label(why)
+            outcome.started_at = outcome.ended_at = time.time()
+            if on_progress is not None:
+                await on_progress(
+                    ProgressEvent(
+                        kind="finished",
+                        index=i,
+                        subtask=subtask,
+                        outcome=outcome,
+                    )
+                )
+            return
 
     outcome.started_at = time.time()
     if on_progress is not None:
@@ -256,6 +282,10 @@ async def _run_one_subtask(
         except RuntimeError:
             break
         outcome.attempts.append(result)
+        if budget is not None:
+            budget.record_attempt(
+                result.agent_id, result.input_tokens, result.output_tokens
+            )
         attempt_ok = _was_successful(result)
         if on_progress is not None:
             await on_progress(
@@ -273,6 +303,9 @@ async def _run_one_subtask(
             succeeded = True
             break
         forbid.add(result.agent_id)
+        # Don't burn another retry attempt past the budget cap.
+        if budget is not None and budget.may_run_next() is not None:
+            break
 
     outcome.status = "ok" if succeeded else "failed"
     outcome.ended_at = time.time()
@@ -319,6 +352,7 @@ async def execute_plan(
     retry: RetryPolicy | None = None,
     on_progress: ProgressCallback | None = None,
     resume_state: dict[int, SubtaskOutcome] | None = None,
+    budget: "BudgetTracker | None" = None,
 ) -> list[SubtaskOutcome]:
     """Run a Plan with retries, citizen rotation, and graceful skipping.
 
@@ -390,6 +424,7 @@ async def execute_plan(
                         latest_by_type,
                         policy,
                         on_progress,
+                        budget,
                     )
                     for i in pending
                 )
@@ -407,6 +442,7 @@ async def execute_plan(
                 latest_by_type,
                 policy,
                 on_progress,
+                budget,
             )
 
     return [outcomes[i] for i in range(len(plan.subtasks))]

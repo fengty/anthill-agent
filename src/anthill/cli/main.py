@@ -43,6 +43,7 @@ from anthill.core.history import (
     load_history,
     search_history,
 )
+from anthill.core.budget import Budget
 from anthill.core.inflight import (
     clear_inflight,
     list_inflight,
@@ -449,6 +450,15 @@ def _finalize_ask(nation: Nation, nation_name: str, config: AnthillConfig, resul
         console.print(outcome.output)
         console.print()
 
+    if result.budget is not None:
+        if result.budget.exhausted:
+            console.print(
+                f"[bold yellow]Budget exhausted ({result.budget.exhausted}).[/bold yellow] "
+                f"[dim]{result.budget.summary}[/dim]"
+            )
+        else:
+            console.print(f"[dim]budget[/dim]  {result.budget.summary}")
+
     if not result.succeeded:
         console.print("[bold red]Request did not complete successfully.[/bold red]")
         console.print(
@@ -463,7 +473,31 @@ def _finalize_ask(nation: Nation, nation_name: str, config: AnthillConfig, resul
 @cli.command()
 @click.argument("request")
 @click.option("--nation", "nation_name", default="default", help="Nation name.")
-def ask(request: str, nation_name: str) -> None:
+@click.option(
+    "--max-tokens",
+    type=int,
+    default=None,
+    help="Stop the ask once cumulative input+output tokens exceed this cap.",
+)
+@click.option(
+    "--max-cost",
+    type=float,
+    default=None,
+    help="Stop the ask once estimated spend exceeds this many USD.",
+)
+@click.option(
+    "--max-seconds",
+    type=float,
+    default=None,
+    help="Stop the ask once it has been running this many seconds.",
+)
+def ask(
+    request: str,
+    nation_name: str,
+    max_tokens: int | None,
+    max_cost: float | None,
+    max_seconds: float | None,
+) -> None:
     """Hand the king's request to the nation. Scout decomposes; nation executes."""
     config = AnthillConfig.load()
     nation = load_nation(nation_name, config.home)
@@ -474,8 +508,17 @@ def ask(request: str, nation_name: str) -> None:
         )
         return
 
+    budget = Budget(
+        max_tokens=max_tokens,
+        max_cost_usd=max_cost,
+        max_seconds=max_seconds,
+    )
     result = asyncio.run(
-        nation.ask(request, nation_dir=nation_dir(config.home, nation_name))
+        nation.ask(
+            request,
+            nation_dir=nation_dir(config.home, nation_name),
+            budget=budget if not budget.is_empty() else None,
+        )
     )
     _finalize_ask(nation, nation_name, config, result, request)
 
