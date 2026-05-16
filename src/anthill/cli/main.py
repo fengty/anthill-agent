@@ -66,10 +66,17 @@ def _load_or_create(name: str, config: AnthillConfig) -> Nation:
     return nation
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.version_option(__version__, prog_name="anthill")
-def cli() -> None:
-    """Anthill — every user grows their own AI nation."""
+@click.pass_context
+def cli(ctx: click.Context) -> None:
+    """Anthill — every user grows their own AI nation.
+
+    Run `anthill` with no subcommand to drop into the interactive REPL.
+    """
+    if ctx.invoked_subcommand is None:
+        from anthill.cli.repl import run_repl
+        raise SystemExit(run_repl("default"))
 
 
 @cli.command()
