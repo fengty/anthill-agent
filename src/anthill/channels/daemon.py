@@ -235,6 +235,29 @@ def build_app(daemon_config: DaemonConfig | None = None):
         asyncio.create_task(handle_message(msg, nation, slack, config))
         return {"ok": True}
 
+    # Mount the MCP JSON-RPC endpoint at /mcp on the same app.
+    try:
+        from anthill.mcp.server import _handle as _mcp_handle
+        from anthill.plugins import default_registry as _default_registry
+
+        @app.post("/mcp")
+        async def mcp_endpoint(request: _Request) -> dict[str, Any]:
+            body = await request.json()
+            rpc_id = body.get("id")
+            method = body.get("method", "")
+            params = body.get("params", {}) or {}
+            try:
+                result = await _mcp_handle(method, params, _default_registry)
+            except Exception as e:  # noqa: BLE001
+                return {
+                    "jsonrpc": "2.0",
+                    "id": rpc_id,
+                    "error": {"code": -32603, "message": str(e)},
+                }
+            return {"jsonrpc": "2.0", "id": rpc_id, "result": result}
+    except Exception:  # noqa: BLE001
+        pass
+
     @app.post("/wecom/webhook")
     async def wecom_webhook(request: _Request) -> dict[str, Any]:
         """WeCom payload — assumes the caller already decrypted the XML.
