@@ -87,3 +87,49 @@ async def test_web_search_empty_query() -> None:
     result = await WebSearchPlugin().call(query="")
     assert not result.ok
     assert "empty query" in result.error
+
+
+@pytest.mark.asyncio
+async def test_web_search_no_key_lists_all_providers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for var in (
+        "BOCHA_API_KEY", "ANTHILL_BOCHA_KEY",
+        "TAVILY_API_KEY", "ANTHILL_TAVILY_KEY",
+        "SERPER_API_KEY", "ANTHILL_SERPER_KEY",
+        "BRAVE_API_KEY", "ANTHILL_BRAVE_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    result = await WebSearchPlugin().call(query="x")
+    assert not result.ok
+    # All four providers should be mentioned so the user knows the choices.
+    for var in ("BOCHA_API_KEY", "TAVILY_API_KEY", "SERPER_API_KEY", "BRAVE_API_KEY"):
+        assert var in result.error
+
+
+@pytest.mark.asyncio
+async def test_web_search_bocha_parses_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BOCHA_API_KEY", "test-key")
+    mock_response = AsyncMock()
+    mock_response.json = lambda: {
+        "data": {
+            "webPages": {
+                "value": [
+                    {
+                        "name": "Anthill Agent",
+                        "url": "https://github.com/fengty/anthill-agent",
+                        "snippet": "Pheromone-routed multi-agent framework.",
+                    }
+                ]
+            }
+        }
+    }
+    mock_response.raise_for_status = lambda: None
+    with patch("httpx.AsyncClient.post", return_value=mock_response):
+        result = await WebSearchPlugin().call(query="anthill", top_k=3)
+    assert result.ok
+    assert result.metadata["engine"] == "bocha"
+    assert result.output[0]["title"] == "Anthill Agent"
+    assert "github.com" in result.output[0]["url"]
