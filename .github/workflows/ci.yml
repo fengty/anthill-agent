@@ -44,7 +44,18 @@ jobs:
       - name: Test (pytest)
         # --tb=long so the first CI failure produces enough trace to
         # diagnose remotely. Drop back to --tb=short once stable.
-        run: pytest tests/ -v --tb=long
+        run: |
+          pytest tests/ -v --tb=long 2>&1 | tee /tmp/pytest-${{ matrix.python-version }}.log
+          # Preserve the return code from pytest, not from tee.
+          exit ${PIPESTATUS[0]}
+
+      - name: Upload pytest log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-log-py${{ matrix.python-version }}
+          path: /tmp/pytest-${{ matrix.python-version }}.log
+          retention-days: 7
 
   smoke:
     # Offline smoke test exercises the CLI surface end-to-end without
