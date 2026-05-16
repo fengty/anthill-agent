@@ -42,6 +42,7 @@ from anthill.core.history import (
     find_by_id,
     load_history,
     search_history,
+    verify_chain,
 )
 from anthill.core.background import (
     cancel_job,
@@ -1366,6 +1367,34 @@ def history_search(query: str, nation_name: str) -> None:
         return
     for e in matches:
         console.print(f"[cyan]{e.id}[/cyan]  {e.request}")
+
+
+@history.command("verify")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def history_verify(nation_name: str) -> None:
+    """v0.7 — walk the hash chain end-to-end; report tampering or legacy gaps."""
+    config = AnthillConfig.load()
+    status = verify_chain(nation_dir(config.home, nation_name))
+    if status.total == 0:
+        console.print("[dim]No history to verify yet.[/dim]")
+        return
+    console.print(
+        f"[bold]Chain verification[/bold] — {nation_name}  "
+        f"[dim]({status.total} entries: {status.chained_count} chained, "
+        f"{status.legacy_count} legacy)[/dim]"
+    )
+    if status.ok:
+        console.print("[bold green]✓ chain intact[/bold green]")
+        if status.legacy_count:
+            console.print(
+                f"[dim]({status.legacy_count} pre-v0.7 entries skipped — "
+                f"not part of the protected window)[/dim]"
+            )
+    else:
+        console.print(
+            f"[bold red]✗ chain broken at entry #{status.broken_at_index + 1}[/bold red]"
+        )
+        console.print(f"  [dim]{status.broken_reason}[/dim]")
 
 
 @history.command("failures")

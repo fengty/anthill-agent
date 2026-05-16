@@ -11,10 +11,22 @@ JSON, easy to inspect, easy to grep, never rewritten. The CLI exposes:
     anthill history          list recent entries
     anthill history show ID  print the full trace for one entry
     anthill history search Q grep across requests
+    anthill history verify   v0.7+: walk the hash chain, report integrity
 
 The id is the first 8 chars of a sha256 of (request + timestamp), so
 listing shows short stable handles. No more guessing which one was
 yesterday.
+
+v0.7 — Hash chain. Each new entry references the prior entry's hash
+(prev_hash field) so any post-hoc tampering with an earlier line breaks
+the chain at the tampered point. The chain is a Merkle-style spine,
+not a signed certificate: it proves *internal consistency*, not
+authorship. Optional Ed25519 signing is planned for v0.7.1.
+
+Why this matters for v0.8 (federation): when one nation imports
+another nation's "experience pack," it has to be able to verify the
+history segment hasn't been edited after the fact. The hash chain is
+the cheap version of that guarantee.
 """
 
 from __future__ import annotations
@@ -26,6 +38,36 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+# v0.7 hash-chain constants. The version string travels with each
+# entry so a future format can be distinguished cleanly.
+CHAIN_VERSION = "v1"
+GENESIS_PREV_HASH = "0" * 64  # sha256-shaped placeholder for the first entry
+
+
+def _entry_hash(entry: "HistoryEntry") -> str:
+    """sha256 over the JSON view of an entry's content (excluding `chain_hash`).
+
+    The hash covers: chain_version, prev_hash, id, timestamp, request,
+    plan, outcomes. The entry's own `chain_hash` is the OUTPUT of this
+    function — it must not be part of the input or hashing becomes
+    self-referential.
+    """
+    payload = {
+        "chain_version": CHAIN_VERSION,
+        "prev_hash": entry.prev_hash,
+        "id": entry.id,
+        "timestamp": entry.timestamp,
+        "request": entry.request,
+        "plan": entry.plan,
+        "outcomes": entry.outcomes,
+    }
+    # sort_keys ensures the same dict serializes to the same bytes
+    # regardless of insertion order, so hashes are reproducible across
+    # Python versions / dict implementations.
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
 @dataclass
 class HistoryEntry:
     id: str
@@ -33,6 +75,14 @@ class HistoryEntry:
     request: str
     plan: list[dict]  # serialized subtasks: {task_type, depends_on}
     outcomes: list[dict] = field(default_factory=list)  # status + final output per subtask
+    # v0.7+ hash-chain fields. `prev_hash` references the previous
+    # entry's chain_hash, GENESIS_PREV_HASH for the first entry. Older
+    # files without these fields load with empty strings and
+    # `verify_chain` reports them as "legacy" — not a failure, just
+    # outside the protected window.
+    prev_hash: str = ""
+    chain_hash: str = ""
+    chain_version: str = ""
 
     @staticmethod
     def make_id(request: str, timestamp: float) -> str:
@@ -45,6 +95,9 @@ class HistoryEntry:
             "request": self.request,
             "plan": self.plan,
             "outcomes": self.outcomes,
+            "chain_version": self.chain_version,
+            "prev_hash": self.prev_hash,
+            "chain_hash": self.chain_hash,
         }
 
     @classmethod
@@ -55,6 +108,9 @@ class HistoryEntry:
             request=data["request"],
             plan=data.get("plan", []),
             outcomes=data.get("outcomes", []),
+            prev_hash=str(data.get("prev_hash") or ""),
+            chain_hash=str(data.get("chain_hash") or ""),
+            chain_version=str(data.get("chain_version") or ""),
         )
 
 
@@ -62,9 +118,41 @@ def history_path(nation_dir: Path) -> Path:
     return nation_dir / "history.jsonl"
 
 
+def _last_chain_hash(path: Path) -> str:
+    """Pull the chain_hash from the last line of history.jsonl, or genesis.
+
+    Reads the whole file because history.jsonl is line-delimited but
+    nothing in the format records the file size or last offset. The
+    cost is fine for hundreds of entries; if you have a million you
+    should rebuild the chain via a separate offline pass.
+    """
+    if not path.exists():
+        return GENESIS_PREV_HASH
+    with path.open() as f:
+        last_chain = GENESIS_PREV_HASH
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ch = data.get("chain_hash") or ""
+            if ch:
+                last_chain = ch
+        return last_chain
+
+
 def append_history(entry: HistoryEntry, nation_dir: Path) -> None:
+    """Append the entry with hash-chain fields populated automatically."""
     nation_dir.mkdir(parents=True, exist_ok=True)
-    with history_path(nation_dir).open("a") as f:
+    path = history_path(nation_dir)
+    # Wire up the chain: prev_hash points at the previous tail.
+    entry.prev_hash = _last_chain_hash(path)
+    entry.chain_version = CHAIN_VERSION
+    entry.chain_hash = _entry_hash(entry)
+    with path.open("a") as f:
         f.write(json.dumps(entry.to_dict(), ensure_ascii=False) + "\n")
 
 
@@ -133,3 +221,85 @@ def build_entry_from_ask(
             for o in outcomes
         ],
     )
+
+
+# --- v0.7 — chain verification --------------------------------------------
+
+
+@dataclass
+class ChainStatus:
+    """Outcome of a verify_chain run.
+
+    `legacy_count` is entries that predate v0.7 — they have empty
+    chain_hash / prev_hash and are reported as legacy, not as failures.
+    `broken_at_index` is the first 0-based index where the chain
+    diverges from what was recorded; -1 means clean.
+    """
+
+    total: int
+    legacy_count: int
+    chained_count: int
+    broken_at_index: int = -1
+    broken_reason: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.broken_at_index == -1
+
+
+def verify_chain(nation_dir: Path) -> ChainStatus:
+    """Walk the history file, re-compute each entry's hash, find tampering.
+
+    For every entry that carries a `chain_hash`:
+      - recomputed_hash must equal stored chain_hash
+      - prev_hash must equal the previous entry's chain_hash (or
+        GENESIS_PREV_HASH for the first chained entry)
+
+    Entries with no chain_hash (legacy v0.6 and earlier) are skipped
+    and counted under `legacy_count`. Mixed files — legacy at the start
+    then chained — are common during the upgrade and treated correctly.
+    """
+    entries = load_history(nation_dir)
+    total = len(entries)
+    if total == 0:
+        return ChainStatus(total=0, legacy_count=0, chained_count=0)
+
+    legacy = 0
+    chained = 0
+    prev_chain = GENESIS_PREV_HASH
+
+    for i, entry in enumerate(entries):
+        if not entry.chain_hash:
+            legacy += 1
+            continue
+        # First chained entry resets the prev pointer to whatever it
+        # claims its prev_hash is (GENESIS or the previous tail). After
+        # that, each entry's prev_hash must equal the previous entry's
+        # chain_hash.
+        if chained == 0:
+            # OK to anchor to whatever prev_hash this entry has.
+            prev_chain = entry.prev_hash
+        if entry.prev_hash != prev_chain:
+            return ChainStatus(
+                total=total,
+                legacy_count=legacy,
+                chained_count=chained,
+                broken_at_index=i,
+                broken_reason=(
+                    f"prev_hash {entry.prev_hash[:12]}… does not match "
+                    f"expected {prev_chain[:12]}…"
+                ),
+            )
+        recomputed = _entry_hash(entry)
+        if recomputed != entry.chain_hash:
+            return ChainStatus(
+                total=total,
+                legacy_count=legacy,
+                chained_count=chained,
+                broken_at_index=i,
+                broken_reason="recomputed hash does not match stored chain_hash",
+            )
+        chained += 1
+        prev_chain = entry.chain_hash
+
+    return ChainStatus(total=total, legacy_count=legacy, chained_count=chained)
