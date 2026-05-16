@@ -1,21 +1,48 @@
 [project]
 name = "anthill-agent"
-version = "0.1.9"
-description = "Grow your own AI nation: agents that specialize through pheromone trails"
+version = "0.1.10"
+description = "Multi-model AI nation that decomposes one request across specialists, learns who's best at what, and gets better the longer you use it."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Anthill contributors" }]
-keywords = ["ai", "agent", "multi-agent", "llm", "pheromone", "swarm"]
+keywords = [
+    "ai",
+    "agent",
+    "multi-agent",
+    "multi-model",
+    "llm",
+    "pheromone",
+    "swarm",
+    "stigmergy",
+    "deepseek",
+    "minimax",
+    "claude",
+    "gpt",
+    "mcp",
+    "lark",
+    "feishu",
+    "wecom",
+    "telegram",
+    "slack",
+]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Distributed Computing",
+    "Typing :: Typed",
 ]
 dependencies = [
     "click>=8.1.0",
@@ -43,14 +70,19 @@ docs = [
 browser = [
     "playwright>=1.40.0",
 ]
+all = [
+    "anthill-agent[daemon,docs,browser]",
+]
 
 [project.scripts]
 anthill = "anthill.cli.main:cli"
 
 [project.urls]
-Homepage = "https://github.com/anthill-agent/anthill"
-Repository = "https://github.com/anthill-agent/anthill"
-Documentation = "https://github.com/anthill-agent/anthill/tree/main/docs"
+Homepage = "https://github.com/fengty/anthill-agent"
+Repository = "https://github.com/fengty/anthill-agent"
+Documentation = "https://github.com/fengty/anthill-agent#readme"
+Changelog = "https://github.com/fengty/anthill-agent/blob/main/CHANGELOG.md"
+Issues = "https://github.com/fengty/anthill-agent/issues"
 
 [build-system]
 requires = ["hatchling"]
