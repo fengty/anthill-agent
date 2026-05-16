@@ -30,19 +30,21 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install package + dev deps
+      - name: Install package + all test deps
         run: |
           python -m pip install --upgrade pip
-          # Editable install picks up source changes; .[dev] adds pytest+ruff.
-          # If pyproject doesn't yet declare a [dev] extra, fall back to a
-          # minimal install — same result, just less explicit.
-          pip install -e ".[dev]" || pip install -e . pytest pytest-asyncio ruff
+          # Install with [dev,daemon,docs] so every test in tests/ has the
+          # imports it needs. [browser] is skipped — playwright is heavy
+          # and its tests use lazy imports + skip-when-missing.
+          pip install -e ".[dev,daemon,docs]"
 
       - name: Lint (ruff)
-        run: ruff check src/
+        run: ruff check src/ tests/
 
       - name: Test (pytest)
-        run: pytest tests/ -v --tb=short
+        # --tb=long so the first CI failure produces enough trace to
+        # diagnose remotely. Drop back to --tb=short once stable.
+        run: pytest tests/ -v --tb=long
 
   smoke:
     # Offline smoke test exercises the CLI surface end-to-end without
@@ -59,6 +61,7 @@ jobs:
       - name: Install package
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          # Smoke test exercises only CLI surface — no need for [docs] / [browser].
+          pip install -e ".[daemon]"
       - name: Smoke test (offline)
         run: bash scripts/smoke-test.sh
