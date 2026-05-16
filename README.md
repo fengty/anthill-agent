@@ -4,6 +4,8 @@
 > to the model that does it best, and assembles the result.
 > Then it remembers, and gets better next time.
 
+[中文 README](README.zh.md)
+
 ---
 
 ## Install
