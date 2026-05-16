@@ -209,6 +209,129 @@ else
   warn "skipping live ask (pass --live to enable)"
 fi
 
+# 8. citizen lifecycle (v0.3.0) — list, retire, unretire, audit
+banner "8. anthill citizen — lifecycle"
+# Spawn an extra citizen so we have someone to retire without losing the nation.
+if anthill spawn --count 2 --nation kingdom > /dev/null; then
+  pass "spawned 2 extra citizens"
+else
+  fail "spawn failed"
+fi
+
+CL_OUT=$(COLUMNS=200 anthill citizen list --nation kingdom 2>&1)
+if echo "$CL_OUT" | grep -q "Citizens"; then
+  pass "citizen list shows roster"
+else
+  fail "citizen list missing roster"
+fi
+
+# Pick the first ant id from the listing.
+ANT_ID=$(echo "$CL_OUT" | grep -oE 'ant-[a-f0-9]{8}' | head -1)
+if [ -n "$ANT_ID" ]; then
+  pass "extracted citizen id ($ANT_ID) from list output"
+else
+  fail "could not extract a citizen id"
+fi
+
+if [ -n "${ANT_ID:-}" ] && anthill citizen retire "$ANT_ID" --nation kingdom > /dev/null; then
+  pass "retire $ANT_ID"
+else
+  fail "retire failed"
+fi
+
+if [ -n "${ANT_ID:-}" ] && \
+   COLUMNS=200 anthill citizen list --all --nation kingdom 2>&1 | grep -q "retired"; then
+  pass "list --all shows retired status"
+else
+  fail "retired status not shown in list --all"
+fi
+
+if [ -n "${ANT_ID:-}" ] && anthill citizen unretire "$ANT_ID" --nation kingdom > /dev/null; then
+  pass "unretire $ANT_ID"
+else
+  fail "unretire failed"
+fi
+
+AUDIT_OUT=$(COLUMNS=200 anthill citizen audit --nation kingdom 2>&1)
+if echo "$AUDIT_OUT" | grep -q "Audit"; then
+  pass "audit produces a report"
+else
+  fail "audit output missing"
+fi
+
+# 9. citizen reproduction (v0.3.1) — rank + family
+banner "9. anthill citizen — reproduction"
+RANK_OUT=$(COLUMNS=200 anthill citizen rank --nation kingdom 2>&1)
+if echo "$RANK_OUT" | grep -q "fitness"; then
+  pass "rank shows fitness column"
+else
+  fail "rank output missing fitness"
+fi
+
+if [ -n "${ANT_ID:-}" ]; then
+  FAM_OUT=$(COLUMNS=200 anthill citizen family "$ANT_ID" --nation kingdom 2>&1)
+  if echo "$FAM_OUT" | grep -q "$ANT_ID"; then
+    pass "family report includes the queried citizen"
+  else
+    fail "family report missing the queried id"
+  fi
+fi
+
+# 10. inflight + bg (v0.2.13, v0.2.16) — empty-state contracts
+banner "10. anthill inflight + bg (empty state)"
+if COLUMNS=200 anthill inflight list --nation kingdom 2>&1 | grep -q "No in-flight asks"; then
+  pass "inflight list reports empty state cleanly"
+else
+  fail "inflight list missing empty-state message"
+fi
+
+if COLUMNS=200 anthill bg list --nation kingdom 2>&1 | grep -q "No background jobs"; then
+  pass "bg list reports empty state cleanly"
+else
+  fail "bg list missing empty-state message"
+fi
+
+# 11. recipes (v0.2.17) — save, list, show, remove round-trip
+banner "11. anthill recipe — round trip"
+if anthill recipe save brief 'Research {topic} and write a one-pager' \
+     --desc 'Quick brief generator' \
+     --nation kingdom > /dev/null; then
+  pass "recipe save"
+else
+  fail "recipe save failed"
+fi
+
+if COLUMNS=200 anthill recipe list --nation kingdom 2>&1 | grep -q "brief"; then
+  pass "recipe list shows 'brief'"
+else
+  fail "recipe list missing 'brief'"
+fi
+
+SHOW_OUT=$(COLUMNS=200 anthill recipe show brief --nation kingdom 2>&1)
+if echo "$SHOW_OUT" | grep -q "topic"; then
+  pass "recipe show displays placeholder"
+else
+  fail "recipe show missing placeholder"
+fi
+
+if anthill recipe remove brief --nation kingdom > /dev/null; then
+  pass "recipe remove"
+else
+  fail "recipe remove failed"
+fi
+
+# 12. lifecycle example runs end-to-end offline
+banner "12. examples/lifecycle_cycle.py (offline)"
+EX_OUT=$(python -c "import sys; sys.path.insert(0, '.'); exec(open('examples/lifecycle_cycle.py').read())" 2>&1 || echo "EXFAIL")
+if echo "$EX_OUT" | grep -q "EXFAIL"; then
+  fail "lifecycle example crashed"
+  echo "$EX_OUT" | tail -5 | sed 's/^/    /'
+elif echo "$EX_OUT" | grep -q "Reproduce"; then
+  pass "lifecycle example completes through reproduction step"
+else
+  fail "lifecycle example did not reach reproduction"
+fi
+
 # --- summary ---
 printf "\n"
 TOTAL=$((PASS + FAIL + SKIP))
