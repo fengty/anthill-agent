@@ -107,6 +107,12 @@ from anthill.cli.nation_cmd import nation as _nation_group  # noqa: E402
 cli.add_command(_nation_group)
 
 
+# 'anthill channel ...' subcommand group.
+from anthill.cli.channel_cmd import channel as _channel_group  # noqa: E402
+
+cli.add_command(_channel_group)
+
+
 @cli.command()
 @click.argument("name", default="default")
 def init(name: str) -> None:

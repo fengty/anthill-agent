@@ -158,21 +158,40 @@ def build_app(daemon_config: DaemonConfig | None = None):
     config.ensure_home()
     nation = _load_or_create_nation(config, daemon.nation_name)
 
-    # Build channels for whichever credentials are present.
+    # Build channels for whichever credentials are present. Priority:
+    # 1) anything configured via `anthill channel add` (UserConfig)
+    # 2) anything still set via env vars (backward-compat path)
     lark: LarkChannel | None = None
-    if daemon.lark_app_id and daemon.lark_app_secret:
-        lark = LarkChannel(app_id=daemon.lark_app_id, app_secret=daemon.lark_app_secret)
-
     telegram: TelegramChannel | None = None
-    if daemon.telegram_bot_token:
-        telegram = TelegramChannel(bot_token=daemon.telegram_bot_token)
-
     slack: SlackChannel | None = None
-    if daemon.slack_bot_token:
-        slack = SlackChannel(bot_token=daemon.slack_bot_token)
-
     wecom: WeComChannel | None = None
-    if daemon.wecom_corp_id and daemon.wecom_corp_secret and daemon.wecom_agent_id:
+
+    try:
+        from anthill.cli.channel_cmd import build_channel
+        from anthill.core.userconfig import load_config as _load_user_cfg
+        for entry in _load_user_cfg().channels:
+            built = build_channel(entry)
+            if built is None:
+                continue
+            if entry.kind == "lark" and lark is None:
+                lark = built  # type: ignore[assignment]
+            elif entry.kind == "telegram" and telegram is None:
+                telegram = built  # type: ignore[assignment]
+            elif entry.kind == "slack" and slack is None:
+                slack = built  # type: ignore[assignment]
+            elif entry.kind == "wecom" and wecom is None:
+                wecom = built  # type: ignore[assignment]
+    except Exception:  # noqa: BLE001
+        # Config layer is best-effort; env-var fallback below still runs.
+        pass
+
+    if lark is None and daemon.lark_app_id and daemon.lark_app_secret:
+        lark = LarkChannel(app_id=daemon.lark_app_id, app_secret=daemon.lark_app_secret)
+    if telegram is None and daemon.telegram_bot_token:
+        telegram = TelegramChannel(bot_token=daemon.telegram_bot_token)
+    if slack is None and daemon.slack_bot_token:
+        slack = SlackChannel(bot_token=daemon.slack_bot_token)
+    if wecom is None and daemon.wecom_corp_id and daemon.wecom_corp_secret and daemon.wecom_agent_id:
         wecom = WeComChannel(
             corp_id=daemon.wecom_corp_id,
             corp_secret=daemon.wecom_corp_secret,
