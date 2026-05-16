@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from anthill.plugins.base import PluginRegistry
+from anthill.plugins.filesystem import FileListPlugin, FileReadPlugin, FileWritePlugin
+from anthill.plugins.shell import ShellPlugin
 from anthill.plugins.web import WebFetchPlugin, WebSearchPlugin
 
 
@@ -10,6 +12,10 @@ def _build_default() -> PluginRegistry:
     reg = PluginRegistry()
     reg.register(WebFetchPlugin())
     reg.register(WebSearchPlugin())
+    reg.register(FileReadPlugin())
+    reg.register(FileWritePlugin())
+    reg.register(FileListPlugin())
+    reg.register(ShellPlugin())
     return reg
 
 
