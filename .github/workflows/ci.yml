@@ -75,4 +75,14 @@ jobs:
           # Smoke test exercises only CLI surface — no need for [docs] / [browser].
           pip install -e ".[daemon]"
       - name: Smoke test (offline)
-        run: bash scripts/smoke-test.sh
+        run: |
+          bash scripts/smoke-test.sh 2>&1 | tee /tmp/smoke.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Upload smoke log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-log
+          path: /tmp/smoke.log
+          retention-days: 7
