@@ -4,6 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-632%20passing-brightgreen.svg)](tests/)
+[![Maintenance](https://img.shields.io/badge/maintenance-hobby%20project-yellow.svg)](MAINTENANCE.md)
 
 > Give Anthill one request. It splits the work, dispatches each piece
 > to the model that does it best, and assembles the result.
