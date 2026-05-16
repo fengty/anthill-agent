@@ -541,6 +541,23 @@ def _finalize_ask(nation: Nation, nation_name: str, config: AnthillConfig, resul
     default="first_success",
     help="Winner selection when --ensemble > 1: first_success / highest_score / shortest_correct / majority",
 )
+@click.option(
+    "--deliberate/--no-deliberate",
+    default=False,
+    help="v0.8 — keep refining the answer across rounds until quality threshold met.",
+)
+@click.option(
+    "--rounds",
+    type=int,
+    default=3,
+    help="Max deliberation rounds when --deliberate is on (default 3).",
+)
+@click.option(
+    "--quality",
+    type=float,
+    default=0.85,
+    help="Quality threshold [0-1] to stop deliberating early (default 0.85).",
+)
 def ask(
     request: str,
     nation_name: str,
@@ -550,6 +567,9 @@ def ask(
     max_replans: int,
     ensemble: int,
     strategy: str,
+    deliberate: bool,
+    rounds: int,
+    quality: float,
 ) -> None:
     """Hand the king's request to the nation. Scout decomposes; nation executes."""
     config = AnthillConfig.load()
@@ -612,6 +632,50 @@ def ask(
             )
 
         result = asyncio.run(_ensemble_run())
+    elif deliberate:
+        # v0.8 — multi-round refinement loop.
+        from anthill.core.deliberate import (
+            DeliberationRound,
+            deliberate as run_deliberate,
+        )
+
+        async def _on_round(r: "DeliberationRound") -> None:
+            quality_pct = r.quality * 100
+            dims_summary = ", ".join(
+                f"{k}={v:.2f}" for k, v in sorted(r.quality_by_dim.items())
+            ) if r.quality_by_dim else "no dims yet"
+            console.print(
+                f"  [bold cyan]round {r.round_num}[/bold cyan]  "
+                f"quality [bold]{quality_pct:.0f}%[/bold]  "
+                f"[dim]({dims_summary})[/dim]"
+            )
+            if r.critique:
+                snippet = r.critique[:200].replace("\n", " ")
+                console.print(f"  [dim]critique: {snippet}…[/dim]")
+
+        async def _deliberate_run():
+            return await run_deliberate(
+                nation,
+                request,
+                max_rounds=rounds,
+                quality_threshold=quality,
+                budget=budget if not budget.is_empty() else None,
+                on_round=_on_round,
+                nation_dir=nation_dir(config.home, nation_name),
+                max_replans=max_replans,
+            )
+
+        delib = asyncio.run(_deliberate_run())
+        # Render the deliberation summary, then hand the winning round
+        # off to _finalize_ask so history/costs/etc still record normally.
+        console.print()
+        traj = " → ".join(f"{q*100:.0f}%" for q in delib.quality_trajectory)
+        verdict_color = "green" if delib.converged else "yellow"
+        console.print(
+            f"[bold {verdict_color}]Deliberation: {delib.stop_reason}[/bold {verdict_color}]  "
+            f"[dim]({delib.total_rounds} round(s), quality {traj})[/dim]"
+        )
+        result = delib.final_round.ask_result
     else:
         result = asyncio.run(_run())
     _finalize_ask(nation, nation_name, config, result, request)

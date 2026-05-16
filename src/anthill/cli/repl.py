@@ -19,9 +19,14 @@ from __future__ import annotations
 
 import asyncio
 
-from rich.console import Console
+from rich.align import Align
+from rich.box import ROUNDED
+from rich.console import Console, Group
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
+from anthill import __version__
 from anthill.config import AnthillConfig
 from anthill.core.feedback import (
     AskRecord,
@@ -114,17 +119,121 @@ def _current_model_name() -> str:
     return cfg.default_model or "(none — anthill model add)"
 
 
+def _splash_banner(nation: Nation, stats: SessionStats) -> None:
+    """First-impression panel — printed once at startup.
+
+    Goals:
+      - Make it visually obvious this isn't a vanilla shell
+      - Communicate the "nation" metaphor in 3 seconds
+      - Show what's configured so the user knows what to do next
+
+    Kept ASCII-only so it works across terminals without font weirdness.
+    Two columns: ant-colony art on the left, nation stats panel on right.
+    """
+    model = _current_model_name()
+    model_display = (
+        f"[magenta]{model}[/magenta]" if model != "(none)"
+        else "[red](none — anthill model add)[/red]"
+    )
+    citizens_alive = sum(1 for a in nation.agents if not a.is_retired)
+    citizens_total = len(nation.agents)
+    citizen_line = (
+        f"[bold green]{citizens_alive}[/bold green] active"
+        if citizens_alive == citizens_total
+        else f"[bold green]{citizens_alive}[/bold green]/[dim]{citizens_total}[/dim] active"
+    )
+    trail_count = len(list(nation.pheromones.trails()))
+    dims = nation.dimension_catalog.known() if nation.dimension_catalog else []
+    dims_line = (
+        ", ".join(dims[:4]) + (f" +{len(dims) - 4}" if len(dims) > 4 else "")
+        if dims else "[dim](no value dims yet — they emerge from asks)[/dim]"
+    )
+    vocab = list(nation.culture.task_catalog.keys()) if nation.culture else []
+    vocab_line = (
+        ", ".join(sorted(vocab)[:4]) + (f" +{len(vocab) - 4}" if len(vocab) > 4 else "")
+        if vocab else "[dim](no task types yet)[/dim]"
+    )
+
+    # Big ASCII wordmark — pixel-aligned, monospace-safe across terminals.
+    # Built from box-drawing chars so no font weirdness.
+    wordmark = Text.from_markup(
+        "[bold yellow]"
+        "  █████╗ ███╗   ██╗████████╗██╗  ██╗██╗██╗     ██╗\n"
+        " ██╔══██╗████╗  ██║╚══██╔══╝██║  ██║██║██║     ██║\n"
+        " ███████║██╔██╗ ██║   ██║   ███████║██║██║     ██║\n"
+        " ██╔══██║██║╚██╗██║   ██║   ██╔══██║██║██║     ██║\n"
+        " ██║  ██║██║ ╚████║   ██║   ██║  ██║██║███████╗███████╗\n"
+        " ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚══════╝╚══════╝"
+        "[/bold yellow]"
+    )
+    tagline = Text.from_markup(
+        "[dim italic] one mechanism · many models · a nation that learns who's best at what[/dim italic]"
+    )
+
+    stats_table = Table(show_header=False, box=None, padding=(0, 1), pad_edge=False)
+    stats_table.add_column(style="dim", justify="right", no_wrap=True)
+    stats_table.add_column(no_wrap=False)
+
+    stats_table.add_row("nation",     f"[bold cyan]{nation.name}[/bold cyan]")
+    stats_table.add_row("model",      model_display)
+    stats_table.add_row("citizens",   citizen_line)
+    stats_table.add_row("trails",     f"[bold]{trail_count}[/bold]")
+    stats_table.add_row("vocabulary", vocab_line)
+    stats_table.add_row("dimensions", dims_line)
+    if stats.asks > 0:
+        stats_table.add_row("session",
+            f"{stats.asks} ask(s) · "
+            f"{stats.tokens_in + stats.tokens_out:,} tokens · "
+            f"${stats.cost_usd:.4f}"
+        )
+
+    inner = Group(
+        Align.center(wordmark),
+        Align.center(tagline),
+        Text(""),
+        stats_table,
+    )
+    panel = Panel(
+        inner,
+        title=f"[bold]anthill[/bold]  [dim]v{__version__}[/dim]",
+        subtitle="[dim]type a request • /help • /quit[/dim]",
+        border_style="cyan",
+        box=ROUNDED,
+        padding=(1, 2),
+    )
+    console.print(panel)
+
+
 def _print_status_bar(nation: Nation, stats: SessionStats) -> None:
+    """Compact one-line status between turns (post-splash).
+
+    Different format from the splash — splash is "introduce yourself",
+    status is "running tally." Includes a quality summary when v0.8
+    has any dimension scores observed.
+    """
     model = _current_model_name()
     cost = f"${stats.cost_usd:.4f}" if stats.cost_usd else "$0"
     tokens = f"{stats.tokens_in + stats.tokens_out:,}"
+    citizens_alive = sum(1 for a in nation.agents if not a.is_retired)
     line = (
         f"[bold cyan]{nation.name}[/bold cyan] "
-        f"[dim]·[/dim] model [magenta]{model}[/magenta] "
-        f"[dim]·[/dim] citizens [bold]{len(nation.agents)}[/bold] "
-        f"[dim]·[/dim] tokens {tokens} "
-        f"[dim]·[/dim] cost {cost}"
+        f"[dim]·[/dim] [magenta]{model}[/magenta] "
+        f"[dim]·[/dim] [green]{citizens_alive}[/green] citizens "
+        f"[dim]·[/dim] {tokens} tokens "
+        f"[dim]·[/dim] {cost}"
     )
+    # Add a quality indicator if the catalog has data
+    dims = nation.dimension_catalog.known() if nation.dimension_catalog else []
+    if dims:
+        # Average avg_score across known dimensions, excluding "cost"
+        scores = [
+            nation.dimension_catalog.dimensions[d].avg_score
+            for d in dims if d != "cost"
+        ]
+        if scores:
+            q = sum(scores) / len(scores)
+            color = "green" if q >= 0.8 else ("yellow" if q >= 0.6 else "red")
+            line += f" [dim]·[/dim] quality [{color}]{q * 100:.0f}%[/{color}]"
     console.print(line)
 
 
@@ -133,6 +242,10 @@ async def _handle_ask(
     nation: Nation,
     config: AnthillConfig,
     stats: SessionStats,
+    *,
+    deliberate: bool = True,
+    max_rounds: int = 3,
+    quality_threshold: float = 0.85,
 ) -> None:
     import time
 
@@ -174,11 +287,48 @@ async def _handle_ask(
                     f"[dim]failed after {len(outcome.attempts)} attempt(s)[/dim]"
                 )
 
-    result = await nation.ask(
-        request,
-        on_progress=on_progress,
-        nation_dir=nation_dir(config.home, nation.name),
-    )
+    if deliberate:
+        from anthill.core.deliberate import (
+            DeliberationRound,
+            deliberate as run_deliberate,
+        )
+
+        async def _on_round(r: DeliberationRound) -> None:
+            qpct = r.quality * 100
+            dims = ", ".join(
+                f"{k}={v:.2f}" for k, v in sorted(r.quality_by_dim.items())
+            ) if r.quality_by_dim else "no dims yet"
+            console.print(
+                f"  [bold cyan]round {r.round_num}[/bold cyan]  "
+                f"quality [bold]{qpct:.0f}%[/bold]  "
+                f"[dim]({dims})[/dim]"
+            )
+            if r.critique:
+                snippet = r.critique[:200].replace("\n", " ")
+                console.print(f"  [dim]critique: {snippet}…[/dim]")
+
+        delib = await run_deliberate(
+            nation, request,
+            max_rounds=max_rounds,
+            quality_threshold=quality_threshold,
+            on_progress=on_progress,
+            nation_dir=nation_dir(config.home, nation.name),
+            on_round=_on_round,
+        )
+        result = delib.final_round.ask_result
+        # Surface the trajectory after the loop
+        traj = " → ".join(f"{q*100:.0f}%" for q in delib.quality_trajectory)
+        verdict_color = "green" if delib.converged else "yellow"
+        console.print(
+            f"  [bold {verdict_color}]{delib.stop_reason}[/bold {verdict_color}]  "
+            f"[dim](rounds: {traj})[/dim]"
+        )
+    else:
+        result = await nation.ask(
+            request,
+            on_progress=on_progress,
+            nation_dir=nation_dir(config.home, nation.name),
+        )
     save_nation(nation, config.home)
 
     pairs = [
@@ -367,9 +517,19 @@ def run_repl(nation_name: str = "default") -> int:
     stats = SessionStats()
 
     console.print()
-    _print_status_bar(nation, stats)
-    console.print("[dim]Type a request or /help. Ctrl+D or /quit to exit.[/dim]")
+    _splash_banner(nation, stats)
     console.print()
+    # Hint if model is unconfigured — the only real blocker for the first ask.
+    if _current_model_name() == "(none)":
+        console.print(
+            "[yellow]No model configured yet.[/yellow]  "
+            "Run [cyan]anthill setup[/cyan] for an interactive walkthrough,"
+        )
+        console.print(
+            "  or [cyan]anthill model add deepseek "
+            "--provider deepseek --model deepseek-chat --key sk-...[/cyan]"
+        )
+        console.print()
 
     while True:
         try:
