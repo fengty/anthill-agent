@@ -102,7 +102,12 @@ else
   fail "secrets.toml missing"
 fi
 
-if [ "$(stat -f '%A' "$SECRETS_FILE" 2>/dev/null || stat -c '%a' "$SECRETS_FILE")" = "600" ]; then
+# GNU stat (Linux) first, BSD stat (macOS) fallback.
+# Order matters: on Linux, `stat -f` is "filesystem info" not "BSD format",
+# so `stat -f '%A'` succeeds but returns nonsense — using GNU `-c` first
+# avoids the false positive.
+MODE=$(stat -c '%a' "$SECRETS_FILE" 2>/dev/null || stat -f '%A' "$SECRETS_FILE")
+if [ "$MODE" = "600" ]; then
   pass "secrets.toml chmod 600"
 else
   fail "secrets.toml NOT chmod 600"
@@ -322,7 +327,10 @@ fi
 
 # 12. lifecycle example runs end-to-end offline
 banner "12. examples/lifecycle_cycle.py (offline)"
-EX_OUT=$(python -c "import sys; sys.path.insert(0, '.'); exec(open('examples/lifecycle_cycle.py').read())" 2>&1 || echo "EXFAIL")
+# Use python3 not python — `python` isn't always on PATH (macOS plain shell,
+# Ubuntu vanilla). Both Anthill's installer and most setups guarantee python3.
+PY="${PYTHON:-python3}"
+EX_OUT=$($PY -c "import sys; sys.path.insert(0, '.'); exec(open('examples/lifecycle_cycle.py').read())" 2>&1 || echo "EXFAIL")
 if echo "$EX_OUT" | grep -q "EXFAIL"; then
   fail "lifecycle example crashed"
   echo "$EX_OUT" | tail -5 | sed 's/^/    /'
