@@ -123,6 +123,12 @@ def build_entry_from_ask(
                 # citizens; older history files predate this field and the
                 # auditor falls back to pheromone timestamps for them.
                 "agent_id": o.final.agent_id if o.final is not None else None,
+                # Structured failure attribution per attempt (v0.5+). Stored
+                # as a list of FailureReason value strings; len matches
+                # the number of attempts. Successful attempts contribute None.
+                "failure_reasons": [
+                    getattr(a, "failure_reason", None) for a in o.attempts
+                ],
             }
             for o in outcomes
         ],

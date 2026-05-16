@@ -26,6 +26,12 @@ from anthill.core.cost_signal import (
     update_baseline,
 )
 from anthill.core.culture import Culture
+from anthill.core.immune import (
+    CitizenHealth,
+    maybe_probe_release,
+    maybe_quarantine,
+    record_attempt,
+)
 from anthill.core.values import DimensionCatalog
 from anthill.core.episodic import find_similar, format_similar_for_scout
 from anthill.core.judge import judge_enabled, judge_output
@@ -112,6 +118,16 @@ class Nation:
     # baseline via EWMA; cost-efficiency for a single attempt is computed
     # by comparing to this. v0.4.3+ — see core/cost_signal.
     cost_baselines: dict[str, float] = field(default_factory=dict)
+    # Immune system (v0.5+). Sliding windows of recent attempts per
+    # citizen. In-memory only — rebuilt from history on load if desired.
+    citizen_health: dict[str, CitizenHealth] = field(
+        default_factory=dict, repr=False
+    )
+    # Auto-quarantine pipeline gate. Default OFF: the user has to opt in
+    # via `anthill citizen quarantine policy --auto on` or by setting
+    # this directly. Manual `anthill citizen quarantine <id>` always
+    # works regardless.
+    immune_enabled: bool = False
     router_config: RouterConfig = field(default_factory=RouterConfig)
     scout_model: str = "deepseek-chat"
     plan_cache: dict[str, CachedPlan] = field(default_factory=dict)
@@ -164,6 +180,31 @@ class Nation:
         if a is None or not a.is_retired:
             return None
         a.retired_at = None
+        return a
+
+    def quarantine(self, agent_id: str, reason: str = "manual") -> Agent | None:
+        """Manually quarantine a citizen. Idempotent."""
+        a = self.find_agent(agent_id)
+        if a is None or a.is_quarantined:
+            return None
+        a.quarantined_at = time.time()
+        a.quarantine_reason = reason
+        # Reset probe streak so the next observations decide cleanly.
+        health = self.citizen_health.get(a.id)
+        if health is not None:
+            health.probe_streak = 0
+        return a
+
+    def unquarantine(self, agent_id: str) -> Agent | None:
+        """Manually release a citizen from quarantine."""
+        a = self.find_agent(agent_id)
+        if a is None or not a.is_quarantined:
+            return None
+        a.quarantined_at = None
+        a.quarantine_reason = None
+        health = self.citizen_health.get(a.id)
+        if health is not None:
+            health.probe_streak = 0
         return a
 
     @property
@@ -262,6 +303,16 @@ class Nation:
         # the nation's vocabulary is the work it tries, not only what it
         # succeeds at.
         self.culture.record(task_type)
+
+        # Immune system (v0.5): update health window + maybe quarantine.
+        # Always update the window regardless of immune_enabled so a
+        # later "turn it on" has data to work with. The maybe_quarantine
+        # / maybe_probe_release calls themselves check the flag.
+        health = record_attempt(self, result.agent_id, task_type, result)
+        if agent.is_quarantined:
+            maybe_probe_release(self, agent, health, result)
+        else:
+            maybe_quarantine(self, agent, health)
         return result
 
     def _model_for_agent(self, agent_id: str) -> str:

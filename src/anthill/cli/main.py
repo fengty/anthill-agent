@@ -1315,6 +1315,76 @@ def history_search(query: str, nation_name: str) -> None:
         console.print(f"[cyan]{e.id}[/cyan]  {e.request}")
 
 
+@history.command("failures")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+@click.option(
+    "--since-days",
+    default=0,
+    help="Only count failures from the last N days (0 = all).",
+)
+def history_failures(nation_name: str, since_days: int) -> None:
+    """Aggregate failure reasons across the nation's history (v0.5)."""
+    from collections import Counter
+    config = AnthillConfig.load()
+    entries = load_history(nation_dir(config.home, nation_name))
+    if not entries:
+        console.print("[dim]No history yet.[/dim]")
+        return
+    since = (time.time() - since_days * 86_400) if since_days > 0 else 0.0
+    by_reason: Counter[str] = Counter()
+    by_citizen: dict[str, Counter[str]] = {}
+    total_attempts = 0
+    total_failed_attempts = 0
+    for entry in entries:
+        if entry.timestamp < since:
+            continue
+        for outcome in entry.outcomes:
+            reasons = outcome.get("failure_reasons") or []
+            agent_id = outcome.get("agent_id") or "?"
+            for r in reasons:
+                total_attempts += 1
+                if r:
+                    total_failed_attempts += 1
+                    by_reason[r] += 1
+                    by_citizen.setdefault(agent_id, Counter())[r] += 1
+    if total_attempts == 0:
+        console.print("[dim]No attempts recorded yet.[/dim]")
+        return
+    rate = total_failed_attempts / total_attempts
+    console.print(
+        f"[bold]Failure summary[/bold] — {nation_name}  "
+        f"[dim]({total_failed_attempts}/{total_attempts} attempts, "
+        f"{rate:.0%} fail rate)[/dim]"
+    )
+    if not by_reason:
+        console.print("[green]No classified failures in this window.[/green]")
+        return
+    table = Table(title="By reason")
+    table.add_column("Reason", style="cyan")
+    table.add_column("Count", justify="right")
+    table.add_column("Share", justify="right", style="dim")
+    for reason, count in by_reason.most_common():
+        table.add_row(reason, str(count), f"{count / total_failed_attempts:.0%}")
+    console.print(table)
+
+    if by_citizen:
+        table2 = Table(title="By citizen (top reasons each)")
+        table2.add_column("Citizen", style="cyan")
+        table2.add_column("Failures", justify="right")
+        table2.add_column("Top reason")
+        for citizen_id, counter in sorted(
+            by_citizen.items(), key=lambda kv: -sum(kv[1].values())
+        )[:10]:
+            top_reason, top_count = counter.most_common(1)[0]
+            total = sum(counter.values())
+            table2.add_row(
+                citizen_id,
+                str(total),
+                f"{top_reason} ({top_count})",
+            )
+        console.print(table2)
+
+
 @cli.command("export")
 @click.option("--nation", "nation_name", default="default", help="Nation to export.")
 @click.argument("output", type=click.Path(path_type=Path))

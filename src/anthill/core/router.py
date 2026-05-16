@@ -64,13 +64,13 @@ class Router:
 
         forbid = forbid or set()
         candidates = [
-            a for a in self.agents if a.id not in forbid and not a.is_retired
+            a for a in self.agents
+            if a.id not in forbid and a.is_available
         ]
         if not candidates:
             raise RuntimeError(
                 f"No citizens available for '{task_type}': every candidate is "
-                f"forbidden or retired (likely all of them have already failed "
-                f"this attempt, or every active citizen was filtered)."
+                f"forbidden, retired, or quarantined."
             )
 
         # Exploration: occasionally pick a random eligible citizen.

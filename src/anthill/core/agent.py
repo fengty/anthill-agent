@@ -35,6 +35,10 @@ class TaskResult:
     # judge (or the user, via `anthill rate --dim`) named, lives here.
     # Keys are normalized via core.values.normalize_dim.
     scores: dict[str, float] = field(default_factory=dict)
+    # Structured failure attribution (v0.5+). Stored as the enum's string
+    # value so JSON round-trip is trivial. None when the attempt
+    # succeeded.
+    failure_reason: str | None = None
 
 
 @dataclass
@@ -70,11 +74,26 @@ class Agent:
     # lets a future `anthill citizen family` walk an ancestor tree.
     parent_id: str | None = None
     generation: int = 0
+    # Quarantine: v0.5+. Set by the immune system when the citizen's
+    # recent failures cross a threshold. Distinct from retirement:
+    # retirement is "user / lifecycle says this citizen is done";
+    # quarantine is "temporary observation — may auto-release."
+    quarantined_at: float | None = None
+    quarantine_reason: str | None = None
     _provider: ModelProvider | None = field(default=None, repr=False)
 
     @property
     def is_retired(self) -> bool:
         return self.retired_at is not None
+
+    @property
+    def is_quarantined(self) -> bool:
+        return self.quarantined_at is not None
+
+    @property
+    def is_available(self) -> bool:
+        """True when the router may assign new work."""
+        return not self.is_retired and not self.is_quarantined
 
     def _get_provider(self) -> ModelProvider:
         if self._provider is None:
@@ -103,6 +122,10 @@ class Agent:
             response = await provider.complete(prompt, system=effective_system)
             duration = time.perf_counter() - start
             success_score = 1.0 if response.text.strip() else 0.0
+            from anthill.core.failure import classify_attempt
+            reason = classify_attempt(
+                response.text, exception=None, success_score=success_score
+            )
             return TaskResult(
                 task_id=task_id,
                 agent_id=self.id,
@@ -112,9 +135,14 @@ class Agent:
                 duration_seconds=duration,
                 input_tokens=response.input_tokens,
                 output_tokens=response.output_tokens,
+                failure_reason=reason.value if reason is not None else None,
             )
         except Exception as e:  # noqa: BLE001 — we want any failure to erode the trail
             duration = time.perf_counter() - start
+            from anthill.core.failure import classify_attempt
+            reason = classify_attempt(
+                f"[error] {e}", exception=e, success_score=0.0
+            )
             return TaskResult(
                 task_id=task_id,
                 agent_id=self.id,
@@ -122,4 +150,5 @@ class Agent:
                 output=f"[error] {e}",
                 success_score=0.0,
                 duration_seconds=duration,
+                failure_reason=reason.value if reason is not None else None,
             )

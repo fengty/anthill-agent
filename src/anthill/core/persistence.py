@@ -38,6 +38,8 @@ def save_nation(nation: Nation, home: Path) -> Path:
             "retired_at": a.retired_at,
             "parent_id": a.parent_id,
             "generation": a.generation,
+            "quarantined_at": a.quarantined_at,
+            "quarantine_reason": a.quarantine_reason,
         }
         for a in nation.agents
     ]
@@ -66,6 +68,12 @@ def save_nation(nation: Nation, home: Path) -> Path:
     # stays semantically about "what good means", not "what good costs".
     (directory / "cost_baselines.json").write_text(
         json.dumps(dict(nation.cost_baselines), indent=2)
+    )
+    # Immune system policy (v0.5+). Only a flag for now — the sliding
+    # windows themselves stay in memory and are rebuilt from history
+    # when needed.
+    (directory / "immune.json").write_text(
+        json.dumps({"enabled": bool(nation.immune_enabled)}, indent=2)
     )
 
     return directory
@@ -102,6 +110,13 @@ def load_nation(name: str, home: Path) -> Nation | None:
                 kwargs["parent_id"] = record["parent_id"]
             if "generation" in record and record["generation"] is not None:
                 kwargs["generation"] = int(record["generation"])
+            if "quarantined_at" in record:
+                kwargs["quarantined_at"] = (
+                    None if record["quarantined_at"] is None
+                    else float(record["quarantined_at"])
+                )
+            if "quarantine_reason" in record:
+                kwargs["quarantine_reason"] = record["quarantine_reason"]
             agents.append(Agent(**kwargs))
 
     pheromones = PheromoneTrail()
@@ -144,6 +159,15 @@ def load_nation(name: str, home: Path) -> Nation | None:
         except (OSError, json.JSONDecodeError):
             pass
 
+    immune_enabled = False
+    immune_file = directory / "immune.json"
+    if immune_file.exists():
+        try:
+            raw = json.loads(immune_file.read_text())
+            immune_enabled = bool(raw.get("enabled", False))
+        except (OSError, json.JSONDecodeError):
+            pass
+
     return Nation(
         name=name,
         agents=agents,
@@ -153,4 +177,5 @@ def load_nation(name: str, home: Path) -> Nation | None:
         history_path=directory / "history.jsonl",
         dimension_catalog=dimension_catalog,
         cost_baselines=cost_baselines,
+        immune_enabled=immune_enabled,
     )

@@ -175,7 +175,7 @@ def test_router_raises_when_all_active_are_forbidden() -> None:
     a1 = _aged_agent(days_ago=1)
     a2 = _aged_agent(days_ago=1, retired=True)
     router = Router(pher, [a1, a2])
-    with pytest.raises(RuntimeError, match="forbidden or retired"):
+    with pytest.raises(RuntimeError, match="forbidden, retired"):
         router.assign("any", forbid={a1.id})
 
 

@@ -33,6 +33,107 @@ from anthill.core.reproduction import (
 )
 
 
+@click.group()
+def quarantine() -> None:
+    """v0.5 — list / release / set policy for the immune system."""
+
+
+@quarantine.command("list")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def quarantine_list(nation_name: str) -> None:
+    """Show all currently quarantined citizens."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+    rows = [a for a in nation.agents if a.is_quarantined]
+    if not rows:
+        console.print("[dim]No citizens currently quarantined.[/dim]")
+        return
+    table = Table(title=f"Quarantined citizens — {nation_name}")
+    table.add_column("ID", style="cyan")
+    table.add_column("Model", style="magenta")
+    table.add_column("Since", style="dim")
+    table.add_column("Reason", style="yellow")
+    for a in rows:
+        when = datetime.datetime.fromtimestamp(
+            a.quarantined_at or 0
+        ).strftime("%m-%d %H:%M") if a.quarantined_at else "—"
+        table.add_row(a.id, a.model, when, a.quarantine_reason or "—")
+    console.print(table)
+
+
+@quarantine.command("set")
+@click.argument("agent_id")
+@click.option("--reason", default="manual", help="Why you're quarantining.")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def quarantine_set(agent_id: str, reason: str, nation_name: str) -> None:
+    """Manually quarantine a citizen."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+    a = nation.quarantine(agent_id, reason=reason)
+    if a is None:
+        console.print(
+            f"[red]Could not quarantine '{agent_id}' "
+            f"(not found or already quarantined).[/red]"
+        )
+        return
+    save_nation(nation, config.home)
+    console.print(
+        f"[yellow]Quarantined[/yellow] {a.id}  "
+        f"[dim]({a.model}, reason: {a.quarantine_reason})[/dim]"
+    )
+
+
+@quarantine.command("release")
+@click.argument("agent_id")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def quarantine_release(agent_id: str, nation_name: str) -> None:
+    """Manually release a quarantined citizen."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+    a = nation.unquarantine(agent_id)
+    if a is None:
+        console.print(
+            f"[red]Could not release '{agent_id}' "
+            f"(not found or not quarantined).[/red]"
+        )
+        return
+    save_nation(nation, config.home)
+    console.print(f"[green]Released[/green] {a.id} from quarantine.")
+
+
+@quarantine.command("policy")
+@click.option(
+    "--auto",
+    type=click.Choice(["on", "off"]),
+    required=True,
+    help="Turn the auto-quarantine pipeline on or off.",
+)
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def quarantine_policy(auto: str, nation_name: str) -> None:
+    """Enable / disable the immune system auto-quarantine."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+    nation.immune_enabled = auto == "on"
+    save_nation(nation, config.home)
+    state = "[green]on[/green]" if nation.immune_enabled else "[dim]off[/dim]"
+    console.print(f"Auto-quarantine: {state}")
+
+
+# Attach as a sub-group of citizen.
+
+
 console = Console()
 
 
@@ -458,3 +559,6 @@ def citizen_family(agent_id: str, nation_name: str) -> None:
             )
     else:
         console.print("[dim]No descendants yet.[/dim]")
+
+
+citizen.add_command(quarantine)
