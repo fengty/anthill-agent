@@ -116,17 +116,25 @@ def _check_config_file() -> CheckResult:
 
 
 def _check_secrets_perms() -> CheckResult:
-    from anthill.core.userconfig import secrets_path
-    path = secrets_path()
-    if not path.exists():
+    from anthill.core.userconfig import audit_secrets_permissions
+    audit = audit_secrets_permissions()
+    if not audit["exists"]:
         return CheckResult("secrets", "miss", "no secrets.toml yet",
                            "anthill model add will create it")
-    if os.name != "posix":
-        return CheckResult("secrets", "ok", str(path))
-    mode = path.stat().st_mode & 0o777
-    if mode != 0o600:
-        return CheckResult("secrets", "warn", f"chmod is {oct(mode)} (want 0o600)",
-                           f"chmod 600 {path}")
+    path = audit["path"]
+    if not audit["mode_ok"]:
+        return CheckResult(
+            "secrets",
+            "fail",
+            f"chmod is {audit['mode']} (want 0o600) and auto-fix failed",
+            f"chmod 600 {path}",
+        )
+    if audit["fixed"]:
+        return CheckResult(
+            "secrets",
+            "warn",
+            f"{path}  (chmod drifted, auto-fixed to {audit['mode']})",
+        )
     return CheckResult("secrets", "ok", f"{path}  (mode 0600)")
 
 

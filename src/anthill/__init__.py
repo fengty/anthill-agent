@@ -1,6 +1,6 @@
 """Anthill — every user grows their own AI nation through accumulated experience."""
 
-__version__ = "0.2.8"
+__version__ = "0.2.9"
 
 from anthill.core.agent import Agent
 from anthill.core.nation import Nation
