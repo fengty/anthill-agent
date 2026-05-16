@@ -27,7 +27,10 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from anthill.core.values import DimensionCatalog
 
 from anthill.core.pheromone import PheromoneTrail
 
@@ -129,6 +132,8 @@ def apply_rating(
     pheromones: PheromoneTrail,
     *,
     weight: float = 2.0,
+    dim_scores: dict[str, float] | None = None,
+    catalog: "DimensionCatalog | None" = None,
 ) -> int:
     """Apply the king's verdict to the pheromone map.
 
@@ -136,6 +141,17 @@ def apply_rating(
     than the routine success check, so we give it more impact than a
     single successful task would normally deposit. Returns the number of
     (agent, task_type) trails touched.
+
+    `dim_scores` (v0.4.2+) lets the rating carry per-dimension judgments:
+    `{"correctness": 1.0, "conciseness": 0.0}` means "great on accuracy
+    but way too verbose." When provided:
+      - each dim is recorded on every (citizen, task_type) trail
+        involved in this ask (so the router can later weight by it)
+      - the DimensionCatalog (if given) auto-registers the names —
+        the user's vocabulary is on the same footing as the judge's
+    Combined with rating up/down, this lets a user say
+    `anthill rate up --dim conciseness=down` and have the overall
+    pheromone still grow while penalizing one specific dimension.
     """
     if rating == "up":
         score = weight
@@ -155,5 +171,14 @@ def apply_rating(
             if trail is not None:
                 trail.strength = max(0.0, trail.strength - weight)
                 trail.last_updated = time.time()
+        # Per-dimension feedback: drop the scores onto each trail and
+        # register the names in the catalog so they immediately become
+        # weightable. Works whether the overall rating was up or down —
+        # they are orthogonal axes.
+        if dim_scores:
+            pheromones.record_dimensions(agent_id, task_type, dim_scores)
+            if catalog is not None:
+                for dim_name, score_value in dim_scores.items():
+                    catalog.observe(dim_name, score=score_value)
         touched += 1
     return touched

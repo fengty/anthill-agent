@@ -1360,12 +1360,67 @@ def import_cmd(archive: Path) -> None:
     )
 
 
+def _parse_dim_arg(raw: str) -> tuple[str, float] | None:
+    """Parse a `--dim correctness=up` / `--dim conciseness=0.2` flag.
+
+    Accepts these value tokens:
+      up / +     → 1.0
+      down / -   → 0.0
+      <float>    → clamped to [0, 1]
+    Returns (normalized_name, score) or None when malformed.
+    """
+    if "=" not in raw:
+        return None
+    name, _, value = raw.partition("=")
+    name = name.strip()
+    value = value.strip().lower()
+    if not name:
+        return None
+    if value in ("up", "+", "yes", "y"):
+        score: float = 1.0
+    elif value in ("down", "-", "no", "n"):
+        score = 0.0
+    else:
+        try:
+            score = max(0.0, min(1.0, float(value)))
+        except ValueError:
+            return None
+    from anthill.core.values import normalize_dim
+    key = normalize_dim(name)
+    if not key:
+        return None
+    return key, score
+
+
 @cli.command()
 @click.argument("verdict", type=click.Choice(["up", "down"]))
 @click.option("--nation", "nation_name", default="default", help="Nation name.")
 @click.option("--weight", default=2.0, help="Rating impact magnitude.")
-def rate(verdict: str, nation_name: str, weight: float) -> None:
-    """Rate the last `anthill ask` up or down. Reshapes pheromone trails."""
+@click.option(
+    "--dim",
+    "dim_args",
+    multiple=True,
+    help="Per-dimension score, e.g. `--dim correctness=up --dim conciseness=0.2`. Repeatable.",
+)
+def rate(
+    verdict: str,
+    nation_name: str,
+    weight: float,
+    dim_args: tuple[str, ...],
+) -> None:
+    """Rate the last `anthill ask` up or down. Reshapes pheromone trails.
+
+    Use `--dim NAME=VALUE` (repeatable) to add per-dimension feedback,
+    which lands in the same DimensionCatalog the LLM judge writes to.
+    VALUE can be `up` / `down` / `+` / `-` / a float in [0, 1].
+
+    Example:
+      anthill rate up --dim correctness=up --dim conciseness=down
+
+    The overall verdict still reshapes pheromone strength; the dim
+    scores reshape per-dimension trail data that `anthill values` and
+    the router use.
+    """
     config = AnthillConfig.load()
     nation = load_nation(nation_name, config.home)
     if nation is None:
@@ -1377,7 +1432,22 @@ def rate(verdict: str, nation_name: str, weight: float) -> None:
         console.print("[yellow]No recent ask to rate. Run [cyan]anthill ask[/cyan] first.[/yellow]")
         return
 
-    touched = apply_rating(verdict, record, nation.pheromones, weight=weight)
+    dim_scores: dict[str, float] = {}
+    for raw in dim_args:
+        parsed = _parse_dim_arg(raw)
+        if parsed is None:
+            console.print(f"[yellow]Skipping malformed --dim: {raw!r}[/yellow]")
+            continue
+        dim_scores[parsed[0]] = parsed[1]
+
+    touched = apply_rating(
+        verdict,
+        record,
+        nation.pheromones,
+        weight=weight,
+        dim_scores=dim_scores or None,
+        catalog=nation.dimension_catalog if dim_scores else None,
+    )
     save_nation(nation, config.home)
 
     # Preserve the rated output as an exemplar for future style learning.
@@ -1399,6 +1469,9 @@ def rate(verdict: str, nation_name: str, weight: float) -> None:
         f"to {touched} trail(s) for request:"
     )
     console.print(f"  [dim]{record.request}[/dim]")
+    if dim_scores:
+        dim_line = ", ".join(f"{k}={v:.2f}" for k, v in dim_scores.items())
+        console.print(f"  [dim]dimensions: {dim_line}[/dim]")
 
 
 @cli.command()
