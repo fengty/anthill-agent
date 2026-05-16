@@ -16,15 +16,47 @@ Then:
 
 ```bash
 export ANTHILL_DEEPSEEK_KEY="sk-..."
-anthill init
-anthill spawn --count 4
-anthill ask "用一句话解释什么是信息素路由"
+anthill                  # drops into an interactive REPL
 ```
 
-That's it. The installer detects Python 3.9+, clones into
-`~/.anthill-agent/`, sets up an isolated venv, and drops a wrapper at
-`~/.local/bin/anthill` so the `anthill` command is on your PATH.
-Re-run the installer at any time to upgrade.
+The installer detects Python 3.9+, clones into `~/.anthill-agent/`,
+sets up an isolated venv, and drops a wrapper at `~/.local/bin/anthill`.
+Re-run the installer any time to upgrade.
+
+---
+
+## Three ways to talk to it
+
+**1. Terminal REPL**
+
+```bash
+$ anthill
+Anthill — default (3 citizens)
+» 用一句话解释什么是信息素路由
+信息素路由是路由器根据 agent 历史成功的轨迹累积来选择执行者...
+```
+
+**2. One-shot CLI**
+
+```bash
+anthill ask "Research the top 3 Chinese open-source LLMs and write a recommendation"
+```
+
+**3. Lark / Telegram / Slack — let your nation answer from IM**
+
+```bash
+pip install 'anthill-agent[daemon]'
+
+export ANTHILL_LARK_APP_ID=cli_...
+export ANTHILL_LARK_APP_SECRET=...
+# (or ANTHILL_TELEGRAM_BOT_TOKEN, ANTHILL_SLACK_BOT_TOKEN)
+
+anthill serve
+```
+
+Point your bot's webhook at `http://your-host:8765/lark/webhook` and the
+nation answers any message it receives. Same nation, same memory across
+channels — your Lark bot and your Slack bot share one mind.
 
 ---
 
@@ -61,6 +93,19 @@ The mechanism is ancient:
 The same mechanism — pheromones, citations, footpaths, prices, customs —
 is what every form of large-scale coordination in nature settles on.
 Anthill brings it to AI.
+
+---
+
+## What ships in the box
+
+| | |
+|---|---|
+| **Multi-model collaboration** | DeepSeek + MiniMax built in; any OpenAI-compatible model pluggable |
+| **Plugins** | `web_fetch`, `web_search`, `file_read`, `file_write`, `file_list`, `shell` (opt-in) |
+| **IM channels** | Lark/Feishu, Telegram, Slack — one daemon, three webhooks |
+| **Memory** | Episodic semantic search + workflow templates + plan cache + pheromones + facts |
+| **Observability** | `anthill power` (6-dim strength), `anthill costs` (token spend), `anthill history` |
+| **Portability** | `anthill export` → tar.gz, `anthill import` to restore on another machine |
 
 ---
 
