@@ -115,14 +115,14 @@ def _add_model_interactive(user_config: UserConfig) -> tuple[str, str]:
     preset = PROVIDER_PRESETS[provider]
 
     default_name = provider if not user_config.find_model(provider) else f"{provider}-2"
-    name = _prompt(f"Save as", default=default_name)
+    name = _prompt("Save as", default=default_name)
 
     if preset.needs_base_url:
         base_url = _prompt("Base URL (OpenAI-compatible endpoint)")
     else:
         base_url = None
 
-    model_id = _prompt(f"Model id", default=preset.default_model)
+    model_id = _prompt("Model id", default=preset.default_model)
 
     api_key = _prompt_secret(preset.key_prompt or "API key")
     if not api_key:
