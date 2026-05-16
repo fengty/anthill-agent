@@ -6,6 +6,28 @@
 
 ---
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fengty/anthill-agent/main/scripts/install.sh | bash
+```
+
+Then:
+
+```bash
+export ANTHILL_DEEPSEEK_KEY="sk-..."
+anthill init
+anthill spawn --count 4
+anthill ask "用一句话解释什么是信息素路由"
+```
+
+That's it. The installer detects Python 3.9+, clones into
+`~/.anthill-agent/`, sets up an isolated venv, and drops a wrapper at
+`~/.local/bin/anthill` so the `anthill` command is on your PATH.
+Re-run the installer at any time to upgrade.
+
+---
+
 ## What this is
 
 No single model is best at everything. Claude reasons better than DeepSeek
