@@ -36,13 +36,26 @@ class Agent:
     a system prompt baked in at spawn time. This is what creates the
     latent capability differences that the pheromone mechanism is
     supposed to discover.
+
+    Lifecycle: `retired_at` is the soft-delete marker. A retired citizen
+    stays in the nation (so pheromone trails and history still resolve
+    its id) but the router will not assign new tasks to it. Retirement
+    is reversible — `Nation.unretire(id)` clears the field. Citizens
+    can be retired manually (`anthill citizen retire`) or in bulk by
+    the lifecycle module's stale-citizen sweep.
     """
 
     id: str = field(default_factory=lambda: f"ant-{uuid.uuid4().hex[:8]}")
     model: str = "deepseek-chat"
     persona: str | None = None
     private_memory: dict[str, Any] = field(default_factory=dict)
+    born_at: float = field(default_factory=time.time)
+    retired_at: float | None = None
     _provider: ModelProvider | None = field(default=None, repr=False)
+
+    @property
+    def is_retired(self) -> bool:
+        return self.retired_at is not None
 
     def _get_provider(self) -> ModelProvider:
         if self._provider is None:

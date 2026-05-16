@@ -12,6 +12,7 @@ mechanism scales.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from pathlib import Path
@@ -116,6 +117,39 @@ class Nation:
         new_agents = [Agent(model=model, persona=persona) for _ in range(count)]
         self.agents.extend(new_agents)
         return new_agents
+
+    def find_agent(self, agent_id: str) -> Agent | None:
+        """Locate by full or prefix id. Returns the first match or None."""
+        for a in self.agents:
+            if a.id == agent_id or a.id.startswith(agent_id):
+                return a
+        return None
+
+    def alive_agents(self) -> list[Agent]:
+        """Active (non-retired) citizens — the working population."""
+        return [a for a in self.agents if not a.is_retired]
+
+    def retire(self, agent_id: str) -> Agent | None:
+        """Mark a citizen retired so the router stops assigning to it.
+
+        Returns the agent that was retired, or None if not found / already
+        retired. Idempotent: re-retiring is a no-op rather than an error,
+        so a CLI that runs `retire` over a partial selection can safely
+        cover ground without checking each id first.
+        """
+        a = self.find_agent(agent_id)
+        if a is None or a.is_retired:
+            return None
+        a.retired_at = time.time()
+        return a
+
+    def unretire(self, agent_id: str) -> Agent | None:
+        """Restore a retired citizen to active duty."""
+        a = self.find_agent(agent_id)
+        if a is None or not a.is_retired:
+            return None
+        a.retired_at = None
+        return a
 
     @property
     def router(self) -> Router:

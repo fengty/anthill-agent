@@ -33,6 +33,8 @@ def save_nation(nation: Nation, home: Path) -> Path:
             "model": a.model,
             "persona": a.persona,
             "private_memory": a.private_memory,
+            "born_at": a.born_at,
+            "retired_at": a.retired_at,
         }
         for a in nation.agents
     ]
@@ -68,14 +70,22 @@ def load_nation(name: str, home: Path) -> Nation | None:
     agents: list[Agent] = []
     if agents_file.exists():
         for record in json.loads(agents_file.read_text()):
-            agents.append(
-                Agent(
-                    id=record["id"],
-                    model=record.get("model", "deepseek-chat"),
-                    persona=record.get("persona"),
-                    private_memory=record.get("private_memory", {}),
+            kwargs = {
+                "id": record["id"],
+                "model": record.get("model", "deepseek-chat"),
+                "persona": record.get("persona"),
+                "private_memory": record.get("private_memory", {}),
+            }
+            # Older agents.json files predate lifecycle. Only pass these
+            # fields when they exist so we don't override the dataclass
+            # default-factory for born_at on legacy data.
+            if "born_at" in record and record["born_at"] is not None:
+                kwargs["born_at"] = float(record["born_at"])
+            if "retired_at" in record:
+                kwargs["retired_at"] = (
+                    None if record["retired_at"] is None else float(record["retired_at"])
                 )
-            )
+            agents.append(Agent(**kwargs))
 
     pheromones = PheromoneTrail()
     if pheromones_file.exists():

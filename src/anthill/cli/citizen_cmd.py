@@ -1,0 +1,271 @@
+"""anthill citizen — lifecycle management for the nation's agents.
+
+The verbs here are deliberately neutral. "retire" not "kill", "audit"
+not "purge". Citizens that are retired stay in the nation; they just
+don't get assigned new work. The user can always change their mind
+with `unretire`.
+"""
+
+from __future__ import annotations
+
+import datetime
+
+import click
+from rich.console import Console
+from rich.table import Table
+
+from anthill.config import AnthillConfig
+from anthill.core.history import load_history
+from anthill.core.lifecycle import (
+    RetirementCriteria,
+    audit_nation,
+    retire_stale,
+    snapshot_nation,
+)
+from anthill.core.persistence import load_nation, nation_dir, save_nation
+
+
+console = Console()
+
+
+@click.group()
+def citizen() -> None:
+    """Roster, lifecycle, and retirement of the nation's citizens."""
+
+
+@citizen.command("list")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+@click.option("--all", "show_all", is_flag=True, help="Include retired citizens too.")
+def citizen_list(nation_name: str, show_all: bool) -> None:
+    """Show the nation's roster with activity + pheromone signals."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+
+    history = load_history(nation_dir(config.home, nation_name))
+    snaps = snapshot_nation(nation, history)
+    if not show_all:
+        snaps = [s for s in snaps if not s.is_retired]
+
+    if not snaps:
+        suffix = "" if show_all else " (use --all to show retired)"
+        console.print(f"[dim]No active citizens{suffix}.[/dim]")
+        return
+
+    table = Table(title=f"Citizens — {nation_name}")
+    table.add_column("ID", style="cyan")
+    table.add_column("Model", style="magenta")
+    table.add_column("Status")
+    table.add_column("Age", justify="right")
+    table.add_column("Last active", style="dim", justify="right")
+    table.add_column("Max trail", justify="right", style="green")
+    table.add_column("Trails", justify="right")
+
+    color = {
+        "active": "green",
+        "quiet": "yellow",
+        "untested": "dim",
+        "retired": "red",
+    }
+    for s in snaps:
+        label = s.status_label()
+        idle = (
+            f"{s.idle_days:.0f}d ago" if s.idle_days is not None else "never"
+        )
+        table.add_row(
+            s.agent_id,
+            s.model,
+            f"[{color[label]}]{label}[/{color[label]}]",
+            f"{s.age_days:.0f}d",
+            idle,
+            f"{s.max_strength:.2f}",
+            str(s.task_attempts),
+        )
+    console.print(table)
+
+
+@citizen.command("retire")
+@click.argument("agent_id")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def citizen_retire(agent_id: str, nation_name: str) -> None:
+    """Soft-delete a citizen so the router stops assigning to it."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+
+    agent = nation.retire(agent_id)
+    if agent is None:
+        console.print(
+            f"[red]Could not retire '{agent_id}'.[/red] "
+            f"[dim](not found, or already retired)[/dim]"
+        )
+        return
+    save_nation(nation, config.home)
+    console.print(
+        f"[yellow]Retired[/yellow] {agent.id}  [dim]({agent.model})[/dim]"
+    )
+    console.print(f"  Restore with [cyan]anthill citizen unretire {agent.id}[/cyan].")
+
+
+@citizen.command("unretire")
+@click.argument("agent_id")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def citizen_unretire(agent_id: str, nation_name: str) -> None:
+    """Restore a retired citizen to active duty."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+
+    agent = nation.unretire(agent_id)
+    if agent is None:
+        console.print(
+            f"[red]Could not unretire '{agent_id}'.[/red] "
+            f"[dim](not found, or not currently retired)[/dim]"
+        )
+        return
+    save_nation(nation, config.home)
+    console.print(f"[green]Restored[/green] {agent.id} to active duty.")
+
+
+@citizen.command("audit")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+@click.option(
+    "--idle-days",
+    type=float,
+    default=None,
+    help="Minimum idle days to count as stale (default 30).",
+)
+@click.option(
+    "--max-strength",
+    type=float,
+    default=None,
+    help="Max pheromone strength to count as a dead trail (default 0.05).",
+)
+@click.option(
+    "--min-age-days",
+    type=float,
+    default=None,
+    help="Bootstrap protection — citizens younger than this are never stale (default 7).",
+)
+def citizen_audit(
+    nation_name: str,
+    idle_days: float | None,
+    max_strength: float | None,
+    min_age_days: float | None,
+) -> None:
+    """Show which citizens would be retired if you ran `retire-stale`.
+
+    Read-only — nothing changes on disk. Tighten the thresholds via
+    flags to see different cohorts; the default criteria are
+    deliberately conservative.
+    """
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+
+    crit = RetirementCriteria()
+    if idle_days is not None:
+        crit.min_idle_days = idle_days
+    if max_strength is not None:
+        crit.max_dead_strength = max_strength
+    if min_age_days is not None:
+        crit.min_age_days = min_age_days
+
+    history = load_history(nation_dir(config.home, nation_name))
+    report = audit_nation(nation, history, crit)
+
+    console.print(
+        f"[bold]Audit[/bold] — {nation_name}  "
+        f"[dim](active {report.active_count} · retired {report.retired_count})[/dim]"
+    )
+    console.print(
+        f"[dim]criteria: idle ≥ {crit.min_idle_days:.0f}d · "
+        f"max trail ≤ {crit.max_dead_strength:.2f} · "
+        f"min age {crit.min_age_days:.0f}d[/dim]"
+    )
+    console.print()
+
+    if not report.stale:
+        console.print("[green]No stale citizens by these criteria.[/green]")
+        return
+
+    table = Table(title="Would retire")
+    table.add_column("ID", style="cyan")
+    table.add_column("Model", style="magenta")
+    table.add_column("Age", justify="right")
+    table.add_column("Idle", justify="right")
+    table.add_column("Max trail", justify="right")
+    for s in report.stale:
+        idle = f"{s.idle_days:.0f}d" if s.idle_days is not None else "never"
+        table.add_row(
+            s.agent_id,
+            s.model,
+            f"{s.age_days:.0f}d",
+            idle,
+            f"{s.max_strength:.2f}",
+        )
+    console.print(table)
+    console.print()
+    console.print(
+        "[dim]Apply with [cyan]anthill citizen retire-stale[/cyan] "
+        "(use the same threshold flags).[/dim]"
+    )
+
+
+@citizen.command("retire-stale")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+@click.option("--idle-days", type=float, default=None, help="Override default 30d.")
+@click.option("--max-strength", type=float, default=None, help="Override default 0.05.")
+@click.option("--min-age-days", type=float, default=None, help="Override default 7d.")
+@click.option(
+    "--yes", is_flag=True, help="Skip the confirmation prompt.",
+)
+def citizen_retire_stale(
+    nation_name: str,
+    idle_days: float | None,
+    max_strength: float | None,
+    min_age_days: float | None,
+    yes: bool,
+) -> None:
+    """Run the audit and retire every citizen it flags."""
+    config = AnthillConfig.load()
+    nation = load_nation(nation_name, config.home)
+    if nation is None:
+        console.print(f"[red]No nation named '{nation_name}'.[/red]")
+        return
+
+    crit = RetirementCriteria()
+    if idle_days is not None:
+        crit.min_idle_days = idle_days
+    if max_strength is not None:
+        crit.max_dead_strength = max_strength
+    if min_age_days is not None:
+        crit.min_age_days = min_age_days
+
+    history = load_history(nation_dir(config.home, nation_name))
+    report = audit_nation(nation, history, crit)
+    if not report.stale:
+        console.print("[green]Nothing to retire.[/green]")
+        return
+
+    console.print(f"[yellow]Would retire {len(report.stale)} citizen(s):[/yellow]")
+    for s in report.stale:
+        console.print(f"  - {s.agent_id} ({s.model})")
+    if not yes:
+        if not click.confirm("Proceed?"):
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    retired = retire_stale(nation, history, crit)
+    save_nation(nation, config.home)
+    console.print(f"[yellow]Retired {len(retired)} citizen(s).[/yellow]")
+    when = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    console.print(f"[dim]({when})[/dim]")

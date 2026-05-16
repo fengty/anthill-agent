@@ -47,16 +47,23 @@ class Router:
         on retry, to try someone other than whoever just failed. If
         forbidding everyone, raises RuntimeError; the executor catches it
         and marks the subtask as unrecoverable.
+
+        Retired citizens are filtered out of the candidate pool. They keep
+        their place in nation.agents (so pheromones and history still
+        resolve their id) but never receive new work.
         """
         if not self.agents:
             raise RuntimeError("No citizens in the nation.")
 
         forbid = forbid or set()
-        candidates = [a for a in self.agents if a.id not in forbid]
+        candidates = [
+            a for a in self.agents if a.id not in forbid and not a.is_retired
+        ]
         if not candidates:
             raise RuntimeError(
                 f"No citizens available for '{task_type}': every candidate is "
-                f"forbidden (likely all of them have already failed this attempt)."
+                f"forbidden or retired (likely all of them have already failed "
+                f"this attempt, or every active citizen was filtered)."
             )
 
         # Exploration: occasionally pick a random eligible citizen.

@@ -117,6 +117,12 @@ def build_entry_from_ask(
                 "attempts": len(o.attempts),
                 "final_output": o.output if o.status == "ok" else None,
                 "skip_reason": o.skip_reason,
+                # agent_id of the final attempt — None when the subtask was
+                # skipped before any citizen ran it. Used by the lifecycle
+                # auditor (v0.3.0) to credit recent activity to specific
+                # citizens; older history files predate this field and the
+                # auditor falls back to pheromone timestamps for them.
+                "agent_id": o.final.agent_id if o.final is not None else None,
             }
             for o in outcomes
         ],
