@@ -68,11 +68,21 @@ class BackgroundJob:
     def is_alive(self) -> bool:
         """POSIX-only check that the recorded pid still exists.
 
-        We don't try to verify it's the SAME process — pid reuse is
-        possible if the system has wrapped around, but on the timescales
-        a bg ask runs that's essentially never. If you've kept anthill
-        bg jobs around for weeks, you have other problems.
+        Authoritative finished-ness: if `done.json` was written by the
+        wrapper or the user cancelled, the process is GONE regardless of
+        what kill(pid, 0) says. This matters on Linux where unreaped
+        zombie children still respond to `kill(pid, 0)` until the
+        kernel collects them — without this short-circuit the test
+        suite (and the `bg cancel` flow) thinks a finished job is
+        still running. macOS reaps more eagerly so the bug doesn't
+        show there, which is why local tests pass but CI on Ubuntu
+        catches it.
+
+        We don't try to verify it's the SAME process for pid reuse —
+        that's essentially impossible on the timescales a bg ask runs.
         """
+        if self.exit_code is not None or self.cancelled:
+            return False
         if self.pid <= 0:
             return False
         try:
