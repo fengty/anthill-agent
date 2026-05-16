@@ -88,6 +88,12 @@ def setup(force: bool) -> None:
     raise SystemExit(run_wizard(force=force))
 
 
+# 'anthill model ...' subcommand group.
+from anthill.cli.model_cmd import model as _model_group  # noqa: E402
+
+cli.add_command(_model_group)
+
+
 @cli.command()
 @click.argument("name", default="default")
 def init(name: str) -> None:
