@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 Read the docs first
+    url: https://github.com/fengty/anthill-agent#readme
+    about: README + CONTRIBUTING cover most setup questions
+  - name: 🧪 Debug your local install
+    url: https://github.com/fengty/anthill-agent/blob/main/scripts/smoke-test.sh
+    about: Run `bash scripts/smoke-test.sh` to verify the CLI surface

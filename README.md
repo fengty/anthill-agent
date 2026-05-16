@@ -1,9 +1,19 @@
 # Anthill
 
+[![CI](https://github.com/fengty/anthill-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/fengty/anthill-agent/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-632%20passing-brightgreen.svg)](tests/)
+
 > Give Anthill one request. It splits the work, dispatches each piece
 > to the model that does it best, and assembles the result.
 > Then it remembers, and gets better next time.
 
+**One mechanism, many models.** Anthill is the work blueprint — the
+models do the work. Routing, retries, multi-dim evaluation, lifecycle,
+and reproduction are all open mechanisms: who's "good," what's "good,"
+and what to do with that information stay decisions for the LLMs and
+the user, not the tool.
 
 ---
 

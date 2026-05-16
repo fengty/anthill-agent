@@ -1,0 +1,82 @@
+name: 🐛 Bug report
+description: Something doesn't work the way the docs say it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. A few sanity questions first — these usually
+        cut the debug round-trips by half.
+
+  - type: input
+    id: version
+    attributes:
+      label: Anthill version
+      description: Output of `anthill --version`
+      placeholder: "0.7.3"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `python --version`
+      placeholder: "3.11.7"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows (WSL or native)
+        - Docker container
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: |
+        What did you run, what did you see? Paste the exact command + output.
+        If the output is long, please put it in a `<details>` block so the
+        issue stays readable.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: One-line description is enough.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimum reproduction
+      description: |
+        Steps from a clean nation (or the smallest setup that triggers it).
+        Use `ANTHILL_HOME=/tmp/anthill-bug` to isolate from your real state.
+      placeholder: |
+        1. anthill init bugnation
+        2. anthill model add demo --provider deepseek --model deepseek-chat --key sk-fake
+        3. anthill ask "..." --nation bugnation
+        4. Observed: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: anthill doctor output
+      description: Helpful for environment diagnostics. Redact any keys.
+      render: text

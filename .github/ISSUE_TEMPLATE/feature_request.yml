@@ -1,0 +1,47 @@
+name: ✨ Feature request
+description: Suggest a capability, a new plugin, a new selection strategy, etc.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We care most about features that **close a loop** — i.e. the data
+        they produce gets consumed by another part of the system, not just
+        logged. If you can describe both the producer and the consumer,
+        the proposal is much easier to evaluate.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What can't you do today? What's the workflow that's missing?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        Optional. If you have a specific design in mind, describe it. CLI
+        sketches / data shape changes / new dataclasses are all welcome.
+      placeholder: |
+        Add `anthill X` command that ...
+        Internally it would record ...
+        And the router / Scout would read it via ...
+
+  - type: textarea
+    id: closes-loop
+    attributes:
+      label: How does the loop close?
+      description: |
+        Most valuable proposals answer: "After this feature lands, what
+        other feature reads the new data, and how does that change a
+        decision?" Open-loop features (just log it) tend to bit-rot.
+      placeholder: |
+        After this lands, X reads the new data and changes Y's decision.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

@@ -1,0 +1,19 @@
+name: 💬 Question / design discussion
+description: Ask about how something works, or propose a discussion
+labels: ["question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: |
+        What were you trying to do? What docs / commits did you already
+        read? Linking to a specific module or commit makes it much easier
+        for someone else to engage.
