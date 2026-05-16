@@ -26,6 +26,15 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+# FastAPI types need to be resolvable from this module's globals for
+# FastAPI's get_type_hints() inspection. Importing under a guard so the
+# rest of Anthill still works when the [daemon] extras are absent.
+try:
+    from fastapi import FastAPI as _FastAPI, Request as _Request  # noqa: F401
+except ImportError:  # pragma: no cover
+    _FastAPI = None  # type: ignore[assignment]
+    _Request = None  # type: ignore[assignment]
+
 from anthill.channels.base import Channel, ChannelMessage
 from anthill.channels.lark import LarkChannel
 from anthill.channels.slack import SlackChannel
@@ -127,13 +136,14 @@ def build_app(daemon_config: DaemonConfig | None = None):
     not used, and lets `pip install anthill-agent` succeed without the
     daemon extras.
     """
-    try:
-        from fastapi import FastAPI, Request
-    except ImportError as e:
+    if _FastAPI is None or _Request is None:
         raise RuntimeError(
             "Daemon mode requires the [daemon] extras. "
             "Install with: pip install 'anthill-agent[daemon]'"
-        ) from e
+        )
+    FastAPI = _FastAPI  # local alias for readability below
+    # Note: _Request is referenced in the route type annotations directly,
+    # so it must stay at module scope where FastAPI's get_type_hints sees it.
 
     daemon = daemon_config or DaemonConfig.from_env()
     config = AnthillConfig.load()
@@ -169,7 +179,7 @@ def build_app(daemon_config: DaemonConfig | None = None):
         }
 
     @app.post("/lark/webhook")
-    async def lark_webhook(request: Request) -> dict[str, Any]:
+    async def lark_webhook(request: _Request) -> dict[str, Any]:
         payload = await request.json()
         if payload.get("type") == "url_verification":
             return {"challenge": payload.get("challenge")}
@@ -185,7 +195,7 @@ def build_app(daemon_config: DaemonConfig | None = None):
         return {"ok": True}
 
     @app.post("/telegram/webhook")
-    async def telegram_webhook(request: Request) -> dict[str, Any]:
+    async def telegram_webhook(request: _Request) -> dict[str, Any]:
         if telegram is None:
             return {"error": "telegram not configured"}
         payload = await request.json()
@@ -196,7 +206,7 @@ def build_app(daemon_config: DaemonConfig | None = None):
         return {"ok": True}
 
     @app.post("/slack/webhook")
-    async def slack_webhook(request: Request) -> dict[str, Any]:
+    async def slack_webhook(request: _Request) -> dict[str, Any]:
         payload = await request.json()
         if payload.get("type") == "url_verification":
             return {"challenge": payload.get("challenge")}
