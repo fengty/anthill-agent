@@ -137,8 +137,44 @@ async def _handle_ask(
     import time
 
     from anthill.core.costs import UsageRecord, append_usage, price_for
+    from anthill.core.executor import ProgressEvent
 
-    result = await nation.ask(request)
+    # Live progress: one line per subtask, updated as state changes.
+    # Keeps the REPL output scannable while still showing the king that
+    # the nation is doing work (vs. just frozen).
+    async def on_progress(event: ProgressEvent) -> None:
+        st = event.subtask
+        idx = event.index + 1
+        if event.kind == "started":
+            console.print(
+                f"  [dim]·[/dim] [{idx}] [magenta]{st.task_type}[/magenta] "
+                f"[dim]running...[/dim]"
+            )
+        elif event.kind == "attempt" and not event.success:
+            console.print(
+                f"    [yellow]retry[/yellow] attempt {event.attempt_number} failed, "
+                f"trying another citizen..."
+            )
+        elif event.kind == "finished":
+            outcome = event.outcome
+            duration = outcome.duration_seconds
+            if outcome.status == "ok":
+                console.print(
+                    f"  [green]✓[/green] [{idx}] [magenta]{st.task_type}[/magenta] "
+                    f"[dim]done in {duration:.1f}s[/dim]"
+                )
+            elif outcome.status == "skipped":
+                console.print(
+                    f"  [yellow]·[/yellow] [{idx}] [magenta]{st.task_type}[/magenta] "
+                    f"[dim]skipped: {outcome.skip_reason}[/dim]"
+                )
+            else:
+                console.print(
+                    f"  [red]✗[/red] [{idx}] [magenta]{st.task_type}[/magenta] "
+                    f"[dim]failed after {len(outcome.attempts)} attempt(s)[/dim]"
+                )
+
+    result = await nation.ask(request, on_progress=on_progress)
     save_nation(nation, config.home)
 
     pairs = [

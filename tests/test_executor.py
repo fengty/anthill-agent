@@ -331,3 +331,74 @@ async def test_parallel_still_respects_dependencies() -> None:
     await execute_plan(p, nation)  # type: ignore[arg-type]
     elapsed = _time.perf_counter() - start
     assert elapsed >= 0.25
+
+
+# --- Progress callback tests ---------------------------------------------
+
+from anthill.core.executor import ProgressEvent  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_progress_callback_fires_started_and_finished() -> None:
+    p = _plan(("a", []))
+    nation = _FakeNation({"a": "ok"})
+    events: list[ProgressEvent] = []
+
+    async def collect(ev: ProgressEvent) -> None:
+        events.append(ev)
+
+    await execute_plan(p, nation, on_progress=collect)  # type: ignore[arg-type]
+    kinds = [e.kind for e in events]
+    assert "started" in kinds
+    assert "attempt" in kinds
+    assert "finished" in kinds
+    # 'finished' is always the LAST event for a given subtask index.
+    assert events[-1].kind == "finished"
+
+
+@pytest.mark.asyncio
+async def test_progress_callback_marks_outcome_durations() -> None:
+    p = _plan(("a", []))
+    nation = _FakeNation({"a": "ok"})
+    events: list[ProgressEvent] = []
+
+    async def collect(ev: ProgressEvent) -> None:
+        events.append(ev)
+
+    outcomes = await execute_plan(p, nation, on_progress=collect)  # type: ignore[arg-type]
+    assert outcomes[0].started_at is not None
+    assert outcomes[0].ended_at is not None
+    assert outcomes[0].duration_seconds >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_progress_attempt_event_marks_success_flag() -> None:
+    p = _plan(("a", []))
+    nation = _FakeNation(scripts={"a": [0.0, 1.0]})  # fail, then succeed
+    events: list[ProgressEvent] = []
+
+    async def collect(ev: ProgressEvent) -> None:
+        events.append(ev)
+
+    await execute_plan(p, nation, on_progress=collect)  # type: ignore[arg-type]
+    attempts = [e for e in events if e.kind == "attempt"]
+    assert len(attempts) == 2
+    assert attempts[0].success is False
+    assert attempts[1].success is True
+
+
+@pytest.mark.asyncio
+async def test_progress_callback_for_skipped_subtask() -> None:
+    """A subtask skipped due to dep failure should emit only 'finished'."""
+    p = _plan(("a", []), ("b", ["a"]))
+    nation = _FakeNation(scripts={"a": [0.0, 0.0, 0.0]})  # always fails
+    events: list[ProgressEvent] = []
+
+    async def collect(ev: ProgressEvent) -> None:
+        events.append(ev)
+
+    await execute_plan(p, nation, on_progress=collect, retry=RetryPolicy(max_attempts=3))  # type: ignore[arg-type]
+    b_events = [e for e in events if e.subtask.task_type == "b"]
+    # b should only have 'finished' (skipped), no 'started' / 'attempt'.
+    assert all(e.kind == "finished" for e in b_events)
+    assert b_events[0].outcome.status == "skipped"

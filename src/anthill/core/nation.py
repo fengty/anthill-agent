@@ -160,7 +160,7 @@ class Nation:
         self.culture.record(task_type)
         return result
 
-    async def ask(self, request: str) -> AskResult:
+    async def ask(self, request: str, *, on_progress=None) -> AskResult:
         """Execute a natural-language request from the king.
 
         The Scout decomposes the request into typed subtasks; each subtask
@@ -171,6 +171,10 @@ class Nation:
         The nation's existing task-type vocabulary is fed to Scout so it
         prefers reusing established labels — keeping pheromone trails
         concentrated instead of fragmenting them into one-shot categories.
+
+        on_progress: optional async callback receiving ProgressEvent
+        objects as each subtask starts/retries/finishes. Use it to drive
+        live UI; pass None for headless callers.
         """
         cached = cache_lookup(request, self.plan_cache)
         if cached is not None:
@@ -188,7 +192,7 @@ class Nation:
             )
             cache_remember(request, plan, self.plan_cache)
             self.last_ask_cache_hit = False
-        outcomes = await execute_plan(plan, self)
+        outcomes = await execute_plan(plan, self, on_progress=on_progress)
         return AskResult(request=request, plan=plan, outcomes=outcomes)
 
     def _similar_past_block(self, request: str) -> str:

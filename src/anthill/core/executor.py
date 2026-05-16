@@ -28,8 +28,9 @@ correctness, retries, and observability first; parallelism in v0.0.9.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Awaitable, Callable, Literal
 
 from anthill.core.scout import Plan, Subtask
 
@@ -74,6 +75,14 @@ class SubtaskOutcome:
     attempts: list["TaskResult"] = field(default_factory=list)
     status: SubtaskStatus = "ok"
     skip_reason: str | None = None  # filled when status == "skipped"
+    started_at: float | None = None
+    ended_at: float | None = None
+
+    @property
+    def duration_seconds(self) -> float:
+        if self.started_at is None or self.ended_at is None:
+            return 0.0
+        return self.ended_at - self.started_at
 
     @property
     def final(self) -> "TaskResult | None":
@@ -87,6 +96,29 @@ class SubtaskOutcome:
             return f"[skipped: {self.skip_reason}]"
         last = self.final
         return str(last.output) if last is not None else ""
+
+
+# Progress event types — what callers learn about while a plan runs.
+@dataclass
+class ProgressEvent:
+    """A single observable event during execute_plan.
+
+    kind:
+      'started'    a subtask just started its first attempt
+      'attempt'    a subtask attempt completed (success or failure)
+      'finished'   a subtask reached its final status (ok/failed/skipped)
+    """
+
+    kind: Literal["started", "attempt", "finished"]
+    index: int           # subtask index in plan order
+    subtask: Subtask
+    outcome: SubtaskOutcome
+    attempt_number: int = 0   # 1-based; 0 for 'started' / 'finished'
+    success: bool = False
+
+
+# Type alias for the async callback consumers register.
+ProgressCallback = Callable[[ProgressEvent], Awaitable[None]]
 
 
 def topological_order(plan: Plan) -> list[int]:
@@ -177,31 +209,82 @@ async def _run_one_subtask(
     outcomes: dict[int, SubtaskOutcome],
     latest_by_type: dict[str, "TaskResult"],
     policy: RetryPolicy,
+    on_progress: ProgressCallback | None = None,
 ) -> None:
-    """Execute one subtask with retries; mutate outcomes in place."""
+    """Execute one subtask with retries; mutate outcomes in place.
+
+    Emits ProgressEvents at three points: started, after each attempt,
+    and once final status is known. Callers (REPL, CLI, web) subscribe
+    to these to render progress live.
+    """
+    outcome = outcomes[i]
     failed_dep = _find_failed_dependency(subtask, plan, outcomes)
     if failed_dep is not None and policy.skip_downstream_on_failure:
-        outcomes[i].status = "skipped"
-        outcomes[i].skip_reason = f"dependency '{failed_dep}' failed"
+        outcome.status = "skipped"
+        outcome.skip_reason = f"dependency '{failed_dep}' failed"
+        outcome.started_at = outcome.ended_at = time.time()
+        if on_progress is not None:
+            await on_progress(
+                ProgressEvent(
+                    kind="finished",
+                    index=i,
+                    subtask=subtask,
+                    outcome=outcome,
+                )
+            )
         return
+
+    outcome.started_at = time.time()
+    if on_progress is not None:
+        await on_progress(
+            ProgressEvent(
+                kind="started",
+                index=i,
+                subtask=subtask,
+                outcome=outcome,
+            )
+        )
 
     context = build_context_block(subtask, latest_by_type)
     augmented_prompt = context + subtask.prompt if context else subtask.prompt
 
     forbid: set[str] = set()
     succeeded = False
-    for _attempt in range(policy.max_attempts):
+    for attempt_idx in range(policy.max_attempts):
         try:
             result = await nation.run(subtask.task_type, augmented_prompt, forbid=forbid)
         except RuntimeError:
             break
-        outcomes[i].attempts.append(result)
-        if _was_successful(result):
+        outcome.attempts.append(result)
+        attempt_ok = _was_successful(result)
+        if on_progress is not None:
+            await on_progress(
+                ProgressEvent(
+                    kind="attempt",
+                    index=i,
+                    subtask=subtask,
+                    outcome=outcome,
+                    attempt_number=attempt_idx + 1,
+                    success=attempt_ok,
+                )
+            )
+        if attempt_ok:
             latest_by_type[subtask.task_type] = result
             succeeded = True
             break
         forbid.add(result.agent_id)
-    outcomes[i].status = "ok" if succeeded else "failed"
+
+    outcome.status = "ok" if succeeded else "failed"
+    outcome.ended_at = time.time()
+    if on_progress is not None:
+        await on_progress(
+            ProgressEvent(
+                kind="finished",
+                index=i,
+                subtask=subtask,
+                outcome=outcome,
+            )
+        )
 
 
 def _waves_from_topological_order(plan: Plan, order: list[int]) -> list[list[int]]:
@@ -234,6 +317,7 @@ async def execute_plan(
     nation: "Nation",
     *,
     retry: RetryPolicy | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> list[SubtaskOutcome]:
     """Run a Plan with retries, citizen rotation, and graceful skipping.
 
@@ -242,6 +326,11 @@ async def execute_plan(
     ordered — a downstream wave cannot start until its dependencies are
     done. This matches the semantics of the sequential path exactly;
     only the wall-clock cost of independent branches changes.
+
+    If `on_progress` is provided, it receives ProgressEvent objects as
+    each subtask starts, retries, and finishes. The callback is async
+    so callers can do I/O (print to terminal, push to a queue) without
+    blocking the executor.
 
     Returns one SubtaskOutcome per subtask, in plan order.
     """
@@ -258,7 +347,14 @@ async def execute_plan(
             await asyncio.gather(
                 *(
                     _run_one_subtask(
-                        i, plan.subtasks[i], plan, nation, outcomes, latest_by_type, policy
+                        i,
+                        plan.subtasks[i],
+                        plan,
+                        nation,
+                        outcomes,
+                        latest_by_type,
+                        policy,
+                        on_progress,
                     )
                     for i in wave
                 )
@@ -266,7 +362,14 @@ async def execute_plan(
     else:
         for i in order:
             await _run_one_subtask(
-                i, plan.subtasks[i], plan, nation, outcomes, latest_by_type, policy
+                i,
+                plan.subtasks[i],
+                plan,
+                nation,
+                outcomes,
+                latest_by_type,
+                policy,
+                on_progress,
             )
 
     return [outcomes[i] for i in range(len(plan.subtasks))]
