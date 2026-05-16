@@ -43,6 +43,14 @@ from anthill.core.history import (
     load_history,
     search_history,
 )
+from anthill.core.background import (
+    cancel_job,
+    clear_job,
+    list_jobs,
+    load_job,
+    read_log,
+    start_background,
+)
 from anthill.core.budget import Budget
 from anthill.core.inflight import (
     clear_inflight,
@@ -644,6 +652,114 @@ def inflight_clear(ask_id: str, nation_name: str) -> None:
         console.print(f"[green]Cleared[/green] in-flight ask {ask_id}.")
     else:
         console.print(f"[red]No in-flight ask matching '{ask_id}'.[/red]")
+
+
+@cli.group()
+def bg() -> None:
+    """Run asks detached in the background; check status later."""
+
+
+@bg.command("ask")
+@click.argument("request")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def bg_ask(request: str, nation_name: str) -> None:
+    """Spawn an ask in the background. Returns immediately with a job_id."""
+    config = AnthillConfig.load()
+    target_dir = nation_dir(config.home, nation_name)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    job = start_background(request, nation_name, target_dir)
+    console.print(
+        f"[green]Started[/green] background ask "
+        f"[cyan]{job.job_id}[/cyan]  [dim](pid {job.pid})[/dim]"
+    )
+    console.print(f"  Tail with [cyan]anthill bg show {job.job_id}[/cyan].")
+
+
+@bg.command("list")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def bg_list(nation_name: str) -> None:
+    """Show every background job for the nation."""
+    config = AnthillConfig.load()
+    jobs = list_jobs(nation_dir(config.home, nation_name))
+    if not jobs:
+        console.print("[dim]No background jobs.[/dim]")
+        return
+
+    table = Table(title=f"Background jobs — {nation_name}")
+    table.add_column("ID", style="cyan")
+    table.add_column("Started", style="dim")
+    table.add_column("Status")
+    table.add_column("Runtime", justify="right")
+    table.add_column("Request")
+    color = {
+        "running": "yellow",
+        "completed": "green",
+        "failed": "red",
+        "died": "red",
+        "cancelled": "dim",
+    }
+    for j in jobs:
+        st = j.status
+        preview = j.request if len(j.request) <= 50 else j.request[:47] + "..."
+        table.add_row(
+            j.job_id,
+            j.started_at_human(),
+            f"[{color[st]}]{st}[/{color[st]}]",
+            f"{j.runtime_seconds:.1f}s",
+            preview,
+        )
+    console.print(table)
+
+
+@bg.command("show")
+@click.argument("job_id")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def bg_show(job_id: str, nation_name: str) -> None:
+    """Print the captured output of a background job."""
+    config = AnthillConfig.load()
+    job = load_job(job_id, nation_dir(config.home, nation_name))
+    if job is None:
+        console.print(f"[red]No background job matching '{job_id}'.[/red]")
+        return
+    console.print(f"[bold]Job[/bold] {job.job_id}  [dim]({job.status})[/dim]")
+    console.print(f"[bold]Request[/bold] {job.request}")
+    console.print()
+    text = read_log(job)
+    if text:
+        console.print(text)
+    else:
+        console.print("[dim]No output captured yet.[/dim]")
+
+
+@bg.command("cancel")
+@click.argument("job_id")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def bg_cancel(job_id: str, nation_name: str) -> None:
+    """Signal a running background job to stop."""
+    config = AnthillConfig.load()
+    if cancel_job(job_id, nation_dir(config.home, nation_name)):
+        console.print(f"[yellow]Cancellation signal sent[/yellow] to {job_id}.")
+    else:
+        console.print(
+            f"[red]Could not cancel '{job_id}'[/red] "
+            f"[dim](not found, or already finished)[/dim]"
+        )
+
+
+@bg.command("clear")
+@click.argument("job_id")
+@click.option("--nation", "nation_name", default="default", help="Nation name.")
+def bg_clear(job_id: str, nation_name: str) -> None:
+    """Delete a finished job's directory. Won't touch a running one."""
+    config = AnthillConfig.load()
+    if clear_job(job_id, nation_dir(config.home, nation_name)):
+        console.print(f"[green]Removed[/green] {job_id}.")
+    else:
+        console.print(
+            f"[red]Could not remove '{job_id}'[/red] "
+            f"[dim](still running, or not found)[/dim]"
+        )
 
 
 @cli.command()
