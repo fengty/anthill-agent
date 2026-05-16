@@ -95,6 +95,13 @@ cli.add_command(_model_group)
 
 
 @cli.command()
+def doctor() -> None:
+    """Run a full self-check and print a status report."""
+    from anthill.cli.doctor import run_doctor
+    raise SystemExit(run_doctor())
+
+
+@cli.command()
 @click.argument("name", default="default")
 def init(name: str) -> None:
     """Found a new nation."""
