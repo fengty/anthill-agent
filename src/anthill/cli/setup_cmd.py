@@ -71,6 +71,66 @@ def _prompt_secret(question: str) -> str:
         raise KeyboardInterrupt
 
 
+def _prompt_int(question: str, *, default: int, min_val: int = 1, max_val: int = 100) -> int:
+    """Ask for an integer; re-prompt on non-int / out-of-range input.
+
+    Returns default only when the user submits an empty line. Anything
+    else gets validated explicitly so a typo like '秦' or 'three' shows
+    a friendly error instead of silently snapping to the default.
+    """
+    suffix = f" [{default}]"
+    while True:
+        try:
+            answer = input(f"  {question}{suffix}: ").strip()
+        except EOFError:
+            raise KeyboardInterrupt
+        if not answer:
+            return default
+        try:
+            val = int(answer)
+        except ValueError:
+            console.print(
+                f"  [yellow]'{answer}' is not a whole number. "
+                f"Try a number between {min_val} and {max_val}.[/yellow]"
+            )
+            continue
+        if not (min_val <= val <= max_val):
+            console.print(
+                f"  [yellow]must be between {min_val} and {max_val}[/yellow]"
+            )
+            continue
+        return val
+
+
+def _prompt_model_id(question: str, *, default: str, known: tuple[str, ...]) -> str:
+    """Ask for a model id; warn (but still accept) ids not in the known list."""
+    while True:
+        try:
+            answer = input(f"  {question} [{default}]: ").strip()
+        except EOFError:
+            raise KeyboardInterrupt
+        if not answer:
+            return default
+        if not known:
+            # No allow-list (e.g. custom endpoint) — accept anything.
+            return answer
+        if answer in known:
+            return answer
+        # Soft-warn and let the user confirm. Catches the common typo
+        # of "deepseek" when the real id is "deepseek-chat".
+        console.print(
+            f"  [yellow]'{answer}' is not a known model id for this provider.[/yellow]"
+        )
+        console.print(f"  [dim]Known: {', '.join(known)}[/dim]")
+        try:
+            confirm = input("  Use it anyway? [y/N]: ").strip().lower()
+        except EOFError:
+            raise KeyboardInterrupt
+        if confirm in ("y", "yes"):
+            return answer
+        # Loop and ask again.
+
+
 def _prompt_yes_no(question: str, *, default_yes: bool = True) -> bool:
     suffix = "[Y/n]" if default_yes else "[y/N]"
     while True:
@@ -122,7 +182,11 @@ def _add_model_interactive(user_config: UserConfig) -> tuple[str, str]:
     else:
         base_url = None
 
-    model_id = _prompt("Model id", default=preset.default_model)
+    model_id = _prompt_model_id(
+        "Model id",
+        default=preset.default_model,
+        known=preset.known_models,
+    )
 
     api_key = _prompt_secret(preset.key_prompt or "API key")
     if not api_key:
@@ -149,10 +213,7 @@ def _add_model_interactive(user_config: UserConfig) -> tuple[str, str]:
 def _found_nation_interactive(anthill_config: AnthillConfig, default_model: str) -> str:
     """Create the first nation, return its name."""
     nation_name = _prompt("Nation name", default="default")
-    try:
-        citizens = int(_prompt("Citizens to spawn", default="3"))
-    except ValueError:
-        citizens = 3
+    citizens = _prompt_int("Citizens to spawn", default=3, min_val=1, max_val=50)
 
     nation = Nation(
         name=nation_name,

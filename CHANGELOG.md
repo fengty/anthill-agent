@@ -165,3 +165,36 @@ the new rule.
 -U anthill-agent` will not upgrade automatically. Either run
 `pip install --force-reinstall anthill-agent`, or re-run the
 `curl install.sh` one-liner (which always pulls the current main).
+
+---
+
+## v0.1.8 — Setup hardening + REPL error visibility + English audit (May 2026)
+
+A patch focused on the rough edges first-time users were tripping on,
+plus a project-wide pass to keep all repo content in English (only the
+maintainer's working chat stays in Chinese).
+
+**Setup wizard hardening**
+- Model id prompt now validates against a per-provider known-good
+  list (e.g. `deepseek-chat`, `deepseek-reasoner` for DeepSeek). A
+  typo like just `deepseek` triggers a "use it anyway?" confirm step
+  instead of silently saving a bad config.
+- Citizens-to-spawn prompt re-prompts on non-int input instead of
+  silently falling back to 3 — fixes the case where typing a stray
+  character would create a default nation the user did not ask for.
+
+**REPL error visibility**
+- Retry log now surfaces the underlying failure reason and a short
+  excerpt of the provider's error output, so a model-not-found error
+  is visible instead of three opaque "retry failed" lines.
+- "Welcome back" counter now counts only asks that produced at least
+  one successful outcome, not raw history entries. A nation whose
+  first 12 asks all errored no longer brags "handled 12 asks".
+
+**English audit**
+- `docs/comparison.md` rewritten in English (was bilingual).
+- README, ROADMAP, and the few inline comments that still had Chinese
+  text cleaned up. Chinese keyword data tables in
+  `core/complexity.py` and `core/failure.py` are kept — they are
+  language-detection data, not project content. The product name
+  WeCom (企业微信) keeps its native rendering in `channels/wecom.py`.

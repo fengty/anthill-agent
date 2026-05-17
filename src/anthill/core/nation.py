@@ -443,10 +443,11 @@ class Nation:
                         episodic_context=episodic_context,
                     )
                     # If fast_classify was confident the request is
-                    # complex (regex caught a 'research' / '调研' marker),
-                    # honor that over whatever Scout claimed — the
-                    # heuristic exists precisely because Scout sometimes
-                    # underestimates depth on short complex prompts.
+                    # complex (regex caught a 'research' / 'analyze'
+                    # marker), honor that over whatever Scout claimed —
+                    # the heuristic exists precisely because Scout
+                    # sometimes underestimates depth on short complex
+                    # prompts.
                     if fast == "complex" and plan.complexity != "complex":
                         plan.complexity = "complex"
                 cache_remember(request, plan, self.plan_cache)

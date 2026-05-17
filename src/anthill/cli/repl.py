@@ -269,19 +269,31 @@ def _onboarding_card(nation: Nation) -> None:
     Goal: in the 3 seconds after splash, the user should be able to type
     SOMETHING and see Anthill do work. Generic "try /help" doesn't cut it.
     """
-    # Determine nation maturity. A nation that has done >= 3 real asks
-    # has enough history that "welcome back" makes sense; under that we
-    # treat it as still in onboarding mode.
+    # Determine nation maturity by counting SUCCESSFUL asks — entries
+    # where at least one subtask outcome reached status='ok'. A history
+    # full of failed asks shouldn't trigger "welcome back, you've done
+    # so much": that just rubs salt in the user's wound.
     history_path = nation.history_path
-    n_asks = 0
+    n_successful = 0
     if history_path is not None and history_path.exists():
         try:
+            import json as _json
             with history_path.open() as f:
-                n_asks = sum(1 for line in f if line.strip())
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = _json.loads(line)
+                    except _json.JSONDecodeError:
+                        continue
+                    outcomes = entry.get("outcomes") or []
+                    if any(o.get("status") == "ok" for o in outcomes):
+                        n_successful += 1
         except OSError:
-            n_asks = 0
+            n_successful = 0
 
-    if n_asks >= 3:
+    if n_successful >= 3:
         # Mature nation — welcome back card
         vocab = sorted(nation.culture.task_catalog.keys()) if nation.culture else []
         vocab_line = (
@@ -289,8 +301,8 @@ def _onboarding_card(nation: Nation) -> None:
             if vocab else "no task types yet"
         )
         console.print(
-            f"[bold]👋 Welcome back.[/bold] This nation has handled "
-            f"[bold cyan]{n_asks}[/bold cyan] ask(s) "
+            f"[bold]👋 Welcome back.[/bold] This nation has completed "
+            f"[bold cyan]{n_successful}[/bold cyan] ask(s) "
             f"across vocabulary: [dim]{vocab_line}[/dim]"
         )
         console.print(
@@ -315,11 +327,11 @@ def _onboarding_card(nation: Nation) -> None:
     )
     console.print()
     console.print("[bold yellow]🎯 Try one of these to see your nation in action:[/bold yellow]")
-    console.print("   [magenta]»[/magenta] [dim]一句话解释什么是 stigmergy[/dim]            "
+    console.print("   [magenta]»[/magenta] [dim]Explain stigmergy in one sentence[/dim]            "
                   "[dim](trivial · 1 citizen · ~3s)[/dim]")
-    console.print("   [magenta]»[/magenta] [dim]翻译这段诗并解释为什么这么译: ...[/dim]      "
+    console.print("   [magenta]»[/magenta] [dim]Translate this and explain the choices: …[/dim]    "
                   "[dim](normal · multi-step)[/dim]")
-    console.print("   [magenta]»[/magenta] [dim]调研 vector DB 前三名并给出推荐[/dim]       "
+    console.print("   [magenta]»[/magenta] [dim]Research the top 3 vector DBs and recommend[/dim]  "
                   "[dim](complex · deliberation auto-on)[/dim]")
     console.print()
     console.print("[bold]⌨  Editing[/bold]   [dim]↑↓ recall past asks · "
@@ -399,19 +411,19 @@ async def _handle_ask(
     async def on_clarify(questions) -> str | None:  # noqa: ANN001
         console.print()
         console.print(
-            f"  [yellow]?[/yellow] [dim]需要先确认 ({questions.why}):[/dim]"
+            f"  [yellow]?[/yellow] [dim]Need to clarify first ({questions.why}):[/dim]"
         )
         for i, q in enumerate(questions.questions, start=1):
             console.print(f"     [yellow]{i}.[/yellow] {q}")
         console.print(
-            "  [dim](一次性回答，或输入 /skip 跳过)[/dim]"
+            "  [dim](answer all at once, or type /skip to proceed as-is)[/dim]"
         )
         try:
             ans = input("  > ").strip()
         except (EOFError, KeyboardInterrupt):
             return None
         if not ans or ans.lower() in ("/skip", "skip"):
-            console.print("  [dim](已跳过澄清，按原请求继续)[/dim]")
+            console.print("  [dim](skipped clarification, continuing with original request)[/dim]")
             return None
         return ans
 
@@ -424,10 +436,33 @@ async def _handle_ask(
                 f"[dim]running...[/dim]"
             )
         elif event.kind == "attempt" and not event.success:
-            console.print(
-                f"    [yellow]retry[/yellow] attempt {event.attempt_number} failed, "
-                f"trying another citizen..."
+            # 0.1.8 — surface WHAT failed, not just "failed". On the
+            # latest attempt we read failure_reason (v0.5 structured)
+            # and the raw output (often "[error] 404 model not found").
+            # Without this, a misconfigured model id looks like "the
+            # nation is broken" instead of "your model id is wrong."
+            attempts = event.outcome.attempts
+            latest = attempts[-1] if attempts else None
+            reason = (
+                getattr(latest, "failure_reason", None)
+                if latest is not None
+                else None
             )
+            err_blurb = ""
+            if latest is not None:
+                # Trim long error strings; show just enough to diagnose.
+                output_text = str(latest.output or "").strip()
+                if output_text:
+                    # Snip to one line, 100 chars.
+                    snippet = output_text.replace("\n", " ")[:100]
+                    err_blurb = f"  [dim]│[/dim] [red]{snippet}[/red]"
+            label = f" ({reason})" if reason else ""
+            console.print(
+                f"    [yellow]retry[/yellow] attempt {event.attempt_number} "
+                f"failed{label}, trying another citizen..."
+            )
+            if err_blurb:
+                console.print(err_blurb)
         elif event.kind == "finished":
             outcome = event.outcome
             duration = outcome.duration_seconds
@@ -609,7 +644,7 @@ async def _handle_ask(
     if sources:
         joined = ", ".join(f"[cyan]{sid[:8]}[/cyan]" for sid in sources)
         console.print(
-            f"  [yellow]📚[/yellow] [dim]借鉴过去 ask:[/dim] {joined} "
+            f"  [yellow]📚[/yellow] [dim]borrowed from past asks:[/dim] {joined} "
             f"[dim](use [cyan]/history show {sources[0][:8]}[/cyan] to inspect)[/dim]"
         )
     console.print()

@@ -96,8 +96,9 @@ provider once.
 ```bash
 $ anthill
 Anthill — default (3 citizens)
-» 用一句话解释什么是信息素路由
-信息素路由是路由器根据 agent 历史成功的轨迹累积来选择执行者...
+» Explain pheromone routing in one sentence
+Pheromone routing is the router picking the executor based on each
+agent's accumulated trail of past successes...
 ```
 
 **2. One-shot CLI**
