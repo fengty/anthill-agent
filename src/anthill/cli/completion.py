@@ -79,6 +79,8 @@ KNOWN_SLASH_COMMANDS: tuple[str, ...] = (
     "/clear", "/status",
     "/trails", "/identity", "/power", "/history", "/project", "/skills",
     "/citizens", "/citizen",
+    "/memory", "/mem", "/profile", "/preferences", "/prefs",
+    "/remember", "/remember-me",
     "/rate", "/model", "/nation", "/plan", "/setup",
 )
 
@@ -150,6 +152,8 @@ class ReplCompleter:
             candidates = ("on", "off")
         elif slash in ("/citizens", "/citizen"):
             candidates = ("migrate", "migrate-all", "fix", "fix-all")
+        elif slash in ("/memory", "/mem", "/profile", "/preferences", "/prefs"):
+            candidates = ("edit", "path")
         return sorted(c for c in candidates if c.startswith(partial))
 
     def _complete_attachment(self, token: str) -> list[str]:

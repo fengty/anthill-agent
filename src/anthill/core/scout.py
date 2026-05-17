@@ -215,6 +215,7 @@ class Scout:
         *,
         known_task_types: list[str] | None = None,
         episodic_context: str = "",
+        memory_context: str = "",
     ) -> Plan:
         provider = get_provider(self.model)
         # Wrap the user request in explicit markers so prompt injections
@@ -227,9 +228,16 @@ class Scout:
             user_message = f"{episodic_context}\n\n---\n\n{wrapped_request}"
         else:
             user_message = wrapped_request
+        # 0.1.29 — persistent memory injection. USER.md + MEMORY.md
+        # appended to Scout's system prompt so the PLANNER (not just
+        # workers) knows what the user prefers and what the nation
+        # has learned. Empty when neither file has content.
+        system_prompt = build_system_prompt(known_task_types)
+        if memory_context.strip():
+            system_prompt = f"{system_prompt}\n\n{memory_context.strip()}"
         response = await provider.complete(
             user_message,
-            system=build_system_prompt(known_task_types),
+            system=system_prompt,
             temperature=0.2,
         )
         return self._parse(response.text, fallback_request=request)

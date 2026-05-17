@@ -148,6 +148,12 @@ class Nation:
     scout_model: str = "deepseek-chat"
     plan_cache: dict[str, CachedPlan] = field(default_factory=dict)
     last_ask_cache_hit: bool = field(default=False, repr=False)
+    # 0.1.29 — persistent memory injection. Composed by the REPL / CLI
+    # at session start from USER.md (global) + MEMORY.md (per-nation),
+    # then appended to every Scout + worker system prompt by
+    # _compose_system. Empty string means "no memory yet" — perfectly
+    # fine for headless tests / first-run.
+    memory_context: str = field(default="", repr=False)
     # Path to history.jsonl so ask() can pull similar past examples.
     history_path: Path | None = field(default=None, repr=False)
     # Judge config (LLM-based quality scoring).
@@ -233,13 +239,20 @@ class Nation:
         )
 
     def _compose_system(self, agent: Agent) -> str | None:
-        """Combine agent persona + nation house_style into a single system prompt.
+        """Combine agent persona + nation house_style + persistent memory.
 
         Persona is the agent's individual disposition. House style is the
-        nation's shared voice. Both apply at once: the agent answers in its
-        own way, within the nation's conventions.
+        nation's shared voice. Memory context (0.1.29+) is the union of
+        USER.md (what the king has told us about themselves) and
+        MEMORY.md (what this nation has learned). All apply at once.
+
+        Order matters: memory first so the agent sees user preferences
+        BEFORE persona / style. Persona quirks shouldn't override what
+        the user explicitly asked for.
         """
         parts: list[str] = []
+        if self.memory_context.strip():
+            parts.append(self.memory_context.strip())
         if agent.persona:
             parts.append(agent.persona.strip())
         style = self.culture.house_style.strip() if self.culture.house_style else ""
@@ -472,6 +485,7 @@ class Nation:
                         request,
                         known_task_types=self.culture.known_task_types(),
                         episodic_context=episodic_context,
+                        memory_context=self.memory_context,
                     )
                     # If fast_classify was confident the request is
                     # complex (regex caught a 'research' / 'analyze'

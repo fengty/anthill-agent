@@ -268,6 +268,62 @@ def _citizen_model_preflight(nation: Nation) -> None:
     console.print()
 
 
+def _load_memory_into_nation(nation: Nation, config: AnthillConfig) -> None:
+    """0.1.29 — composes USER.md + MEMORY.md into nation.memory_context.
+
+    Called once at REPL start AND after any slash command that
+    mutates either file, so the next ask sees the fresh content.
+    Tolerates missing files; tolerates write errors. Memory must
+    never break the REPL.
+    """
+    try:
+        from anthill.core.memory_files import (
+            build_memory_block,
+            read_nation_memory,
+            read_user_md,
+        )
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        user_md = read_user_md(config.home)
+        nation_md = read_nation_memory(nation_dir(config.home, nation.name))
+        nation.memory_context = build_memory_block(user_md, nation_md)
+    except Exception:  # noqa: BLE001 — memory injection is best-effort
+        nation.memory_context = ""
+
+
+def _edit_in_external_editor(path: Path) -> bool:
+    """Spawn $EDITOR (falls back to nano / vi) on ``path``.
+
+    Returns True if the editor exited cleanly. We deliberately don't
+    parse the result — the file is the source of truth, the editor
+    is just a UX convenience.
+    """
+    import os
+    import shutil
+    import subprocess
+
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL")
+    if not editor:
+        for candidate in ("nano", "vim", "vi"):
+            if shutil.which(candidate):
+                editor = candidate
+                break
+    if not editor:
+        console.print(
+            "[yellow]No $EDITOR set and no nano/vi found. "
+            "Edit the file by hand:[/yellow]"
+        )
+        console.print(f"  [cyan]{path}[/cyan]")
+        return False
+    try:
+        subprocess.run([editor, str(path)], check=False)
+        return True
+    except OSError as e:
+        console.print(f"[red]Could not launch editor: {e}[/red]")
+        return False
+
+
 def _proxy_preflight() -> None:
     """Warn early when a proxy env var is set but the transport can't use it.
 
@@ -323,6 +379,11 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /history      recent asks
     /project      project context Scout sees (cwd, git branch, files)
     /skills       recurring patterns the nation has noticed in history
+    /memory       this nation's persistent MEMORY.md
+    /profile      your global USER.md (alias: /preferences)
+    /remember X   add a one-line lesson to MEMORY.md
+    /remember-me X
+                  add a one-line fact about yourself to USER.md
     /citizens          list alive citizens + which models they use
     /citizens migrate  point all unresolvable citizens at the default
     /citizens migrate X
@@ -504,6 +565,30 @@ def _splash_banner(nation: Nation, stats: SessionStats) -> None:
     stats_table.add_row("trails",     f"[bold]{trail_count}[/bold]")
     stats_table.add_row("vocabulary", vocab_line)
     stats_table.add_row("dimensions", dims_line)
+    # 0.1.29 — surface persistent memory at session start. If either
+    # USER.md or MEMORY.md has content, show "📓 N memory lines · M
+    # about you" so the user knows the nation has carried state across
+    # restarts (the core "越用越聪明" signal).
+    try:
+        from anthill.config import AnthillConfig as _Cfg
+        from anthill.core.memory_files import (
+            line_count as _mem_lines,
+            read_nation_memory,
+            read_user_md,
+        )
+        from anthill.core.persistence import nation_dir as _ndir
+        _home = _Cfg.load().home
+        _user_lines = _mem_lines(read_user_md(_home))
+        _nation_lines = _mem_lines(read_nation_memory(_ndir(_home, nation.name)))
+    except Exception:  # noqa: BLE001
+        _user_lines = _nation_lines = 0
+    if _user_lines or _nation_lines:
+        stats_table.add_row(
+            "memory",
+            f"📓 [bold]{_nation_lines}[/bold] nation lines · "
+            f"[bold]{_user_lines}[/bold] about you",
+        )
+
     # 0.1.15 — show project context when the REPL launches inside a
     # detectable project root. Surfaces the binding so the user sees
     # WHICH project Scout will be aware of in subsequent asks.
@@ -1527,6 +1612,11 @@ def run_repl(nation_name: str = "default") -> int:
     from anthill.cli.completion import install_readline_completion
     install_readline_completion()
 
+    # 0.1.29 — load USER.md + MEMORY.md and inject as nation.memory_context
+    # so every Scout call and every worker call sees them in the system
+    # prompt. This is the "I know you" foundation.
+    _load_memory_into_nation(nation, config)
+
     console.print()
     _splash_banner(nation, stats)
     console.print()
@@ -1642,6 +1732,95 @@ def run_repl(nation_name: str = "default") -> int:
                 refreshed = load_nation(nation.name, config.home)
                 if refreshed is not None:
                     nation = refreshed
+            elif cmd in ("memory", "mem"):
+                # 0.1.29 — view / edit the per-nation MEMORY.md.
+                from anthill.core.memory_files import (
+                    ensure_nation_memory,
+                    nation_memory_path,
+                    read_nation_memory,
+                )
+                ndir = nation_dir(config.home, nation.name)
+                action = rest.strip().lower()
+                if action in ("edit", "e"):
+                    path = ensure_nation_memory(ndir, nation.name)
+                    _edit_in_external_editor(path)
+                    _load_memory_into_nation(nation, config)
+                    console.print("  [green]✓[/green] memory reloaded")
+                elif action in ("path", "where"):
+                    console.print(f"  [cyan]{nation_memory_path(ndir)}[/cyan]")
+                else:
+                    text = read_nation_memory(ndir)
+                    if not text.strip():
+                        console.print(
+                            "  [dim]No nation memory yet. "
+                            "Try [cyan]/memory edit[/cyan] or "
+                            "[cyan]/remember <line>[/cyan].[/dim]"
+                        )
+                    else:
+                        console.print(text)
+            elif cmd in ("profile", "preferences", "prefs"):
+                # 0.1.29 — view / edit the global USER.md.
+                from anthill.core.memory_files import (
+                    ensure_user_md,
+                    read_user_md,
+                    user_md_path,
+                )
+                action = rest.strip().lower()
+                if action in ("edit", "e"):
+                    path = ensure_user_md(config.home)
+                    _edit_in_external_editor(path)
+                    _load_memory_into_nation(nation, config)
+                    console.print("  [green]✓[/green] profile reloaded")
+                elif action in ("path", "where"):
+                    console.print(f"  [cyan]{user_md_path(config.home)}[/cyan]")
+                else:
+                    text = read_user_md(config.home)
+                    if not text.strip():
+                        console.print(
+                            "  [dim]No user profile yet. "
+                            "Try [cyan]/profile edit[/cyan] or "
+                            "[cyan]/remember-me <line>[/cyan].[/dim]"
+                        )
+                    else:
+                        console.print(text)
+            elif cmd == "remember":
+                # 0.1.29 — append a timestamped line to this nation's
+                # MEMORY.md. Default section: "Lessons".
+                line = rest.strip()
+                if not line:
+                    console.print(
+                        "[yellow]Usage: /remember <line of context to keep>[/yellow]"
+                    )
+                else:
+                    from anthill.core.memory_files import append_nation_memory
+                    ok = append_nation_memory(
+                        nation_dir(config.home, nation.name),
+                        line,
+                        nation_name=nation.name,
+                    )
+                    if ok:
+                        _load_memory_into_nation(nation, config)
+                        console.print(
+                            "  [green]✓[/green] noted under "
+                            "[cyan]MEMORY.md / Lessons[/cyan]"
+                        )
+            elif cmd in ("remember-me", "rememberme"):
+                # 0.1.29 — append a timestamped line to USER.md.
+                # Default section: "Preferences".
+                line = rest.strip()
+                if not line:
+                    console.print(
+                        "[yellow]Usage: /remember-me <line about yourself>[/yellow]"
+                    )
+                else:
+                    from anthill.core.memory_files import append_user_md
+                    ok = append_user_md(config.home, line)
+                    if ok:
+                        _load_memory_into_nation(nation, config)
+                        console.print(
+                            "  [green]✓[/green] noted under "
+                            "[cyan]USER.md / Preferences[/cyan]"
+                        )
             elif cmd in ("citizens", "citizen"):
                 # 0.1.21 — repair unresolvable citizens. /citizens
                 # alone prints diagnostic; /citizens migrate fixes
