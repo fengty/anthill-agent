@@ -256,6 +256,80 @@ def _splash_banner(nation: Nation, stats: SessionStats) -> None:
     console.print(panel)
 
 
+def _onboarding_card(nation: Nation) -> None:
+    """0.1.6+ — "how to play" guidance, printed right after the splash.
+
+    Conditional on nation state:
+      - No model:     handled separately by the setup gate (this card skipped)
+      - Empty nation: show concrete example prompts + key commands
+                      (new user needs "what can I do with this?")
+      - Mature nation: show "welcome back" + memory-aware commands
+                       (returning user wants to keep building on past work)
+
+    Goal: in the 3 seconds after splash, the user should be able to type
+    SOMETHING and see Anthill do work. Generic "try /help" doesn't cut it.
+    """
+    # Determine nation maturity. A nation that has done >= 3 real asks
+    # has enough history that "welcome back" makes sense; under that we
+    # treat it as still in onboarding mode.
+    history_path = nation.history_path
+    n_asks = 0
+    if history_path is not None and history_path.exists():
+        try:
+            with history_path.open() as f:
+                n_asks = sum(1 for line in f if line.strip())
+        except OSError:
+            n_asks = 0
+
+    if n_asks >= 3:
+        # Mature nation — welcome back card
+        vocab = sorted(nation.culture.task_catalog.keys()) if nation.culture else []
+        vocab_line = (
+            ", ".join(vocab[:5]) + (f" +{len(vocab) - 5}" if len(vocab) > 5 else "")
+            if vocab else "no task types yet"
+        )
+        console.print(
+            f"[bold]👋 Welcome back.[/bold] This nation has handled "
+            f"[bold cyan]{n_asks}[/bold cyan] ask(s) "
+            f"across vocabulary: [dim]{vocab_line}[/dim]"
+        )
+        console.print(
+            "  [cyan]/identity[/cyan]  who your nation has become      "
+            "[cyan]/trails[/cyan]   who's learned what"
+        )
+        console.print(
+            "  [cyan]/history[/cyan]  browse past asks                 "
+            "[cyan]/power[/cyan]    national strength"
+        )
+        console.print()
+        return
+
+    # Empty / fresh nation — show concrete examples
+    console.print("[bold]What this isn't:[/bold] [dim]another chat with one model.[/dim]")
+    console.print(
+        "[bold]What this is:[/bold] [dim]a nation of citizens that route each subtask "
+        "to whoever does it best,[/dim]"
+    )
+    console.print(
+        "                [dim]and learns who that is from real outcomes.[/dim]"
+    )
+    console.print()
+    console.print("[bold yellow]🎯 Try one of these to see your nation in action:[/bold yellow]")
+    console.print("   [magenta]»[/magenta] [dim]一句话解释什么是 stigmergy[/dim]            "
+                  "[dim](trivial · 1 citizen · ~3s)[/dim]")
+    console.print("   [magenta]»[/magenta] [dim]翻译这段诗并解释为什么这么译: ...[/dim]      "
+                  "[dim](normal · multi-step)[/dim]")
+    console.print("   [magenta]»[/magenta] [dim]调研 vector DB 前三名并给出推荐[/dim]       "
+                  "[dim](complex · deliberation auto-on)[/dim]")
+    console.print()
+    console.print("[bold]⌨  Editing[/bold]   [dim]↑↓ recall past asks · "
+                  "Ctrl+R search · Ctrl+C cancels current ask only[/dim]")
+    console.print("[bold]⚡ Commands[/bold]  [cyan]/help[/cyan] full list · "
+                  "[cyan]/setup[/cyan] re-config wizard · "
+                  "[cyan]/identity[/cyan] · [cyan]/quit[/cyan]")
+    console.print()
+
+
 def _print_status_bar(nation: Nation, stats: SessionStats) -> None:
     """Compact one-line status between turns (post-splash).
 
@@ -719,6 +793,11 @@ def run_repl(nation_name: str = "default") -> int:
                 "any time, or [cyan]/quit[/cyan] to exit.[/dim]"
             )
             console.print()
+
+    # 0.1.6+ — onboarding card. Print only when a model is configured;
+    # the no-model path was already handled by the setup gate above.
+    if not _no_model_configured():
+        _onboarding_card(nation)
 
     while True:
         try:
