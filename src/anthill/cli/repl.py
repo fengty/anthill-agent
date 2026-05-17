@@ -174,6 +174,7 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     ↑/↓           previous / next from history (saved across sessions)
     Ctrl+A / E    jump to line start / end
     Ctrl+R        reverse-search history
+    Tab           complete slash commands, model / nation names, @paths
     \"\"\"           start a multi-line block; close with \"\"\" on its own line
 
   [bold]Attachments[/bold]
@@ -1011,6 +1012,9 @@ def run_repl(nation_name: str = "default") -> int:
     # history file before the user types anything. Done BEFORE the
     # splash so even the first prompt benefits from it.
     _setup_readline(config.home)
+    # 0.1.14 — Tab completion for slash commands, models, nations, @file.
+    from anthill.cli.completion import install_readline_completion
+    install_readline_completion()
 
     console.print()
     _splash_banner(nation, stats)

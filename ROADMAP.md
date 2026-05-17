@@ -3,15 +3,20 @@
 > **Only the "Next" section is a commitment.** Everything below it is
 > "things we'd like to explore" — no order, no timeline, no promises.
 
-## Next: 0.1.14 — Tab completion (A-class)
+## Next: 0.1.15 — Nation bound to working directory (B-class)
 
-Slash commands, model names, nation names, and `@`-token file paths
-should all complete on Tab. Today everything is full-text.
+`cd /path/to/project && anthill` should auto-load the project as
+context — picking up filenames, scanning the README, etc. Today the
+nation is global to `~/.anthill/`.
 
 Status: **planned, no code yet.**
 
 ### Recently shipped
 
+- **0.1.14** — Tab completion. ReplCompleter (pure, testable) +
+  readline glue. Knows slash commands, slash sub-args (model /
+  nation / rate / plan), and `@`-token file paths with glob-aware
+  directory traversal. macOS libedit fallback included.
 - **0.1.13** — Editable Plan. `Nation.ask(on_plan=...)` callback fires
   after Scout produces a plan but before execution. REPL UI lets users
   skip / keep subtasks or cancel. `/plan` slash command toggles

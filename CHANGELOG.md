@@ -393,3 +393,37 @@ before any model burns tokens.
 - on_plan mutating ⇒ executor honors the modified plan
 - on_plan returning None ⇒ cancelled_by_user=True, no calls to run
 - pre_plan / cache hit / trivial-fast / resume all skip the hook
+
+---
+
+## v0.1.14 — Tab completion (May 2026)
+
+Slash commands, configured model names, nation names, and `@`-token
+file paths all complete on Tab. No more full-string typing for
+common navigation.
+
+**What completes**
+- `/h<Tab>` → `/help`, `/history`
+- `/model <Tab>` → list of configured models + subcommands
+- `/nation <Tab>` → nation names on disk
+- `/rate <Tab>` → `up`, `down`
+- `/plan <Tab>` → `on`, `off`
+- `@<Tab>` → top-level files & directories in cwd
+- `@src/<Tab>` → contents of `src/`. Directories show with trailing `/`
+  so you can keep tabbing in.
+- Dotfiles hidden.
+
+**Architecture**
+- `cli/completion.py` splits the work in two:
+  1. `ReplCompleter`: pure engine that takes a `CompletionContext`
+     (slash list, model names, nation names, cwd) + a buffer +
+     cursor and returns candidate strings. Unit-testable.
+  2. `install_readline_completion()`: readline glue. Lazily rebuilds
+     the context on every Tab so freshly-added models / nations
+     show up immediately. Handles macOS libedit's different config
+     syntax. Removes `@` and `/` from the default delimiters so the
+     completer sees full tokens.
+
+**Tests** — 808 passing (+16 in `tests/test_completion.py` covering
+prefix matching, mid-cursor behavior, dir traversal, dotfile hiding,
+and the "no completion outside slash/at-token" guard).
