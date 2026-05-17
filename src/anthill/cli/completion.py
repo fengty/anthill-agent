@@ -132,11 +132,15 @@ class ReplCompleter:
 
     def _complete_slash_subarg(self, slash: str, partial: str) -> list[str]:
         candidates: tuple[str, ...] = ()
-        # /model use <name>; /model <name> too
+        # /model use|rm <name>; /model <subcommand> too
         if slash in ("/model",):
-            # /model use X — sub-sub-arg of "use"; keep it simple, just
-            # offer model names whenever the next token is being typed.
-            candidates = self.ctx.model_names + ("use", "list", "add", "test")
+            # Offer the verbs + every configured model name. The
+            # in-REPL handler accepts the name as the second arg of
+            # either "use NAME" or "rm NAME", so giving the names
+            # directly works for both code paths.
+            candidates = self.ctx.model_names + (
+                "use", "list", "rm", "remove", "add", "test",
+            )
         elif slash == "/nation":
             candidates = self.ctx.nation_names
         elif slash == "/rate":

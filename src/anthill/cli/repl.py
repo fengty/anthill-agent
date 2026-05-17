@@ -160,8 +160,10 @@ HELP_TEXT = """[bold]REPL commands[/bold]
   [bold]Steer[/bold]
     /rate up      strengthen pheromones for the last answer
     /rate down    erode pheromones for the last answer
-    /model        list configured models
-    /model use X  switch default model
+    /model        list configured models (numbered)
+    /model use X  switch default model (X = name or list index)
+    /model rm X   delete a model (X = name or index)
+    /model rm     interactive — walk each model with y/N
     /nation X     switch to a different nation (creates if missing)
     /plan         toggle plan review (skip/keep subtasks before run)
     /setup        relaunch the interactive setup wizard
@@ -998,29 +1000,132 @@ def _handle_rate(verdict: str, nation: Nation, config: AnthillConfig) -> None:
 
 
 def _handle_model_cmd(rest: str) -> None:
-    """In-REPL /model subcommand."""
-    from anthill.core.userconfig import load_config, save_config
+    """In-REPL /model subcommand.
+
+    Subcommands:
+        /model                  list models (numbered)
+        /model use NAME         switch the default model
+        /model rm NAME-or-N     delete one model (asks for confirm)
+        /model rm               interactive: walk every model with y/N
+    """
+    from anthill.core.userconfig import (
+        load_config,
+        remove_secret,
+        save_config,
+    )
 
     rest = rest.strip()
     cfg = load_config()
-    if not rest or rest == "list":
+
+    def _list() -> None:
         if not cfg.models:
-            console.print("[dim]No models configured.[/dim] Run [cyan]anthill model add[/cyan].")
+            console.print(
+                "[dim]No models configured.[/dim] Run "
+                "[cyan]anthill model add[/cyan] or [cyan]/setup[/cyan]."
+            )
             return
-        for m in cfg.models:
-            star = "★ " if m.name == cfg.default_model else "  "
-            console.print(f"  {star}[cyan]{m.name}[/cyan]  [dim]{m.provider} / {m.model}[/dim]")
+        for i, m in enumerate(cfg.models, start=1):
+            star = "★" if m.name == cfg.default_model else " "
+            console.print(
+                f"  [cyan]{i}[/cyan] {star} [cyan]{m.name}[/cyan]  "
+                f"[dim]{m.provider} / {m.model}[/dim]"
+            )
+        console.print(
+            "  [dim]/model use NAME  ·  /model rm NAME-or-N  ·  "
+            "/model rm  (interactive)[/dim]"
+        )
+
+    def _resolve(token: str):  # noqa: ANN202
+        """Accept either a model name or a 1-based index from the list."""
+        if token.isdigit():
+            idx = int(token) - 1
+            if 0 <= idx < len(cfg.models):
+                return cfg.models[idx]
+            return None
+        return cfg.find_model(token)
+
+    def _delete_one(entry) -> None:  # noqa: ANN001
+        cfg.models = [m for m in cfg.models if m.name != entry.name]
+        remove_secret(entry.secret_ref)
+        if cfg.default_model == entry.name:
+            cfg.default_model = cfg.models[0].name if cfg.models else None
+        save_config(cfg)
+        console.print(f"  [green]✓[/green] removed [cyan]{entry.name}[/cyan]")
+
+    if not rest or rest == "list":
+        _list()
         return
+
     if rest.startswith("use "):
         target = rest[4:].strip()
-        if cfg.find_model(target) is None:
-            console.print(f"[red]No model named '{target}'.[/red]")
+        entry = _resolve(target)
+        if entry is None:
+            console.print(f"[red]No model named or indexed '{target}'.[/red]")
             return
-        cfg.default_model = target
+        cfg.default_model = entry.name
         save_config(cfg)
-        console.print(f"[green]Default model is now '{target}'.[/green]")
+        console.print(f"[green]Default model is now '{entry.name}'.[/green]")
         return
-    console.print("[yellow]Usage: /model | /model use NAME[/yellow]")
+
+    if rest in ("rm", "remove"):
+        # 0.1.17+ — interactive walk. Useful when the user has 4 stale
+        # test entries and doesn't want to type each name.
+        if not cfg.models:
+            console.print("[dim]Nothing to remove.[/dim]")
+            return
+        console.print(
+            "[dim]Interactive removal — y to delete, anything else to keep, "
+            "Ctrl+C to stop.[/dim]"
+        )
+        for entry in list(cfg.models):  # snapshot, _delete_one mutates cfg.models
+            star = " ★" if entry.name == cfg.default_model else ""
+            try:
+                answer = input(
+                    f"  remove [cyan]{entry.name}[/cyan]"
+                    f"{star}  ({entry.provider}/{entry.model})? [y/N] "
+                ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                console.print()
+                console.print("  [dim]stopped.[/dim]")
+                return
+            if answer in ("y", "yes"):
+                _delete_one(entry)
+        return
+
+    if rest.startswith("rm ") or rest.startswith("remove "):
+        # /model rm NAME-or-INDEX with optional --yes for scripted flows.
+        parts = rest.split()
+        force = "--yes" in parts or "-y" in parts
+        targets = [p for p in parts[1:] if p not in ("--yes", "-y")]
+        if not targets:
+            console.print(
+                "[yellow]Usage: /model rm NAME-or-N [more...] | "
+                "/model rm (interactive)[/yellow]"
+            )
+            return
+        for token in targets:
+            entry = _resolve(token)
+            if entry is None:
+                console.print(f"[red]No model named or indexed '{token}'.[/red]")
+                continue
+            if not force:
+                try:
+                    confirm = input(
+                        f"  remove [cyan]{entry.name}[/cyan]? "
+                        f"This is permanent. [y/N] "
+                    ).strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    console.print()
+                    return
+                if confirm not in ("y", "yes"):
+                    console.print("  [dim]skipped.[/dim]")
+                    continue
+            _delete_one(entry)
+        return
+
+    console.print(
+        "[yellow]Usage: /model | /model use NAME | /model rm [NAME-or-N][/yellow]"
+    )
 
 
 def _handle_nation_switch(

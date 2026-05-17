@@ -556,3 +556,44 @@ You own the name; the system owns the detection.
 - looks_like_new_match for the post-ask nudge gate
 - Empty request doesn't seed a phantom cluster
 - scan_limit caps inspection (older matches drop off)
+
+---
+
+## v0.1.18 — `/model rm` in REPL (May 2026)
+
+User reported: "I configured a wrong model during testing and don't
+know how to delete it." `anthill model remove NAME` (the CLI command)
+already existed, but the REPL had no path to it — users had to leave
+the session, run the CLI, and come back.
+
+**REPL changes — `/model` subcommand**
+- `/model` lists models numbered (1-based) with a `★` marker on the
+  current default. Footer hints at the three remove styles.
+- `/model use NAME-or-N` accepts either a name or a list index.
+- `/model rm NAME-or-N` deletes one (asks for `y/N` confirmation
+  unless `--yes` is passed).
+- `/model rm` with no args walks every model interactively:
+  prompt-per-model, `y` deletes, anything else keeps. Ctrl+C stops.
+- Multi-arg: `/model rm broken duplicate stale` queues three.
+- The default-model field auto-reassigns to the first surviving
+  model when the current default is removed. Goes to `None` when
+  the list empties.
+- Secret cleanup: deleting a model also `remove_secret`s its API
+  key from `secrets.toml` — no orphan secrets.
+
+**Help / discovery**
+- `HELP_TEXT` lists the new subcommands under [Steer].
+- Tab completion: typing `/model <Tab>` now offers `rm` and
+  `remove` alongside the existing verbs.
+
+**Tests** — 847 passing (+10 in `tests/test_model_remove_repl.py`)
+- Remove by name with confirm
+- Remove by index
+- `--yes` flag bypasses confirm
+- Default model reassigns when removed
+- Default goes to None when last model deleted
+- `n` answer keeps the model
+- Interactive walk handles per-model y/N
+- Unknown name is a quiet no-op
+- `/model use INDEX` accepts numeric arg
+- Secret cleanup verified (no orphans)
