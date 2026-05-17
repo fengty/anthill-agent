@@ -3,19 +3,26 @@
 > **Only the "Next" section is a commitment.** Everything below it is
 > "things we'd like to explore" — no order, no timeline, no promises.
 
-## Next: v0.8 — federated experience packs
+## Next: 0.1.7 — streaming output
 
-One nation can export its accumulated trail / workflow / recipe data
-as a shareable bundle. Another nation can import it after verifying
-the v0.7.0 hash chain and the v0.7.1 sender provenance.
+The biggest "feels slow" complaint isn't actual latency, it's the
+silent wait. Provider layer adds streaming; REPL renders tokens as
+they arrive. Long deliberation rounds become bearable.
 
-Closes the loop:
-- `experience export <nation>` produces a signed pack
-- `experience import <pack>` runs through immune system before merging
-- Imported trails carry an `origin` field, so the auditor can see where
-  borrowed knowledge came from
+Status: **planned, no code yet.**
 
-Status: **design done, no code yet.**
+The path beyond 0.1.7 is laid out in
+[`docs/comparison.md`](docs/comparison.md) — 12 patches (0.1.7 → 0.1.18)
+alternating between **baseline-UX-parity** with Claude CLI and
+**differentiation** (multi-model collab, lifecycle, deliberation).
+All patches stay within 0.1.x per [`VERSIONING.md`](VERSIONING.md).
+
+### Older roadmap entry (superseded)
+
+The earlier "v0.8 federated experience packs" plan is still a real
+direction but has been bumped further down. The 0.1.7-0.1.18 patches
+need to land first — federation depends on the baseline being
+solid enough that users actually have nations worth federating.
 
 ---
 
