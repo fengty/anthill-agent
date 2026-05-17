@@ -255,6 +255,16 @@ async def _handle_ask(
     # Live progress: one line per subtask, updated as state changes.
     # Keeps the REPL output scannable while still showing the king that
     # the nation is doing work (vs. just frozen).
+    # Helper: agent_id → "deepseek" / "minimax" / etc. (the actual model
+    # the citizen runs on). Used to surface multi-model coordination in
+    # the progress stream — the user sees WHICH model handled each
+    # subtask, not just a generic "running...".
+    def _model_for(agent_id: str) -> str:
+        for a in nation.agents:
+            if a.id == agent_id:
+                return a.model
+        return "?"
+
     async def on_progress(event: ProgressEvent) -> None:
         st = event.subtask
         idx = event.index + 1
@@ -271,10 +281,16 @@ async def _handle_ask(
         elif event.kind == "finished":
             outcome = event.outcome
             duration = outcome.duration_seconds
-            if outcome.status == "ok":
+            if outcome.status == "ok" and outcome.final is not None:
+                # v0.8.2 — show citizen + model so the user SEES multi-model
+                # coordination, not just "this finished."
+                agent_id = outcome.final.agent_id
+                model = _model_for(agent_id)
                 console.print(
                     f"  [green]✓[/green] [{idx}] [magenta]{st.task_type}[/magenta] "
-                    f"[dim]done in {duration:.1f}s[/dim]"
+                    f"[dim]→[/dim] [cyan]{agent_id[:12]}[/cyan]"
+                    f"[dim]/{model}[/dim] "
+                    f"[dim]({duration:.1f}s)[/dim]"
                 )
             elif outcome.status == "skipped":
                 console.print(
@@ -397,6 +413,41 @@ async def _handle_ask(
                 f"[magenta]{s.task_type}[/magenta]" for s in result.plan.subtasks
             ))
         console.print("  ".join(bits))
+
+    # v0.8.2 — multi-model collaboration card. Surfaces "which citizen
+    # (which model) did which subtask" so the user can SEE multi-model
+    # coordination, not just trust the readme. Skipped for trivial
+    # single-shot asks where there's nothing interesting to show.
+    if complexity != "trivial" and len(result.outcomes) > 0:
+        participants = []
+        models_seen: set[str] = set()
+        for outcome in result.outcomes:
+            if outcome.status != "ok" or outcome.final is None:
+                continue
+            agent_id = outcome.final.agent_id
+            model = _model_for(agent_id)
+            participants.append((outcome.subtask.task_type, agent_id, model))
+            models_seen.add(model)
+        if participants and (len(models_seen) > 1 or len(participants) > 1):
+            console.print()
+            # Header reflects the headline: how many distinct models actually ran.
+            model_count = len(models_seen)
+            if model_count > 1:
+                header = (
+                    f"[bold green]✓ {model_count} models collaborated[/bold green] "
+                    f"[dim]·[/dim] {len(participants)} subtasks"
+                )
+            else:
+                header = (
+                    f"[dim]✓ {len(participants)} subtask(s) on a single model "
+                    f"({next(iter(models_seen))})[/dim]"
+                )
+            console.print(header)
+            for tt, aid, model in participants:
+                console.print(
+                    f"  [magenta]{tt}[/magenta] "
+                    f"[dim]→[/dim] [cyan]{aid[:12]}[/cyan][dim]/{model}[/dim]"
+                )
     console.print()
     console.print(result.final_output)
     console.print()
