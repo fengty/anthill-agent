@@ -1185,6 +1185,49 @@ async def _handle_ask(
             final_output = str(outcome.final.output)
     if final_output:
         stats.conversation.record(request, final_output, timestamp=time.time())
+
+    # 0.1.30 — auto-memory: scan the user's REQUEST for explicit
+    # "remember this" / "I prefer X" / "我是 Y" / "我们用 Z" signals.
+    # When one fires, append to USER.md or MEMORY.md immediately so
+    # the NEXT ask already sees it. Visible via a 📝 line so nothing
+    # gets saved invisibly.
+    try:
+        from anthill.core.auto_memory import (
+            TARGET_NATION,
+            TARGET_USER,
+            extract_memory_signals,
+        )
+        from anthill.core.memory_files import (
+            append_nation_memory,
+            append_user_md,
+        )
+        signals = extract_memory_signals(request)
+        if signals:
+            for sig in signals:
+                if sig.target == TARGET_USER:
+                    append_user_md(
+                        config.home, sig.content, section=sig.section
+                    )
+                    where = f"USER.md / {sig.section}"
+                elif sig.target == TARGET_NATION:
+                    append_nation_memory(
+                        nation_dir(config.home, nation.name),
+                        sig.content,
+                        nation_name=nation.name,
+                        section=sig.section,
+                    )
+                    where = f"MEMORY.md / {sig.section}"
+                else:
+                    continue
+                console.print(
+                    f"  [dim]📝 noted in {where}:[/dim] "
+                    f"[cyan]{sig.content}[/cyan]"
+                )
+            # Refresh injected context so the next ask sees this turn.
+            _load_memory_into_nation(nation, config)
+    except Exception:  # noqa: BLE001 — auto-memory is best-effort
+        pass
+
     # 0.1.17 — skill auto-mining hint. After history is appended,
     # scan for clusters of similar past asks and nudge the user once
     # per session per cluster if the current request belongs to one
