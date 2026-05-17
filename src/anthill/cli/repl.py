@@ -18,6 +18,8 @@ We deliberately avoid a fancy TUI: this is a basic readline loop.
 from __future__ import annotations
 
 import asyncio
+import atexit
+from pathlib import Path
 
 from rich.align import Align
 from rich.box import ROUNDED
@@ -48,6 +50,39 @@ from anthill.core.userconfig import load_config
 console = Console()
 
 
+# 0.1.5+ — readline integration. Wiring it up just by importing the
+# module is enough on POSIX: input() then auto-supports left/right
+# arrow editing, up/down history, Ctrl+A/E/K/U/W/R search. Persist
+# history so it survives session restarts.
+def _setup_readline(home: Path) -> None:
+    """Enable arrow-key history + line editing in input(). POSIX only.
+
+    Silent no-op on platforms without readline (vanilla Windows). The
+    history file lives in ~/.anthill/repl_history; capped at 1000
+    lines so it doesn't grow unbounded over years of use.
+    """
+    try:
+        import readline  # noqa: PLC0415 — optional module
+    except ImportError:
+        return
+
+    history_file = home / "repl_history"
+    history_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        readline.read_history_file(str(history_file))
+    except (FileNotFoundError, OSError):
+        pass
+    readline.set_history_length(1000)
+
+    def _save() -> None:
+        try:
+            readline.write_history_file(str(history_file))
+        except OSError:
+            pass
+
+    atexit.register(_save)
+
+
 HELP_TEXT = """[bold]REPL commands[/bold]
 
   Just type a question to send it to the nation.
@@ -65,11 +100,18 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /model        list configured models
     /model use X  switch default model
     /nation X     switch to a different nation (creates if missing)
+    /setup        relaunch the interactive setup wizard
 
   [bold]Session[/bold]
     /clear        clear screen (nation state preserved)
     /help, /?     this help
     /quit, /q     exit
+
+  [bold]Editing[/bold]
+    ←/→           move within the line
+    ↑/↓           previous / next from history (saved across sessions)
+    Ctrl+A / E    jump to line start / end
+    Ctrl+R        reverse-search history
 """
 
 
@@ -117,6 +159,16 @@ def _ensure_nation(config: AnthillConfig, name: str = "default") -> Nation:
 def _current_model_name() -> str:
     cfg = load_config()
     return cfg.default_model or "(none — anthill model add)"
+
+
+def _no_model_configured() -> bool:
+    """True when there's no default_model set yet — the broken-state check.
+
+    Distinct from `_current_model_name() == "(none …)"` string matching,
+    which broke once the hint text changed. This reads the config directly.
+    """
+    cfg = load_config()
+    return not cfg.default_model
 
 
 def _splash_banner(nation: Nation, stats: SessionStats) -> None:
@@ -625,20 +677,48 @@ def run_repl(nation_name: str = "default") -> int:
     nation = _ensure_nation(config, nation_name)
     stats = SessionStats()
 
+    # 0.1.5+ — wire up arrow-key history + line editing + persistent
+    # history file before the user types anything. Done BEFORE the
+    # splash so even the first prompt benefits from it.
+    _setup_readline(config.home)
+
     console.print()
     _splash_banner(nation, stats)
     console.print()
-    # Hint if model is unconfigured — the only real blocker for the first ask.
-    if _current_model_name() == "(none)":
+
+    # 0.1.5+ — first-run gate. If no model is configured we can't do
+    # ANYTHING useful in the REPL; instead of letting the user type
+    # into a broken state (and watch every ask fail 3 times), offer
+    # to launch the interactive wizard immediately.
+    if _no_model_configured():
         console.print(
-            "[yellow]No model configured yet.[/yellow]  "
-            "Run [cyan]anthill setup[/cyan] for an interactive walkthrough,"
+            "[yellow]⚠ No model configured.[/yellow] "
+            "Without a model, every ask will fail."
         )
         console.print(
-            "  or [cyan]anthill model add deepseek "
-            "--provider deepseek --model deepseek-chat --key sk-...[/cyan]"
+            "[dim]Launch the interactive setup wizard now?[/dim]"
         )
-        console.print()
+        try:
+            choice = input("  [Y/n] » ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            return 0
+        if choice in ("", "y", "yes"):
+            from anthill.cli.setup_cmd import run_wizard
+            run_wizard(force=False)
+            # Reload nation in case setup changed/added a default model.
+            refreshed = load_nation(nation_name, config.home)
+            if refreshed is not None:
+                nation = refreshed
+            console.print()
+            _print_status_bar(nation, stats)
+            console.print()
+        else:
+            console.print(
+                "  [dim]Skipping. You can run [cyan]/setup[/cyan] "
+                "any time, or [cyan]/quit[/cyan] to exit.[/dim]"
+            )
+            console.print()
 
     while True:
         try:
@@ -682,8 +762,28 @@ def run_repl(nation_name: str = "default") -> int:
                     nation = load_nation(nation.name, config.home) or nation
                 else:
                     console.print("[yellow]Usage: /rate up | /rate down[/yellow]")
+            elif cmd == "setup":
+                # 0.1.5+ — re-enter the wizard on demand. Useful when the
+                # user said "n" at startup but changed their mind, or wants
+                # to add a second provider.
+                from anthill.cli.setup_cmd import run_wizard
+                run_wizard(force=False)
+                refreshed = load_nation(nation.name, config.home)
+                if refreshed is not None:
+                    nation = refreshed
             else:
                 console.print(f"[yellow]Unknown command: /{cmd}.[/yellow] Try /help.")
+            continue
+
+        # 0.1.5+ — refuse to call into a misconfigured nation. Without
+        # this the user types something, every retry burns through every
+        # citizen, and they see three angry red ✗ lines for no reason.
+        if _no_model_configured():
+            console.print(
+                "[yellow]✗ No model configured.[/yellow] "
+                "Run [cyan]/setup[/cyan] for the wizard, or "
+                "[cyan]/quit[/cyan] to exit."
+            )
             continue
 
         # Ask path. Ctrl+C during an ask cancels just the ask.
