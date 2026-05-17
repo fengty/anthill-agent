@@ -327,6 +327,7 @@ class Nation:
         request: str,
         *,
         on_progress=None,
+        on_clarify=None,
         resume: InflightAsk | None = None,
         nation_dir: Path | None = None,
         budget: Budget | None = None,
@@ -356,7 +357,29 @@ class Nation:
         nation_dir: where to write the in-flight checkpoint file. When
         omitted, no checkpoint is written — useful for tests and for
         callers that do their own persistence.
+
+        on_clarify: optional async callback to handle clarification turns
+        (v0.9.0+). When provided AND the request isn't trivial, the
+        nation runs a quick clarifier; if it flags ambiguity, the
+        callback is invoked with the questions and should return the
+        user's answer (or None to skip). Skipped for resume / pre_plan
+        paths since those already carry a fixed plan.
         """
+        # v0.9.0 — clarification turn. Only fires when:
+        #   1. Caller registered an on_clarify handler
+        #   2. Not on resume / pre_plan paths (plan is already locked)
+        #   3. fast_classify doesn't already say "trivial" (greetings
+        #      shouldn't trigger a clarifier round trip)
+        if (
+            on_clarify is not None
+            and resume is None
+            and pre_plan is None
+        ):
+            from anthill.core.clarify import maybe_clarify
+            from anthill.core.complexity import fast_classify
+            if fast_classify(request) != "trivial":
+                request = await maybe_clarify(self, request, on_clarify)
+
         if resume is not None:
             plan = resume.plan
             self.last_ask_cache_hit = False

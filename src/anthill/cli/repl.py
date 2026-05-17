@@ -265,6 +265,30 @@ async def _handle_ask(
                 return a.model
         return "?"
 
+    # v0.9.0 — clarification turn handler. When the clarifier inside
+    # Nation.ask flags a request as ambiguous, this callback runs in
+    # the REPL: print the questions, read one line of user response,
+    # hand it back. Returning None means "skip clarification, proceed
+    # as-is" — what `/skip` or empty input gets you.
+    async def on_clarify(questions) -> str | None:  # noqa: ANN001
+        console.print()
+        console.print(
+            f"  [yellow]?[/yellow] [dim]需要先确认 ({questions.why}):[/dim]"
+        )
+        for i, q in enumerate(questions.questions, start=1):
+            console.print(f"     [yellow]{i}.[/yellow] {q}")
+        console.print(
+            "  [dim](一次性回答，或输入 /skip 跳过)[/dim]"
+        )
+        try:
+            ans = input("  > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if not ans or ans.lower() in ("/skip", "skip"):
+            console.print("  [dim](已跳过澄清，按原请求继续)[/dim]")
+            return None
+        return ans
+
     async def on_progress(event: ProgressEvent) -> None:
         st = event.subtask
         idx = event.index + 1
@@ -338,6 +362,7 @@ async def _handle_ask(
             max_rounds=max_rounds,
             quality_threshold=quality_threshold,
             on_progress=on_progress,
+            on_clarify=on_clarify,  # v0.9.0
             nation_dir=nation_dir(config.home, nation.name),
             on_round=_on_round,
         )
@@ -353,6 +378,7 @@ async def _handle_ask(
         result = await nation.ask(
             request,
             on_progress=on_progress,
+            on_clarify=on_clarify,  # v0.9.0
             nation_dir=nation_dir(config.home, nation.name),
         )
     save_nation(nation, config.home)
