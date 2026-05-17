@@ -139,3 +139,29 @@ Plans run as DAGs with dependency-aware context passing. Topological order, cycl
 ### v0.0.1 — Pheromone core
 
 `PheromoneTrail`, `Agent`, `Router`, `Nation`. CLI: `init`, `spawn`, `run`, `trails`, `status`.
+
+---
+
+## v0.1.1 — Version number reset (May 2026)
+
+In the weeks after the v0.1.0 Hermes-parity milestone, the project
+went through a high-frequency iteration phase that bumped the
+version through 0.2.x → 0.9.x in quick succession. Every interesting
+commit was getting a minor bump; with a project expected to iterate
+thousands of times that would have exhausted the number space within
+a year.
+
+[`VERSIONING.md`](VERSIONING.md) was adopted with a strict rule:
+**patch by default, minor only with explicit maintainer signoff.**
+The package version was reset from `0.9.1` back to `0.1.1` to align
+with the new policy.
+
+Behavior at `v0.1.1` is byte-identical to what was `v0.9.1`. All the
+work between the historical `v0.1.0` milestone and this reset is
+preserved in git history but rolled up into this single patch under
+the new rule.
+
+**Upgrade note for early users:** since `0.1.1 < 0.9.1`, `pip install
+-U anthill-agent` will not upgrade automatically. Either run
+`pip install --force-reinstall anthill-agent`, or re-run the
+`curl install.sh` one-liner (which always pulls the current main).

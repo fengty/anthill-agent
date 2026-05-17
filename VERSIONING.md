@@ -98,7 +98,13 @@ These earn a minor bump (only with explicit signoff):
 
 The version history before this policy contains several minor bumps
 that, under this policy, would have been patches. They're not being
-rewritten. Going forward (from the next commit), the rule applies.
+rewritten — git log keeps the truth — but the *package version* in
+`pyproject.toml` was reset from `0.9.1` back to `0.1.1` to mark a
+clean restart under the new rule.
+
+This reset is documented in [`CHANGELOG.md`](CHANGELOG.md) under the
+`v0.1.1 — Version number reset` entry. Going forward, the rule
+applies strictly.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the rest of the contributor
 workflow.
