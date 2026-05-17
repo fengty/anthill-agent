@@ -62,17 +62,37 @@ ok "git at $(command -v git)"
 # identical to a hang. A pip install that's 60 seconds of slow dep
 # resolution and a frozen network call are the same to the user. So
 # we let the tools print their normal status lines.
+
+# git_with_retry CMD... — try once with default settings, then once
+# more forcing HTTP/1.1. The HTTP/2 framing layer error is a known
+# flaky network mode that hits some users on certain Wi-Fi / proxies,
+# and HTTP/1.1 reliably works around it.
+git_with_retry() {
+  if git "$@"; then
+    return 0
+  fi
+  warn "git failed (possibly HTTP/2 negotiation). Retrying with HTTP/1.1..."
+  git -c http.version=HTTP/1.1 "$@"
+}
+
 if [ -d "$ANTHILL_DIR/.git" ]; then
   info "Existing install at $ANTHILL_DIR — fetching latest"
-  if ! git -C "$ANTHILL_DIR" fetch origin "$ANTHILL_BRANCH"; then
-    die "git fetch failed. Check your network or remove $ANTHILL_DIR to do a clean install."
+  if ! git_with_retry -C "$ANTHILL_DIR" fetch origin "$ANTHILL_BRANCH"; then
+    warn "git fetch failed twice. Attempting clean reclone..."
+    rm -rf "$ANTHILL_DIR"
+    if ! git_with_retry clone --branch "$ANTHILL_BRANCH" "$ANTHILL_REPO" "$ANTHILL_DIR"; then
+      die "Could not fetch source. Check network connectivity to github.com and re-run."
+    fi
+  else
+    info "Resetting to origin/$ANTHILL_BRANCH"
+    git -C "$ANTHILL_DIR" reset --hard "origin/$ANTHILL_BRANCH"
   fi
-  info "Resetting to origin/$ANTHILL_BRANCH"
-  git -C "$ANTHILL_DIR" reset --hard "origin/$ANTHILL_BRANCH"
 else
   info "Cloning into $ANTHILL_DIR"
   rm -rf "$ANTHILL_DIR"
-  git clone --branch "$ANTHILL_BRANCH" "$ANTHILL_REPO" "$ANTHILL_DIR"
+  if ! git_with_retry clone --branch "$ANTHILL_BRANCH" "$ANTHILL_REPO" "$ANTHILL_DIR"; then
+    die "Could not clone source. Check network connectivity to github.com and re-run."
+  fi
 fi
 ok "Source ready at $ANTHILL_DIR"
 
