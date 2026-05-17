@@ -75,13 +75,35 @@ git_with_retry() {
   git -c http.version=HTTP/1.1 "$@"
 }
 
+# When all git attempts have failed, print actionable fallbacks rather
+# than a generic "network down". The most common cause we see in
+# practice is users behind firewalls / in regions where github.com
+# routing is unreliable (e.g. mainland China) — for them, a mirror
+# or a proxy is the right answer, not "check your network".
+network_die() {
+  printf "${RED}✗${RESET} Could not reach %s.\n\n" "$ANTHILL_REPO"
+  printf "${BOLD}Common fixes:${RESET}\n\n"
+  printf "  ${BOLD}1.${RESET} Use a GitHub mirror (works for users in regions where\n"
+  printf "     github.com routing is unreliable):\n\n"
+  printf "       ${DIM}ANTHILL_REPO=https://kkgithub.com/fengty/anthill-agent.git \\\\${RESET}\n"
+  printf "       ${DIM}  bash <(curl -fsSL https://raw.githubusercontent.com/fengty/anthill-agent/main/scripts/install.sh)${RESET}\n\n"
+  printf "  ${BOLD}2.${RESET} Use an HTTPS proxy you already run (clash / v2ray / corp proxy):\n\n"
+  printf "       ${DIM}export HTTPS_PROXY=http://127.0.0.1:7890${RESET}\n"
+  printf "       ${DIM}curl -fsSL https://raw.githubusercontent.com/fengty/anthill-agent/main/scripts/install.sh | bash${RESET}\n\n"
+  printf "  ${BOLD}3.${RESET} Use SSH (if you have an SSH key on your GitHub account):\n\n"
+  printf "       ${DIM}ANTHILL_REPO=git@github.com:fengty/anthill-agent.git \\\\${RESET}\n"
+  printf "       ${DIM}  bash <(curl -fsSL https://raw.githubusercontent.com/fengty/anthill-agent/main/scripts/install.sh)${RESET}\n\n"
+  printf "  ${BOLD}4.${RESET} Clone manually, then run pip install from the cloned dir.\n\n"
+  exit 1
+}
+
 if [ -d "$ANTHILL_DIR/.git" ]; then
   info "Existing install at $ANTHILL_DIR — fetching latest"
   if ! git_with_retry -C "$ANTHILL_DIR" fetch origin "$ANTHILL_BRANCH"; then
     warn "git fetch failed twice. Attempting clean reclone..."
     rm -rf "$ANTHILL_DIR"
     if ! git_with_retry clone --branch "$ANTHILL_BRANCH" "$ANTHILL_REPO" "$ANTHILL_DIR"; then
-      die "Could not fetch source. Check network connectivity to github.com and re-run."
+      network_die
     fi
   else
     info "Resetting to origin/$ANTHILL_BRANCH"
@@ -91,7 +113,7 @@ else
   info "Cloning into $ANTHILL_DIR"
   rm -rf "$ANTHILL_DIR"
   if ! git_with_retry clone --branch "$ANTHILL_BRANCH" "$ANTHILL_REPO" "$ANTHILL_DIR"; then
-    die "Could not clone source. Check network connectivity to github.com and re-run."
+    network_die
   fi
 fi
 ok "Source ready at $ANTHILL_DIR"

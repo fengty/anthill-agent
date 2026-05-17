@@ -24,6 +24,17 @@ the user, not the tool.
 curl -fsSL https://raw.githubusercontent.com/fengty/anthill-agent/main/scripts/install.sh | bash
 ```
 
+**If `github.com` times out** (common in mainland China and some
+corporate networks), use a GitHub mirror:
+
+```bash
+ANTHILL_REPO=https://kkgithub.com/fengty/anthill-agent.git \
+  bash <(curl -fsSL https://raw.githubusercontent.com/fengty/anthill-agent/main/scripts/install.sh)
+```
+
+Or set `HTTPS_PROXY` to whatever proxy you already run (clash / v2ray /
+corp HTTP proxy); git + pip both honor it automatically.
+
 Then configure a model and drop into the REPL:
 
 ```bash
