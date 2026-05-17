@@ -102,33 +102,91 @@ def _prompt_int(question: str, *, default: int, min_val: int = 1, max_val: int =
         return val
 
 
-def _prompt_model_id(question: str, *, default: str, known: tuple[str, ...]) -> str:
-    """Ask for a model id; warn (but still accept) ids not in the known list."""
+def _pick_model_id(
+    *,
+    default: str,
+    known: tuple[str, ...],
+    extra: tuple[str, ...] = (),
+) -> str:
+    """Pick a model id from a numbered list, with a fallback to custom input.
+
+    ``known`` is the static allow-list from PROVIDER_PRESETS. ``extra`` is
+    any additional ids pulled from the live catalog (refreshed via
+    ``anthill model catalog refresh``). Both are merged; ``default`` is
+    pinned to the top so hitting Enter still works.
+
+    For providers with no known list (e.g. ``custom``), falls back to
+    free-text entry — the picker would be empty and useless.
+    """
+    # Merge while preserving order: default first, then known, then
+    # extras the live catalog surfaced.
+    seen: set[str] = set()
+    options: list[str] = []
+    for candidate in (default, *known, *extra):
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            options.append(candidate)
+
+    if not options or options == [default] and not known:
+        # No allow-list — degrade to free-text (the only path for
+        # ``custom`` providers where the user knows their own model id).
+        try:
+            answer = input(f"  Model id [{default}]: ").strip()
+        except EOFError:
+            raise KeyboardInterrupt
+        return answer or default
+
+    console.print("  Model id:")
+    for i, name in enumerate(options, start=1):
+        marker = "  [dim](default)[/dim]" if name == default else ""
+        console.print(f"    {i}) [cyan]{name}[/cyan]{marker}")
+    console.print(f"    {len(options) + 1}) [dim]Other (type a custom id)[/dim]")
+
     while True:
         try:
-            answer = input(f"  {question} [{default}]: ").strip()
+            answer = input(f"  Choice [1 = {default}]: ").strip()
         except EOFError:
             raise KeyboardInterrupt
         if not answer:
             return default
-        if not known:
-            # No allow-list (e.g. custom endpoint) — accept anything.
+        if answer.isdigit():
+            idx = int(answer)
+            if 1 <= idx <= len(options):
+                return options[idx - 1]
+            if idx == len(options) + 1:
+                # User wants to type a custom id — accept anything but
+                # still warn if it looks like a known typo (e.g. just
+                # "deepseek" instead of "deepseek-chat").
+                try:
+                    custom = input("  Custom model id: ").strip()
+                except EOFError:
+                    raise KeyboardInterrupt
+                if not custom:
+                    console.print("  [yellow](required)[/yellow]")
+                    continue
+                if custom in options:
+                    return custom
+                console.print(
+                    f"  [yellow]'{custom}' is not in the known list "
+                    f"for this provider.[/yellow]"
+                )
+                try:
+                    confirm = input("  Use it anyway? [y/N]: ").strip().lower()
+                except EOFError:
+                    raise KeyboardInterrupt
+                if confirm in ("y", "yes"):
+                    return custom
+                continue
+        # Also accept the model id itself (typed verbatim) — useful for
+        # users who paste from docs.
+        if answer in options:
             return answer
-        if answer in known:
-            return answer
-        # Soft-warn and let the user confirm. Catches the common typo
-        # of "deepseek" when the real id is "deepseek-chat".
-        console.print(
-            f"  [yellow]'{answer}' is not a known model id for this provider.[/yellow]"
-        )
-        console.print(f"  [dim]Known: {', '.join(known)}[/dim]")
-        try:
-            confirm = input("  Use it anyway? [y/N]: ").strip().lower()
-        except EOFError:
-            raise KeyboardInterrupt
-        if confirm in ("y", "yes"):
-            return answer
-        # Loop and ask again.
+        console.print("  [yellow]not a valid choice[/yellow]")
+
+
+# Backwards-compat alias — older tests / external callers expect the
+# old name. New code should use ``_pick_model_id``.
+_prompt_model_id = _pick_model_id
 
 
 def _prompt_yes_no(question: str, *, default_yes: bool = True) -> bool:
@@ -182,10 +240,17 @@ def _add_model_interactive(user_config: UserConfig) -> tuple[str, str]:
     else:
         base_url = None
 
-    model_id = _prompt_model_id(
-        "Model id",
+    # Live catalog (if refreshed) augments the static known list.
+    from anthill.cli.model_catalog import model_ids_for_provider
+    anthill_home = AnthillConfig.load().home
+    catalog_ids = model_ids_for_provider(provider, anthill_home)
+    # Strip duplicates that are already in known_models so the picker
+    # only shows each id once.
+    extras = tuple(m for m in catalog_ids if m not in preset.known_models)
+    model_id = _pick_model_id(
         default=preset.default_model,
         known=preset.known_models,
+        extra=extras,
     )
 
     api_key = _prompt_secret(preset.key_prompt or "API key")

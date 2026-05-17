@@ -198,3 +198,35 @@ maintainer's working chat stays in Chinese).
   `core/complexity.py` and `core/failure.py` are kept — they are
   language-detection data, not project content. The product name
   WeCom (企业微信) keeps its native rendering in `channels/wecom.py`.
+
+---
+
+## v0.1.9 — Model id picker + refreshable catalog (May 2026)
+
+The setup wizard no longer asks users to *type* a model id. Typing
+`deepseek` when the real id is `deepseek-chat` was a recurring
+foot-gun. The fix is a two-part change:
+
+**Picker UI**
+- Setup wizard and `anthill model add` now show a numbered list of
+  the provider's known model ids. The default is option 1, so
+  hitting Enter still works for the common case. Picking "Other"
+  drops to free-text entry with a confirm-on-unknown-id step.
+- Custom-endpoint provider (no known list) still degrades to plain
+  free-text — picker would be empty there.
+
+**Refreshable catalog** (`anthill model catalog refresh`)
+- Talks to each configured provider's `/v1/models` endpoint and
+  caches the live list at `~/.anthill/model_catalog.json`.
+- The picker merges live + static, so a user who refreshed
+  yesterday sees today's new ids without waiting for a package
+  update. Failed providers are skipped silently — the previous
+  cached entry persists.
+- `anthill model catalog show [PROVIDER]` inspects the cache.
+
+The static `known_models` tuples in `providers_meta.py` still ship
+as the offline fallback. Maintainer-side refresh of those defaults
+happens whenever someone runs the command and proposes a PR.
+
+Tests: 746 passing (+12 for picker UX + catalog roundtrip + HTTP
+shape parsing + degraded-mode handling).

@@ -250,6 +250,76 @@ def model_test(name: str) -> None:
         raise SystemExit(1)
 
 
+@model.group("catalog")
+def model_catalog() -> None:
+    """Manage the live model catalog (refreshed from providers' /v1/models)."""
+
+
+@model_catalog.command("refresh")
+def model_catalog_refresh() -> None:
+    """Pull each configured provider's current model list and cache it locally.
+
+    Uses the API key of the first configured model per provider. Failed
+    providers are skipped quietly — the previous cached entry stays. Run
+    this whenever providers add or rename models (DeepSeek, OpenAI, etc.
+    update frequently and we don't ship a new package for it).
+    """
+    from anthill.cli.model_catalog import refresh_all
+    from anthill.config import AnthillConfig
+
+    home = AnthillConfig.load().home
+    home.mkdir(parents=True, exist_ok=True)
+
+    console.print("Refreshing model catalog...")
+    catalog = asyncio.run(refresh_all(home))
+    if not catalog:
+        console.print(
+            "[yellow]No providers refreshed. "
+            "Configure at least one model with [cyan]anthill model add[/cyan].[/yellow]"
+        )
+        return
+
+    table = Table(title="Refreshed catalog")
+    table.add_column("Provider", style="magenta")
+    table.add_column("Models", style="cyan")
+    for provider, entry in sorted(catalog.items()):
+        sample = ", ".join(entry.models[:5])
+        more = f" (+{len(entry.models) - 5} more)" if len(entry.models) > 5 else ""
+        table.add_row(provider, f"{sample}{more}")
+    console.print(table)
+
+
+@model_catalog.command("show")
+@click.argument("provider", required=False)
+def model_catalog_show(provider: str | None) -> None:
+    """Show the cached model list, optionally for one provider."""
+    from anthill.cli.model_catalog import load_catalog
+    from anthill.config import AnthillConfig
+
+    catalog = load_catalog(AnthillConfig.load().home)
+    if not catalog:
+        console.print(
+            "[dim]No live catalog yet. "
+            "Run [cyan]anthill model catalog refresh[/cyan] to populate it.[/dim]"
+        )
+        return
+    if provider is not None:
+        entry = catalog.get(provider)
+        if entry is None:
+            console.print(f"[red]No cached entry for '{provider}'.[/red]")
+            raise SystemExit(1)
+        for m in entry.models:
+            console.print(f"  {m}")
+        return
+    table = Table(title="Live model catalog")
+    table.add_column("Provider", style="magenta")
+    table.add_column("Model", style="cyan")
+    for provider_name, entry in sorted(catalog.items()):
+        for m in entry.models:
+            table.add_row(provider_name, m)
+    console.print(table)
+
+
 async def _probe_model(entry: ModelEntry, api_key: str) -> dict[str, Any]:
     """Direct httpx test — does not depend on the runtime ModelProvider stack
     yet, so 'anthill model test' works before v0.2.4 wires UserConfig into the

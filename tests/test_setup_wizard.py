@@ -83,7 +83,7 @@ def test_wizard_flow_writes_model_and_nation(
          patch("anthill.cli.setup_cmd._pick_provider", return_value="deepseek"), \
          patch("anthill.cli.setup_cmd._prompt", side_effect=fake_prompt), \
          patch(
-             "anthill.cli.setup_cmd._prompt_model_id",
+             "anthill.cli.setup_cmd._pick_model_id",
              return_value="deepseek-chat",
          ), \
          patch("anthill.cli.setup_cmd._prompt_int", return_value=2), \
@@ -114,32 +114,92 @@ def test_prompt_int_reprompts_on_non_int(monkeypatch: pytest.MonkeyPatch) -> Non
     assert _prompt_int("Citizens", default=3, min_val=1, max_val=50) == 7
 
 
-def test_prompt_model_id_warns_on_unknown_then_accepts(
+def test_pick_model_id_returns_default_on_empty_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Typing 'deepseek' instead of 'deepseek-chat' triggers a confirm step."""
-    from anthill.cli.setup_cmd import _prompt_model_id
+    """Hitting Enter at the picker keeps the default."""
+    from anthill.cli.setup_cmd import _pick_model_id
 
-    # First call: user types a bad id, refuses confirm, then types the right one.
-    answers = iter(["deepseek", "n", "deepseek-chat"])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
-    result = _prompt_model_id(
-        "Model id",
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+    result = _pick_model_id(
         default="deepseek-chat",
         known=("deepseek-chat", "deepseek-reasoner"),
     )
     assert result == "deepseek-chat"
 
 
-def test_prompt_model_id_accepts_anything_when_no_known_list(
+def test_pick_model_id_picks_by_number(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Typing the option number selects that model id."""
+    from anthill.cli.setup_cmd import _pick_model_id
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "2")
+    result = _pick_model_id(
+        default="deepseek-chat",
+        known=("deepseek-chat", "deepseek-reasoner"),
+    )
+    # Option 1 is the default, option 2 is "deepseek-reasoner".
+    assert result == "deepseek-reasoner"
+
+
+def test_pick_model_id_other_then_custom_with_confirm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Custom-endpoint case: empty known tuple disables the allow-list."""
-    from anthill.cli.setup_cmd import _prompt_model_id
+    """'Other' branch warns on unknown ids and requires explicit confirm."""
+    from anthill.cli.setup_cmd import _pick_model_id
+
+    # 3 = "Other", then type "deepseek" (bad — known typo), refuse,
+    # loop back to the picker, pick option 1 (default).
+    answers = iter(["3", "deepseek", "n", "1"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    result = _pick_model_id(
+        default="deepseek-chat",
+        known=("deepseek-chat", "deepseek-reasoner"),
+    )
+    assert result == "deepseek-chat"
+
+
+def test_pick_model_id_other_accepts_with_yes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Confirming 'use it anyway' accepts a non-known id."""
+    from anthill.cli.setup_cmd import _pick_model_id
+
+    # Options: 1=deepseek-chat (default & only known), 2=Other.
+    answers = iter(["2", "experimental-model", "y"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    result = _pick_model_id(
+        default="deepseek-chat",
+        known=("deepseek-chat",),
+    )
+    assert result == "experimental-model"
+
+
+def test_pick_model_id_falls_back_to_text_when_no_known_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Custom-endpoint case (no known list): degrades to free-text."""
+    from anthill.cli.setup_cmd import _pick_model_id
 
     monkeypatch.setattr("builtins.input", lambda _prompt: "anything-goes")
-    result = _prompt_model_id("Model id", default="x", known=())
+    result = _pick_model_id(default="your-model-id", known=())
     assert result == "anything-goes"
+
+
+def test_pick_model_id_includes_live_catalog_extras(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live-catalog ids surface as additional picker options."""
+    from anthill.cli.setup_cmd import _pick_model_id
+
+    # 2 should be "deepseek-future-model" since default is option 1
+    # and the static known list is empty for this test.
+    monkeypatch.setattr("builtins.input", lambda _prompt: "2")
+    result = _pick_model_id(
+        default="deepseek-chat",
+        known=("deepseek-chat",),
+        extra=("deepseek-future-model",),
+    )
+    assert result == "deepseek-future-model"
 
 
 def test_deepseek_preset_has_known_models() -> None:
