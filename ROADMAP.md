@@ -3,15 +3,19 @@
 > **Only the "Next" section is a commitment.** Everything below it is
 > "things we'd like to explore" — no order, no timeline, no promises.
 
-## Next: 0.1.12 — multi-line input (A-class)
+## Next: 0.1.13 — editable Plan (B-class)
 
-`"""` heredoc to switch into multi-line mode, single message send.
-Today, pasting a code snippet that contains newlines submits early.
+After Scout proposes a plan, give the user a chance to skip / edit /
+reorder subtasks before execution starts. Today the plan is opaque
+and immediate.
 
 Status: **planned, no code yet.**
 
 ### Recently shipped
 
+- **0.1.12** — Multi-line input. Type `"""` to enter heredoc mode;
+  newlines inside don't auto-submit. Closes with `"""` on its own
+  line or trailing a content line. Preserves indentation for paste.
 - **0.1.11** — `@file` / `@glob` syntax. Tokens like `@src/foo.py` or
   `@src/**/*.py` expand to inlined file contents prepended to the
   prompt. Binary detection, per-file 100 KB cap, 500 KB total cap.

@@ -83,6 +83,67 @@ def _setup_readline(home: Path) -> None:
     atexit.register(_save)
 
 
+# v0.1.12 — multi-line input. Typing `"""` alone (or `"""text...`)
+# enters heredoc mode; lines accumulate until a closing `"""` is seen.
+# This lets users paste code snippets or long prompts without the
+# newline auto-submitting after the first line.
+MULTILINE_OPENER = '"""'
+MULTILINE_CONT_PROMPT = "  ... "
+
+
+def _read_request_line(prompt: str = "» ") -> str:
+    '''Read one logical request from stdin.
+
+    Normal case: returns a single line of stripped input. When the
+    line starts with the triple-quote opener, switches into multi-
+    line mode and accumulates lines until a closing token is seen on
+    its own (or at the end of a line). The returned string has the
+    surrounding triple-quotes stripped.
+
+    Ctrl+C inside multi-line mode discards the buffer and bubbles up
+    to the caller (top-level REPL treats it as "cancel this request,
+    go back to the prompt"). EOF (Ctrl+D) inside multi-line submits
+    what has been accumulated so far — handy for piped input.
+    '''
+    first = input(prompt)
+    stripped = first.strip()
+    if not stripped.startswith(MULTILINE_OPENER):
+        return stripped
+
+    # Multi-line mode. Strip the leading `"""` from the first line; if
+    # what remains already contains a closing `"""`, the user wrote
+    # `"""hello"""` inline and we're done in one line.
+    remainder = stripped[len(MULTILINE_OPENER) :]
+    if remainder.endswith(MULTILINE_OPENER) and len(remainder) >= len(MULTILINE_OPENER):
+        return remainder[: -len(MULTILINE_OPENER)].strip()
+
+    buffer: list[str] = []
+    if remainder:
+        buffer.append(remainder)
+
+    console.print('[dim]  (multi-line mode — end with """ on its own line)[/dim]')
+    while True:
+        try:
+            line = input(MULTILINE_CONT_PROMPT)
+        except EOFError:
+            # Treat Ctrl+D as "submit what we have so far".
+            break
+        # Closing token: either standalone `"""` or trailing `"""`.
+        stripped_line = line.rstrip()
+        if stripped_line == MULTILINE_OPENER:
+            break
+        if stripped_line.endswith(MULTILINE_OPENER):
+            buffer.append(stripped_line[: -len(MULTILINE_OPENER)])
+            break
+        # Preserve the line verbatim — including leading whitespace,
+        # which matters for code paste.
+        buffer.append(line)
+    # rstrip-only: trailing blank lines / whitespace get trimmed but
+    # leading indentation of the first content line survives — code
+    # paste depends on it.
+    return "\n".join(buffer).rstrip()
+
+
 HELP_TEXT = """[bold]REPL commands[/bold]
 
   Just type a question to send it to the nation.
@@ -112,6 +173,7 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     ↑/↓           previous / next from history (saved across sessions)
     Ctrl+A / E    jump to line start / end
     Ctrl+R        reverse-search history
+    \"\"\"           start a multi-line block; close with \"\"\" on its own line
 
   [bold]Attachments[/bold]
     @path/to/file       attach a file as context
@@ -907,7 +969,7 @@ def run_repl(nation_name: str = "default") -> int:
 
     while True:
         try:
-            line = input("» ").strip()
+            line = _read_request_line(prompt="» ")
         except (KeyboardInterrupt, EOFError):
             console.print()
             console.print("[dim]bye.[/dim]")

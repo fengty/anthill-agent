@@ -326,3 +326,38 @@ are read and inlined above your request before Scout sees it.
 Tests: 773 passing (+17 covering tokenization, glob recursion,
 dedup, caps, binary skip, UTF-8 fallback, rendered block shape,
 absolute paths, and the prompt-prepend round trip).
+
+---
+
+## v0.1.12 — Multi-line input (May 2026)
+
+Pasting a code snippet or a long prompt no longer auto-submits at
+the first newline. Type `"""` to enter heredoc mode; subsequent
+lines accumulate until a closing `"""`.
+
+**Behaviors**
+- Plain single-line input still submits on Enter as before.
+- `"""` alone on a line opens multi-line mode; continuation prompt
+  is `  ... ` (visually distinct from the normal `» `).
+- Closer: `"""` alone on a line, or trailing a content line
+  (`last line"""`).
+- Inline form: `"""hello"""` on one line returns `hello`.
+- Empty multi-line block (immediate close) returns the empty string;
+  the REPL skips it like any empty input.
+- EOF (Ctrl+D) inside the block submits what has been accumulated —
+  handy for piped input.
+- Ctrl+C inside the block bubbles up so the REPL cancels the request.
+- Leading whitespace of the first content line is preserved
+  (`    def foo():` survives). Trailing blank lines are stripped.
+- `@file` tokens inside a multi-line block are still picked up at
+  the next stage by the attachment expander.
+
+**Implementation**
+- `cli/repl.py` gains `_read_request_line()`. The main loop calls it
+  in place of raw `input("» ")`.
+- `/help` mentions `"""` under the [Editing] section.
+
+Tests: 785 passing (+12 in `tests/test_multiline_input.py` covering
+the inline pair, opener-with-content, trailing-closer, blank lines,
+indentation preservation, EOF/Ctrl+C semantics, empty block, and
+`@file` survival).
