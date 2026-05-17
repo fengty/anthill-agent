@@ -258,6 +258,20 @@ async def deliberate(
     if on_round is not None:
         await on_round(rounds[-1])
 
+    # v0.8.1: short-circuit on trivial complexity. A trivial request
+    # (greeting, single-word ack, simple factual) should not be put
+    # through the critique-and-refine wringer no matter what the
+    # judge scored — the loop assumes the work has SHAPE to improve,
+    # which trivial output doesn't.
+    plan_complexity = getattr(result.plan, "complexity", "normal")
+    if plan_complexity == "trivial":
+        return DeliberationResult(
+            rounds=rounds,
+            final_round=rounds[-1],
+            stop_reason="trivial",
+            converged=True,
+        )
+
     if q >= quality_threshold:
         return DeliberationResult(
             rounds=rounds,

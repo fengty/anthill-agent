@@ -374,18 +374,45 @@ class Nation:
                 plan = cached.plan
                 self.last_ask_cache_hit = True
             else:
-                similar_block = self._similar_past_block(request)
-                workflow_block = self._workflow_templates_block()
-                plugin_block = self._plugin_stats_block()
-                episodic_context = "\n\n".join(
-                    b for b in (workflow_block, plugin_block, similar_block) if b
-                )
-                scout = Scout(model=self.scout_model)
-                plan = await scout.plan(
-                    request,
-                    known_task_types=self.culture.known_task_types(),
-                    episodic_context=episodic_context,
-                )
+                # v0.8.1 fast path — pre-Scout trivial classifier.
+                # If the heuristic confidently labels this request as
+                # trivial (single greeting, very short), skip Scout
+                # entirely and build a one-subtask plan. Saves one LLM
+                # round trip + tokens that would have gone into planning
+                # a one-word answer.
+                from anthill.core.complexity import fast_classify
+                fast = fast_classify(request)
+                if fast == "trivial":
+                    plan = Plan(
+                        subtasks=[
+                            Subtask(
+                                task_type="general",
+                                prompt=request.strip(),
+                                depends_on=[],
+                            )
+                        ],
+                        complexity="trivial",
+                    )
+                else:
+                    similar_block = self._similar_past_block(request)
+                    workflow_block = self._workflow_templates_block()
+                    plugin_block = self._plugin_stats_block()
+                    episodic_context = "\n\n".join(
+                        b for b in (workflow_block, plugin_block, similar_block) if b
+                    )
+                    scout = Scout(model=self.scout_model)
+                    plan = await scout.plan(
+                        request,
+                        known_task_types=self.culture.known_task_types(),
+                        episodic_context=episodic_context,
+                    )
+                    # If fast_classify was confident the request is
+                    # complex (regex caught a 'research' / '调研' marker),
+                    # honor that over whatever Scout claimed — the
+                    # heuristic exists precisely because Scout sometimes
+                    # underestimates depth on short complex prompts.
+                    if fast == "complex" and plan.complexity != "complex":
+                        plan.complexity = "complex"
                 cache_remember(request, plan, self.plan_cache)
                 self.last_ask_cache_hit = False
             inflight = InflightAsk.new(request=request, plan=plan) if nation_dir else None

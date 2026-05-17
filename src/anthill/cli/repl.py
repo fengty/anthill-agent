@@ -243,7 +243,7 @@ async def _handle_ask(
     config: AnthillConfig,
     stats: SessionStats,
     *,
-    deliberate: bool = True,
+    deliberate: bool | None = None,  # None = auto-decide by complexity
     max_rounds: int = 3,
     quality_threshold: float = 0.85,
 ) -> None:
@@ -286,6 +286,16 @@ async def _handle_ask(
                     f"  [red]✗[/red] [{idx}] [magenta]{st.task_type}[/magenta] "
                     f"[dim]failed after {len(outcome.attempts)} attempt(s)[/dim]"
                 )
+
+    # v0.8.1 — auto policy: if the caller didn't force on/off, use the
+    # complexity heuristic. Trivial requests should never trigger
+    # deliberation; complex ones should default to it. For "normal" we
+    # also enable deliberation (judge / quality threshold will short-
+    # circuit on round 1 if the first answer is already fine).
+    if deliberate is None:
+        from anthill.core.complexity import fast_classify
+        fast = fast_classify(request)
+        deliberate = fast != "trivial"
 
     if deliberate:
         from anthill.core.deliberate import (
@@ -372,11 +382,21 @@ async def _handle_ask(
                 (attempt.input_tokens * in_per_m + attempt.output_tokens * out_per_m) / 1_000_000,
             )
 
-    if len(result.plan) > 1:
+    # Plan + complexity badge (v0.8.1).
+    complexity = getattr(result.plan, "complexity", "normal")
+    if len(result.plan) > 1 or complexity != "normal":
         console.print()
-        console.print("[dim]plan:[/dim] " + " -> ".join(
-            f"[magenta]{s.task_type}[/magenta]" for s in result.plan.subtasks
-        ))
+        complexity_color = {
+            "trivial": "dim",
+            "normal":  "cyan",
+            "complex": "yellow",
+        }.get(complexity, "cyan")
+        bits = [f"[dim]complexity:[/dim] [{complexity_color}]{complexity}[/{complexity_color}]"]
+        if len(result.plan) > 1:
+            bits.append("[dim]plan:[/dim] " + " → ".join(
+                f"[magenta]{s.task_type}[/magenta]" for s in result.plan.subtasks
+            ))
+        console.print("  ".join(bits))
     console.print()
     console.print(result.final_output)
     console.print()

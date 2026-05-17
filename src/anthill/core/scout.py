@@ -68,7 +68,8 @@ Return ONLY a JSON object with this shape, no prose:
 {{
   "plan": [
     {{"task_type": "<label>", "prompt": "<instruction>", "depends_on": []}}
-  ]
+  ],
+  "complexity": "<one of: trivial, normal, complex>"
 }}
 
 Rules for good plans:
@@ -81,6 +82,19 @@ Rules for good plans:
 - Reuse task_types between subtasks only when they are doing the same
   KIND of work — otherwise prefer distinct labels.
 - Never include explanations outside the JSON. Never use code fences.
+
+Complexity field guidance:
+- "trivial":  single-shot factual/greeting/ack. One subtask, ~10 words
+              output. Examples: "what's 2+2", "hi", "thanks", "what year is it"
+- "normal":   typical request. 1-3 subtasks. Examples: "translate this",
+              "summarize the meeting", "explain stigmergy briefly"
+- "complex":  multi-step research / writing / analysis. 3+ subtasks,
+              benefits from review rounds. Examples: "research the top
+              3 X and recommend", "draft a proposal for ...".
+
+The orchestrator uses this to decide whether to skip optional refinement
+loops. Be honest — claiming everything is "complex" wastes the user's
+budget on greetings.
 
 {vocabulary_section}"""
 
@@ -123,6 +137,12 @@ class Subtask:
 @dataclass
 class Plan:
     subtasks: list[Subtask]
+    # v0.8.1+ — Scout's own complexity assessment of the request.
+    # Used by the orchestrator to decide whether to skip optional
+    # refinement (deliberation). Defaults to "normal" when Scout
+    # didn't emit it (older Scout prompts / malformed output) so
+    # nothing breaks.
+    complexity: str = "normal"
 
     def __len__(self) -> int:
         return len(self.subtasks)
@@ -341,4 +361,16 @@ def _try_parse_strict(text: str) -> Plan | None:
                 strategy=strategy.strip(),
             )
         )
-    return Plan(subtasks=subtasks)
+
+    # v0.8.1: Scout may emit a top-level complexity hint. Validate to
+    # one of the known values; anything else falls back to "normal" so
+    # an LLM hallucinating "complexity": "medium" doesn't propagate.
+    raw_complexity = payload.get("complexity", "normal")
+    if isinstance(raw_complexity, str) and raw_complexity.strip().lower() in (
+        "trivial", "normal", "complex"
+    ):
+        complexity = raw_complexity.strip().lower()
+    else:
+        complexity = "normal"
+
+    return Plan(subtasks=subtasks, complexity=complexity)
