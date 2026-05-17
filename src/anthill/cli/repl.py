@@ -942,9 +942,73 @@ async def _handle_ask(
                 f"quality [bold]{qpct:.0f}%[/bold]  "
                 f"[dim]({dims})[/dim]"
             )
-            if r.critique:
-                snippet = r.critique[:200].replace("\n", " ")
-                console.print(f"  [dim]critique: {snippet}…[/dim]")
+
+        # 0.1.27 — live deliberation phase indicator. Between rounds
+        # we used to go silent for 5-15s while the critique LLM
+        # produced a critique, then suddenly fire round 2. Now the
+        # user sees: "🔍 critiquing → tokens streaming in real time
+        # → ✓ critique done → ✍ refining (round 2)". Same closure
+        # state the streaming-token handler uses, so output stays
+        # clean across phase transitions.
+        critique_state = {"open": False, "chars": 0}
+
+        def _close_critique_line() -> None:
+            if critique_state["open"]:
+                console.print()
+                critique_state["open"] = False
+                critique_state["chars"] = 0
+
+        async def _on_critique_token(delta: str) -> None:
+            if not delta:
+                return
+            if not critique_state["open"]:
+                console.print("    [dim magenta]✎[/dim magenta] ", end="")
+                critique_state["open"] = True
+                critique_state["chars"] = 0
+            for piece in delta.splitlines(keepends=True):
+                line = piece.rstrip("\n")
+                ends_with_nl = piece.endswith("\n")
+                if line:
+                    console.print(f"[dim magenta]{line}[/dim magenta]", end="")
+                    critique_state["chars"] += len(line)
+                if ends_with_nl or critique_state["chars"] >= 80:
+                    console.print()
+                    critique_state["chars"] = 0
+                    critique_state["open"] = False
+                    if piece is not delta.splitlines(keepends=True)[-1]:
+                        console.print("    [dim magenta]✎[/dim magenta] ", end="")
+                        critique_state["open"] = True
+
+        async def _on_phase(name: str, payload: dict) -> None:  # noqa: ANN001
+            _close_critique_line()
+            if name == "critique_start":
+                weakest = payload.get("weakest") or {}
+                if weakest:
+                    weak_summary = ", ".join(
+                        f"{k}={v:.2f}" for k, v in sorted(weakest.items(), key=lambda kv: kv[1])
+                    )
+                    console.print(
+                        f"  [bold magenta]🔍 critiquing[/bold magenta] "
+                        f"[dim](weakest dims: {weak_summary})[/dim]"
+                    )
+                else:
+                    console.print("  [bold magenta]🔍 critiquing[/bold magenta]")
+            elif name == "critique_done":
+                # The streaming token handler already rendered the
+                # critique body inline. Just close cleanly with
+                # the critic id so the user knows who said it.
+                critic_id = payload.get("critic_id")
+                if critic_id:
+                    console.print(
+                        f"  [dim magenta]✓ critique by [/dim magenta]"
+                        f"[cyan]{critic_id[:12]}[/cyan]"
+                    )
+            elif name == "refine_start":
+                round_n = payload.get("round", "?")
+                console.print(
+                    f"  [bold magenta]✍ refining[/bold magenta] "
+                    f"[dim](round {round_n})[/dim]"
+                )
 
         delib = await run_deliberate(
             nation, effective_request,
@@ -955,6 +1019,8 @@ async def _handle_ask(
             on_plan=on_plan if stats.plan_review else None,  # v0.1.13
             nation_dir=nation_dir(config.home, nation.name),
             on_round=_on_round,
+            on_phase=_on_phase,                 # v0.1.27
+            on_critique_token=_on_critique_token,  # v0.1.27
         )
         result = delib.final_round.ask_result
         # Surface the trajectory after the loop

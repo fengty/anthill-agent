@@ -182,6 +182,8 @@ async def _make_critique(
     request: str,
     answer: str,
     weak_dims: dict[str, float],
+    *,
+    on_token=None,
 ) -> tuple[str, str]:
     """Ask a citizen to critique the latest output. Returns (text, agent_id).
 
@@ -189,6 +191,11 @@ async def _make_critique(
     distinct pheromone trail for reviewing vs. writing. The dim_weights
     are inverted on the weak axes so the router picks a citizen
     historically strong on what the answer is currently weakest at.
+
+    0.1.27 — ``on_token`` (optional async callback) streams the
+    critique as it's being generated. Without it, the REPL goes
+    silent for 5-15 seconds while the critique model thinks, which
+    is what the user reported as "感受不到深度思考的过程."
     """
     weak_summary = "\n".join(
         f"  - {dim}: {score:.2f}" for dim, score in sorted(weak_dims.items(), key=lambda kv: kv[1])
@@ -202,7 +209,7 @@ async def _make_critique(
     # Critique is its own task_type. The router will route based on
     # whoever scored well at "review" historically; cold-start picks
     # a random citizen.
-    result = await nation.run("review", prompt)
+    result = await nation.run("review", prompt, on_token=on_token)
     return str(result.output).strip(), result.agent_id
 
 
@@ -250,6 +257,8 @@ async def deliberate(
     min_improvement: float = DEFAULT_MIN_IMPROVEMENT,
     budget: "Budget | None" = None,
     on_round: RoundCallback | None = None,
+    on_phase=None,
+    on_critique_token=None,
     **ask_kwargs,
 ) -> DeliberationResult:
     """Run the multi-round refinement loop. Returns full transcript + winner.
@@ -315,16 +324,37 @@ async def deliberate(
         # ones the user actually cares about).
         weakest = dict(sorted(prev.quality_by_dim.items(), key=lambda kv: kv[1])[:3])
 
+        # 0.1.27 — surface every internal phase the REPL can show.
+        # Without these, the user sees nothing for 5-15s while the
+        # critique LLM thinks. The phase callback gets a short
+        # ("critique_start", payload) message; the REPL renders it.
+        if on_phase is not None:
+            await on_phase(
+                "critique_start",
+                {"round": round_num, "weakest": dict(weakest)},
+            )
+
         try:
             critique, critic_id = await _make_critique(
                 nation,
                 request=request,
                 answer=prev.ask_result.final_output,
                 weak_dims=weakest,
+                on_token=on_critique_token,
             )
         except Exception as e:  # noqa: BLE001 — critique is best-effort
             critique = f"[critique unavailable: {e}]"
             critic_id = None
+
+        if on_phase is not None:
+            await on_phase(
+                "critique_done",
+                {"round": round_num, "critic_id": critic_id, "critique": critique},
+            )
+            await on_phase(
+                "refine_start",
+                {"round": round_num},
+            )
 
         refined_request = _build_refine_request(
             request, prev.ask_result.final_output, critique
