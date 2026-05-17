@@ -69,8 +69,27 @@ def find_unresolvable_citizens(
     agents: Iterable[Agent],
     configured_model_names: Iterable[str],
 ) -> list[CitizenIssue]:
-    """Citizens whose ``model`` matches neither a configured entry
-    nor a legacy alias with env vars present.
+    """Citizens whose ``model`` can't be resolved into a working provider.
+
+    Two cases trigger a flag:
+
+    1. **No match**: the agent's model name is not in ``configured_model_names``
+       AND not in the legacy env-var registry. Hard miss.
+
+    2. **Stale legacy** (0.1.22): the agent's model name is not in
+       ``configured_model_names`` and the user has at least one
+       UserConfig model. In this mode the legacy env-var fallback
+       does NOT count as "healthy": it's exactly the leftover-from-
+       experiments case where ``MINIMAX_API_KEY`` is still exported
+       in the shell from a previous test, the key is bad / expired,
+       and every API call dies on auth. The user's intent — captured
+       by their UserConfig — is to use the configured models, not the
+       env-var ones.
+
+    When ``configured_model_names`` is empty (the user has never
+    touched ``anthill setup`` / ``anthill model add``), we still
+    respect the legacy env-var path. Heritage env-driven users
+    aren't broken by the new rule.
 
     Retired / quarantined citizens are skipped — they don't get
     assigned new work, so an unresolvable model on them isn't
@@ -83,6 +102,22 @@ def find_unresolvable_citizens(
             continue
         if agent.model in configured:
             continue
+        # 0.1.22 — when user has UserConfig, an env-var-only model is
+        # a "stale legacy" gap, not a resolved one. The actual API
+        # call will still try the env var, get rejected on auth, and
+        # the user gets three opaque retries — exactly the bug we
+        # already saw twice.
+        if configured:
+            issues.append(
+                CitizenIssue(
+                    agent_id=agent.id,
+                    model=agent.model,
+                    reason="stale_legacy" if _legacy_resolves(agent.model) else "no_match",
+                )
+            )
+            continue
+        # Heritage env-driven mode: no UserConfig at all, env vars
+        # ARE the source of truth.
         if _legacy_resolves(agent.model):
             continue
         issues.append(

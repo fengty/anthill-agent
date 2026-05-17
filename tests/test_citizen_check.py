@@ -91,14 +91,43 @@ def test_unresolvable_when_model_name_missing(monkeypatch) -> None:
     assert issues[0].agent_id == "ant-1"
 
 
-def test_legacy_alias_with_env_resolves(monkeypatch) -> None:
-    """Citizen 'minimax' + env var set → no warning."""
+def test_legacy_env_var_no_longer_saves_when_user_config_exists(monkeypatch) -> None:
+    """0.1.22: when UserConfig is in play, env-var fallback is a stale
+    signal, not a clean resolve. Real-world case: user has
+    MINIMAX_API_KEY exported from earlier testing but now uses the
+    'deepseek' ModelEntry — citizens stuck on 'minimax' would still
+    hit auth errors via the legacy provider."""
     from anthill.core.citizen_check import find_unresolvable_citizens
 
     monkeypatch.setenv("MINIMAX_API_KEY", "sk-test")
     agents = [Agent(id="ant-1", model="minimax")]
     issues = find_unresolvable_citizens(agents, ["deepseek"])
+    assert len(issues) == 1
+    assert issues[0].reason == "stale_legacy"
+
+
+def test_legacy_env_var_still_resolves_when_no_user_config(monkeypatch) -> None:
+    """Heritage env-driven mode (no UserConfig at all) keeps working —
+    we don't break users who never ran `anthill setup`."""
+    from anthill.core.citizen_check import find_unresolvable_citizens
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-test")
+    agents = [Agent(id="ant-1", model="minimax")]
+    # configured_model_names is empty => env-var path is the source of truth
+    issues = find_unresolvable_citizens(agents, [])
     assert issues == []
+
+
+def test_no_user_config_no_env_still_flagged(monkeypatch) -> None:
+    """No config AND no env var → no_match (the original case)."""
+    from anthill.core.citizen_check import find_unresolvable_citizens
+
+    for v in ("ANTHILL_MINIMAX_KEY", "MINIMAX_API_KEY"):
+        monkeypatch.delenv(v, raising=False)
+    agents = [Agent(id="ant-1", model="minimax")]
+    issues = find_unresolvable_citizens(agents, [])
+    assert len(issues) == 1
+    assert issues[0].reason == "no_match"
 
 
 def test_retired_and_quarantined_skipped(monkeypatch) -> None:

@@ -171,6 +171,12 @@ def _citizen_model_preflight(nation: Nation) -> None:
     for issue in issues:
         grouped.setdefault(issue.model, []).append(issue.agent_id)
 
+    # 0.1.22 — surface "stale env var" cases distinctly. Users see "I
+    # have MINIMAX_API_KEY exported but every ask still fails" exactly
+    # when this triggers, and the remedy is the same migration step.
+    reasons_by_model: dict[str, str] = {i.model: i.reason for i in issues}
+    any_stale = any(r == "stale_legacy" for r in reasons_by_model.values())
+
     console.print(
         f"[yellow]⚠ {len(issues)} citizen(s) point at model name(s) "
         "you no longer have configured:[/yellow]"
@@ -178,9 +184,17 @@ def _citizen_model_preflight(nation: Nation) -> None:
     for model_name, citizen_ids in grouped.items():
         sample = ", ".join(citizen_ids[:3])
         more = f" (+{len(citizen_ids) - 3} more)" if len(citizen_ids) > 3 else ""
+        suffix = ""
+        if reasons_by_model.get(model_name) == "stale_legacy":
+            suffix = " [dim](env var set but UserConfig now owns auth)[/dim]"
         console.print(
-            f"  [dim]·[/dim] [red]{model_name}[/red] "
+            f"  [dim]·[/dim] [red]{model_name}[/red]{suffix} "
             f"used by {sample}{more}"
+        )
+    if any_stale:
+        console.print(
+            "  [dim]Those citizens would call legacy env-var providers "
+            "and likely hit (auth) errors.[/dim]"
         )
     if cfg.default_model:
         console.print(
