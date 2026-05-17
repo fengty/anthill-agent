@@ -77,7 +77,7 @@ class CompletionContext:
 KNOWN_SLASH_COMMANDS: tuple[str, ...] = (
     "/help", "/?", "/quit", "/q", "/exit",
     "/clear", "/status",
-    "/trails", "/identity", "/power", "/history", "/project",
+    "/trails", "/identity", "/power", "/history", "/project", "/skills",
     "/rate", "/model", "/nation", "/plan", "/setup",
 )
 

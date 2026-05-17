@@ -3,16 +3,22 @@
 > **Only the "Next" section is a commitment.** Everything below it is
 > "things we'd like to explore" — no order, no timeline, no promises.
 
-## Next: 0.1.17 — Skill auto-mining (B-class)
+## Next: 0.1.18 — Image input (A-class)
 
-Detect repeating ask shapes from history and auto-suggest them as
-named recipes. The user gets to confirm + name + save — the system
-notices the pattern, the user owns the abstraction.
+`attach <path-to-image>` sends a screenshot to a vision-capable
+citizen. Today you can't ask "why is this UI broken" with a
+screenshot. Requires vision provider support + REPL file-path
+handling.
 
 Status: **planned, no code yet.**
 
 ### Recently shipped
 
+- **0.1.17** — Skill auto-mining. New `core/skill_mining.py` clusters
+  similar past asks by set-cosine over request tokens. After a
+  successful ask, if the current request belongs to a ≥3-occurrence
+  cluster, the REPL emits a one-time "you've done this 3× — save as
+  recipe?" hint. `/skills` slash command inspects the full list.
 - **0.1.16** — Lazy top-level re-exports. `from anthill import
   __version__` no longer drags in Nation / Router / Agent and their
   ~50-module transitive tree. PEP 562 `__getattr__` defers each

@@ -155,6 +155,7 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /status       compact status card (model, citizens, cost so far)
     /history      recent asks
     /project      project context Scout sees (cwd, git branch, files)
+    /skills       recurring patterns the nation has noticed in history
 
   [bold]Steer[/bold]
     /rate up      strengthen pheromones for the last answer
@@ -197,6 +198,12 @@ class SessionStats:
         # through an interactive prompt before execution so the user
         # can skip / keep subtasks or cancel. Toggle with /plan.
         self.plan_review = False
+        # v0.1.17 — skill-mining nudge bookkeeping. We surface a
+        # "you've done this 3x — save as recipe?" hint at most once
+        # per session per cluster, keyed by the cluster's first
+        # history-entry id. Without this the user would get the same
+        # hint after every matching ask.
+        self.suggested_skill_ids: set[str] = set()
 
     def add(self, input_tokens: int, output_tokens: int, cost: float) -> None:
         self.tokens_in += input_tokens
@@ -804,6 +811,30 @@ async def _handle_ask(
         build_entry_from_ask(request, result.plan.subtasks, result.outcomes),
         nation_dir(config.home, nation.name),
     )
+    # 0.1.17 — skill auto-mining hint. After history is appended,
+    # scan for clusters of similar past asks and nudge the user once
+    # per session per cluster if the current request belongs to one
+    # with ≥3 occurrences. Keeps the user in control: we *notice*
+    # the pattern; they decide whether it deserves a name.
+    try:
+        from anthill.core.skill_mining import looks_like_new_match, mine_skills
+        history_now = load_history(nation_dir(config.home, nation.name))
+        for skill in mine_skills(history_now):
+            cluster_key = skill.entry_ids[0]
+            if cluster_key in stats.suggested_skill_ids:
+                continue
+            if not looks_like_new_match(skill, request):
+                continue
+            stats.suggested_skill_ids.add(cluster_key)
+            snippet = skill.representative.replace("\n", " ")[:60]
+            console.print(
+                f"  [dim]💡 you've asked things like '{snippet}…' "
+                f"{skill.occurrences} times. Run "
+                f"[cyan]anthill recipe save[/cyan] to bake a skill.[/dim]"
+            )
+            break  # one hint per ask is enough
+    except Exception:  # noqa: BLE001 — mining is best-effort, never break the REPL
+        pass
     for outcome in result.outcomes:
         for attempt in outcome.attempts:
             agent = next((a for a in nation.agents if a.id == attempt.agent_id), None)
@@ -1129,6 +1160,27 @@ def run_repl(nation_name: str = "default") -> int:
                 refreshed = load_nation(nation.name, config.home)
                 if refreshed is not None:
                     nation = refreshed
+            elif cmd in ("skills", "skill"):
+                # 0.1.17 — show what skill_mining sees in this nation's
+                # history. Useful for "what does the system think I do
+                # a lot?" without waiting for a nudge.
+                from anthill.core.skill_mining import mine_skills
+                history_now = load_history(nation_dir(config.home, nation.name))
+                skills = mine_skills(history_now)
+                if not skills:
+                    console.print(
+                        "  [dim]No recurring patterns yet. "
+                        "Ask similar things 3+ times and they'll show up here.[/dim]"
+                    )
+                else:
+                    console.print(
+                        f"  [bold]{len(skills)} recurring pattern(s):[/bold]"
+                    )
+                    for s in skills[:10]:
+                        snippet = s.representative.replace("\n", " ")[:70]
+                        console.print(
+                            f"    [cyan]{s.occurrences}×[/cyan] {snippet}"
+                        )
             elif cmd == "project":
                 # 0.1.15 — inspect the project context Scout sees.
                 from anthill.core.project import (

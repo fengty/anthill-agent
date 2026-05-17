@@ -514,3 +514,45 @@ loading Nation, Router, Agent, the executor, the model providers, or
 - `anthill.Nation`, `.Agent`, `.PheromoneTrail`, `.Router` all
   materialize correctly via `__getattr__`.
 - Unknown attribute raises `AttributeError` (standard contract).
+
+---
+
+## v0.1.17 — Skill auto-mining (May 2026)
+
+The system *notices* when you've asked things like the current
+request 3+ times and nudges you to crystallize it into a recipe.
+You own the name; the system owns the detection.
+
+**Detection — `core/skill_mining.py`**
+- Set-cosine similarity over request tokens (same tokenizer the
+  episodic search uses; consistency on purpose).
+- Single-pass clustering: each successful past ask joins the first
+  cluster it's similar to (threshold 0.6), or seeds a new one.
+- Threshold for surfacing: ≥3 occurrences. Configurable per call.
+- Scan limited to 100 most-recent successful entries — quadratic in
+  scan_limit, but bounded enough for interactive use.
+- Failed asks excluded — repeating a query that didn't work is
+  not a skill.
+
+**REPL — `cli/repl.py`**
+- After each successful ask, mine clusters and check if the current
+  request belongs to one. If yes, surface a one-line hint:
+  `💡 you've asked things like '<snippet>…' 3 times. Run anthill
+  recipe save to bake a skill.`
+- `SessionStats.suggested_skill_ids` tracks which clusters we've
+  already nudged about so the same hint doesn't repeat every turn.
+- `/skills` (alias `/skill`) inspects the top 10 mined patterns
+  with occurrence counts.
+- Hint generation wrapped in try/except — mining is best-effort,
+  never breaks the REPL.
+
+**Tests** — 837 passing (+10 in `tests/test_skill_mining.py`)
+- No clusters → empty list (the quiet case)
+- 3 similar asks → 1 cluster of size 3
+- Failed asks excluded
+- min_occurrences threshold respected
+- Most-recent entry is the cluster's representative
+- Clusters ordered by occurrence count desc
+- looks_like_new_match for the post-ask nudge gate
+- Empty request doesn't seed a phantom cluster
+- scan_limit caps inspection (older matches drop off)
