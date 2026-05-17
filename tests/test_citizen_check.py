@@ -201,6 +201,49 @@ def test_migrate_skips_retired_quarantined() -> None:
     assert a3.model == "deepseek"  # alive, migrated
 
 
+def test_migrate_repairs_stale_legacy_when_user_config_exists(monkeypatch) -> None:
+    """0.1.23 regression: the exact user-reported case.
+
+    User has UserConfig with one ModelEntry "deepseek" and three
+    citizens stuck on "minimax". Their shell still has MINIMAX_API_KEY
+    exported (stale). In 0.1.22 find_unresolvable_citizens correctly
+    flagged the three, but migrate_citizens_to silently skipped them
+    because it kept the old _legacy_resolves check inline.
+    """
+    from anthill.core.citizen_check import migrate_citizens_to
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-stale-from-yesterday")
+
+    agents = [
+        Agent(id="ant-1", model="minimax"),
+        Agent(id="ant-2", model="minimax"),
+        Agent(id="ant-3", model="minimax"),
+    ]
+    n = migrate_citizens_to(
+        agents, "deepseek",
+        only_unresolvable=True,
+        configured_model_names=["deepseek"],
+    )
+    assert n == 3
+    assert all(a.model == "deepseek" for a in agents)
+
+
+def test_migrate_leaves_heritage_env_only_users_alone(monkeypatch) -> None:
+    """Mirror: with NO UserConfig, env-driven heritage users are not
+    forcibly migrated. The fix should not regress them."""
+    from anthill.core.citizen_check import migrate_citizens_to
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-real")
+    agents = [Agent(id="ant-1", model="minimax")]
+    n = migrate_citizens_to(
+        agents, "deepseek",
+        only_unresolvable=True,
+        configured_model_names=[],   # heritage mode
+    )
+    assert n == 0
+    assert agents[0].model == "minimax"
+
+
 def test_migrate_clears_provider_cache(monkeypatch) -> None:
     """After migration, the lazy provider cache must rebuild — else the
     citizen keeps using the old provider for the rest of the session."""

@@ -135,32 +135,53 @@ def migrate_citizens_to(
 ) -> int:
     """Point citizens at ``target_model``. Returns count changed.
 
-    ``only_unresolvable=True`` (default) touches only citizens whose
-    current model fails ``find_unresolvable_citizens`` — preserves
-    citizens the user deliberately put on a different model.
+    ``only_unresolvable=True`` (default) touches exactly the set
+    ``find_unresolvable_citizens`` flags — the diagnostic and the
+    repair stay in lockstep. Citizens the user deliberately put on
+    a different working model are preserved.
 
     ``only_unresolvable=False`` is the "blast everyone" option, useful
     when the user wants to consolidate after experimenting.
 
     Retired / quarantined citizens are NEVER touched — leaving them
     on whatever they were is the lower-surprise default.
+
+    0.1.23 — fixed a real-user bug where this used to keep the
+    legacy env-var check inline. find_unresolvable_citizens had
+    already tightened in 0.1.22 to refuse env-var fallback once
+    UserConfig is in play, but this function hadn't been updated
+    in sync, so `/citizens migrate` would happily report "migrated
+    0" while the diagnostic still flagged the same three citizens.
     """
-    configured = set(configured_model_names or ())
+    agents_list = list(agents)  # iterables are once-only; we walk twice
     n = 0
-    for agent in agents:
+    if only_unresolvable:
+        flagged_ids = {
+            i.agent_id
+            for i in find_unresolvable_citizens(
+                agents_list, configured_model_names or ()
+            )
+        }
+        for agent in agents_list:
+            if agent.id not in flagged_ids:
+                continue
+            if agent.model == target_model:
+                continue
+            agent.model = target_model
+            # Force the lazy provider cache to rebuild on next
+            # execute() — without this, the agent keeps its prior
+            # provider instance for the lifetime of the process.
+            agent._provider = None
+            n += 1
+        return n
+
+    # only_unresolvable=False — blast every alive citizen.
+    for agent in agents_list:
         if agent.is_retired or agent.is_quarantined:
             continue
         if agent.model == target_model:
             continue
-        if only_unresolvable:
-            if agent.model in configured:
-                continue
-            if _legacy_resolves(agent.model):
-                continue
         agent.model = target_model
-        # Force the lazy provider cache to rebuild on next execute()
-        # — without this, the agent would keep its prior provider
-        # instance for the lifetime of the process.
         agent._provider = None
         n += 1
     return n
