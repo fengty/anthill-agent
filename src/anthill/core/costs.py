@@ -26,16 +26,48 @@ from pathlib import Path
 
 
 # Per million tokens, USD. Conservative public list prices.
+# 0.1.19 — refreshed against each provider's official pricing docs
+# in May 2026. Legacy ids (deepseek-chat / deepseek-reasoner /
+# claude-3-5-*) intentionally kept here as best-effort cost lookup
+# for any old history rows — calling them now will fail, but reading
+# back cost data on past runs should still work.
 _DEFAULT_PRICES_USD: dict[str, tuple[float, float]] = {
+    # --- DeepSeek (api-docs.deepseek.com) ---
+    "deepseek-v4-pro": (0.55, 2.19),
+    "deepseek-v4-flash": (0.14, 0.55),
+    # Legacy — kept for backward cost lookup; retiring 2026-07-24.
     "deepseek-chat": (0.27, 1.10),
     "deepseek-reasoner": (0.55, 2.19),
+
+    # --- MiniMax (platform.minimax.io) ---
+    "MiniMax-M2.7": (0.30, 1.20),
+    "MiniMax-M2.7-highspeed": (0.15, 0.60),
+    "MiniMax-M2.5": (0.30, 1.20),
+    "MiniMax-M2.1": (0.30, 1.20),
+    # Legacy MiniMax names — kept for old-history cost reads.
     "minimax": (1.00, 3.00),
     "MiniMax-M2-Stable": (0.30, 1.20),
     "MiniMax-M2": (0.30, 1.20),
-    "MiniMax-M2.5": (0.30, 1.20),
-    "minimax-m2-stable": (0.30, 1.20),
-    "minimax-m2": (0.30, 1.20),
-    "minimax-m2.5": (0.30, 1.20),
+
+    # --- OpenAI (developers.openai.com/api/docs/pricing) ---
+    "gpt-5.5": (2.50, 10.00),
+    "gpt-5.5-pro": (15.00, 60.00),
+    "gpt-5.4": (1.25, 5.00),
+    "gpt-5.4-pro": (10.00, 40.00),
+    "gpt-5.4-mini": (0.25, 1.00),
+    "gpt-5.4-nano": (0.10, 0.40),
+    "gpt-5.3-codex": (1.25, 5.00),
+    "o3": (2.00, 8.00),
+    "o3-pro": (20.00, 80.00),
+
+    # --- Anthropic (platform.claude.com/docs/.../pricing) ---
+    "claude-opus-4-7": (5.00, 25.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-opus-4-6": (5.00, 25.00),
+    "claude-sonnet-4-5": (3.00, 15.00),
+    "claude-opus-4-5": (5.00, 25.00),
+    "claude-opus-4-1": (15.00, 75.00),
 }
 
 

@@ -53,8 +53,10 @@ def test_model_ids_for_provider_static_only(tmp_path: Path) -> None:
     from anthill.cli.model_catalog import model_ids_for_provider
 
     ids = model_ids_for_provider("deepseek", tmp_path)
-    assert "deepseek-chat" in ids
-    assert "deepseek-reasoner" in ids
+    # 0.1.19 — DeepSeek current ids are v4-pro / v4-flash.
+    # deepseek-chat / deepseek-reasoner retired 2026-07-24.
+    assert "deepseek-v4-pro" in ids
+    assert "deepseek-v4-flash" in ids
 
 
 def test_model_ids_for_provider_live_wins_order(tmp_path: Path) -> None:
@@ -65,7 +67,8 @@ def test_model_ids_for_provider_live_wins_order(tmp_path: Path) -> None:
         save_catalog,
     )
 
-    # Live cache only knows about one id; static knows two.
+    # Live cache only knows about one id; static knows the current
+    # v4 pair.
     save_catalog(
         tmp_path,
         {
@@ -77,9 +80,9 @@ def test_model_ids_for_provider_live_wins_order(tmp_path: Path) -> None:
     )
     ids = model_ids_for_provider("deepseek", tmp_path)
     assert ids[0] == "deepseek-future-2027"
-    # The static-only ids "deepseek-chat" / "deepseek-reasoner" still
-    # appear so the user has a known-good fallback.
-    assert "deepseek-chat" in ids
+    # The static-only current ids still appear so the user has a
+    # known-good fallback even if the upstream API hides something.
+    assert "deepseek-v4-pro" in ids
 
 
 def test_model_ids_for_unknown_provider_returns_empty(tmp_path: Path) -> None:

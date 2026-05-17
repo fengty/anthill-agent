@@ -597,3 +597,45 @@ the session, run the CLI, and come back.
 - Unknown name is a quiet no-op
 - `/model use INDEX` accepts numeric arg
 - Secret cleanup verified (no orphans)
+
+---
+
+## v0.1.19 — Refreshed model IDs against official docs (May 2026)
+
+User caught it: `deepseek-chat` / `deepseek-reasoner` were stale —
+DeepSeek announced retirement on 2026-07-24, and the canonical
+current ids are v4-pro / v4-flash. Same story for OpenAI (GPT-4o is
+gone, GPT-5.5 is the line) and Anthropic (Claude 4.7 is flagship).
+
+**Verified against**
+- DeepSeek: <https://api-docs.deepseek.com/quick_start/pricing>
+- OpenAI: <https://developers.openai.com/api/docs/models/all>
+- Anthropic: <https://platform.claude.com/docs/en/about-claude/models/overview>
+- MiniMax: <https://platform.minimax.io/docs/release-notes/models>
+
+**Changes — `cli/providers_meta.py`**
+
+| Provider | Old default | New default | Notes |
+|---|---|---|---|
+| deepseek | `deepseek-chat` ☠️ | `deepseek-v4-pro` | Retires 2026-07-24 |
+| openai | `gpt-4o-mini` ☠️ | `gpt-5.5` | GPT-4o-line dropped |
+| anthropic | `claude-sonnet-4-5` (legacy) | `claude-opus-4-7` | 4.7 is current flagship |
+| minimax | `MiniMax-M2-Stable` (gone) | `MiniMax-M2.7` | M2 line consolidated |
+
+Retired ids (deepseek-chat / reasoner, gpt-4o-*, o1-*, claude-3-5-*,
+MiniMax-M2-Stable, abab6.5s-chat) **removed** from `known_models`
+tuples — per user request "被淘汰的就别记录了". Recent legacy that
+the docs still mark active (claude-opus-4-6 / sonnet-4-5 / 4-1) is
+kept so users on stable releases aren't forced to migrate.
+
+**Pricing — `core/costs.py`**
+- Full pricing refresh against each provider's official rate card.
+- Old ids retained in the dict as best-effort cost lookup for
+  history rows from before this patch — calling them now will fail,
+  but `anthill costs` still renders correct numbers for past runs.
+
+**Tests** — 847 passing.
+- `test_deepseek_preset_has_known_models` now guards against
+  retired ids creeping back into the allow-list (`deepseek-chat`
+  and `deepseek-reasoner` must NOT be present).
+- `test_model_catalog.*` updated to reference v4-pro / v4-flash.

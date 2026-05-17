@@ -203,8 +203,18 @@ def test_pick_model_id_includes_live_catalog_extras(
 
 
 def test_deepseek_preset_has_known_models() -> None:
-    """Guard the explicit allow-list that prevents the 'deepseek' typo bug."""
+    """Guard the allow-list against typos and against keeping retired ids.
+
+    0.1.19 — DeepSeek retired `deepseek-chat` / `deepseek-reasoner`
+    on 2026-07-24. We intentionally do NOT carry them as known
+    models — using one steers the user at a countdown-to-broken
+    default. The current canonical ids are v4-pro / v4-flash.
+    """
     preset = PROVIDER_PRESETS["deepseek"]
-    assert "deepseek-chat" in preset.known_models
-    assert "deepseek-reasoner" in preset.known_models
-    assert "deepseek" not in preset.known_models  # the bug case
+    assert "deepseek-v4-pro" in preset.known_models
+    assert "deepseek-v4-flash" in preset.known_models
+    # The original "deepseek" typo case stays guarded.
+    assert "deepseek" not in preset.known_models
+    # Retired ids must not creep back into the allow-list.
+    assert "deepseek-chat" not in preset.known_models
+    assert "deepseek-reasoner" not in preset.known_models
