@@ -144,6 +144,63 @@ def _read_request_line(prompt: str = "» ") -> str:
     return "\n".join(buffer).rstrip()
 
 
+_AUTH_HINT_THRESHOLD = 3
+
+
+def _track_auth_failure(event, nation: Nation, stats: "SessionStats") -> None:  # noqa: ANN001
+    """Count consecutive AUTH failures by model name; nudge on threshold.
+
+    When the same configured model keeps getting auth-rejected we know
+    the key in secrets.toml is wrong — distinct from the "model name
+    not in config" case the startup preflight already covers. Surface
+    a remedy hint once per session per model.
+    """
+    attempts = event.outcome.attempts
+    latest = attempts[-1] if attempts else None
+    if latest is None:
+        return
+    if latest.failure_reason != "auth":
+        return
+    # Resolve which model NAME (ModelEntry name) the failing citizen runs on.
+    model_name = next(
+        (a.model for a in nation.agents if a.id == latest.agent_id),
+        None,
+    )
+    if model_name is None:
+        return
+    stats.auth_failures_by_model[model_name] = (
+        stats.auth_failures_by_model.get(model_name, 0) + 1
+    )
+    if stats.auth_failures_by_model[model_name] < _AUTH_HINT_THRESHOLD:
+        return
+    if model_name in stats.auth_fix_hinted:
+        return
+    stats.auth_fix_hinted.add(model_name)
+    from anthill.core.userconfig import load_config
+    cfg = load_config()
+    default = cfg.default_model
+    console.print(
+        f"  [yellow]💡 model [cyan]{model_name}[/cyan] has failed auth "
+        f"{stats.auth_failures_by_model[model_name]}× this session.[/yellow]"
+    )
+    console.print(
+        "  [dim]The key in secrets.toml is probably wrong. Try:[/dim]"
+    )
+    console.print(
+        f"  [dim]·[/dim] [cyan]/model test {model_name}[/cyan] "
+        f"[dim](verify the key)[/dim]"
+    )
+    if default and default != model_name:
+        console.print(
+            f"  [dim]·[/dim] [cyan]/citizens migrate {model_name}[/cyan] "
+            f"[dim](move all citizens off it onto '{default}')[/dim]"
+        )
+    console.print(
+        f"  [dim]·[/dim] [cyan]/model rm {model_name}[/cyan] "
+        f"[dim](delete + re-add with a fresh key)[/dim]"
+    )
+
+
 def _citizen_model_preflight(nation: Nation) -> None:
     """Warn at startup when citizens point at unresolvable model names.
 
@@ -266,17 +323,20 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /history      recent asks
     /project      project context Scout sees (cwd, git branch, files)
     /skills       recurring patterns the nation has noticed in history
-    /citizens     list alive citizens + which models they use
-    /citizens migrate
-                  point all unresolvable citizens at the default model
+    /citizens          list alive citizens + which models they use
+    /citizens migrate  point all unresolvable citizens at the default
+    /citizens migrate X
+                       evacuate every citizen running on model X
+                       (use when X is configured but its key is bad)
 
   [bold]Steer[/bold]
     /rate up      strengthen pheromones for the last answer
     /rate down    erode pheromones for the last answer
-    /model        list configured models (numbered)
-    /model use X  switch default model (X = name or list index)
-    /model rm X   delete a model (X = name or index)
-    /model rm     interactive — walk each model with y/N
+    /model         list configured models (numbered)
+    /model use X   switch default model (X = name or list index)
+    /model rm X    delete a model (X = name or index)
+    /model rm      interactive — walk each model with y/N
+    /model test X  verify a model's API key (the (auth) diagnostic)
     /nation X     switch to a different nation (creates if missing)
     /plan         toggle plan review (skip/keep subtasks before run)
     /setup        relaunch the interactive setup wizard
@@ -313,6 +373,13 @@ class SessionStats:
         # through an interactive prompt before execution so the user
         # can skip / keep subtasks or cancel. Toggle with /plan.
         self.plan_review = False
+        # 0.1.24 — per-model running auth-failure count. When the same
+        # ModelEntry returns auth errors N times in a row, surface a
+        # one-time fix-it hint to the user. Keyed by the agent's
+        # `model` field (which is the ModelEntry NAME, not the
+        # provider's internal model id).
+        self.auth_failures_by_model: dict[str, int] = {}
+        self.auth_fix_hinted: set[str] = set()
         # v0.1.17 — skill-mining nudge bookkeeping. We surface a
         # "you've done this 3x — save as recipe?" hint at most once
         # per session per cluster, keyed by the cluster's first
@@ -790,6 +857,11 @@ async def _handle_ask(
                         streaming_state["open"] = True
         elif event.kind == "attempt" and not event.success:
             _close_stream_line()
+            # 0.1.24 — auth-failure tracking. Same ModelEntry getting
+            # auth-rejected over and over is the smoking gun for a
+            # bad key in secrets.toml (the "minimax model configured
+            # but its key is wrong" case). Count and offer the remedy.
+            _track_auth_failure(event, nation, stats)
             # 0.1.8 — surface WHAT failed, not just "failed". On the
             # latest attempt we read failure_reason (v0.5 structured)
             # and the raw output (often "[error] 404 model not found").
@@ -1236,8 +1308,43 @@ def _handle_model_cmd(rest: str) -> None:
             _delete_one(entry)
         return
 
+    if rest.startswith("test ") or rest == "test":
+        # 0.1.24 — verify a model's API key right inside the REPL.
+        # The `anthill model test` CLI command already exists; this
+        # wraps it so users don't have to leave the session when
+        # they're trying to diagnose the (auth) error.
+        target = rest[len("test"):].strip()
+        if not target:
+            console.print("[yellow]Usage: /model test NAME-or-N[/yellow]")
+            return
+        entry = _resolve(target)
+        if entry is None:
+            console.print(f"[red]No model named or indexed '{target}'.[/red]")
+            return
+        from anthill.cli.model_cmd import _probe_model
+        from anthill.core.userconfig import load_secrets
+        api_key = load_secrets().get(entry.secret_ref)
+        if not api_key:
+            console.print(
+                f"[red]No API key in secrets.toml for '{entry.name}'.[/red]"
+            )
+            return
+        import asyncio
+        console.print(f"  Testing [cyan]{entry.name}[/cyan]... ", end="")
+        result = asyncio.run(_probe_model(entry, api_key))
+        if result["ok"]:
+            console.print(
+                f"[green]✓ ok[/green] [dim]"
+                f"{result['latency_ms']:.0f}ms, "
+                f"{result.get('out_tokens', 0)} tokens[/dim]"
+            )
+        else:
+            console.print(f"[red]✗ {result['error']}[/red]")
+        return
+
     console.print(
-        "[yellow]Usage: /model | /model use NAME | /model rm [NAME-or-N][/yellow]"
+        "[yellow]Usage: /model | /model use NAME | "
+        "/model rm [NAME-or-N] | /model test NAME[/yellow]"
     )
 
 
@@ -1406,7 +1513,38 @@ def run_repl(nation_name: str = "default") -> int:
                 configured = [m.name for m in cfg.models]
                 action = rest.strip().lower()
 
-                if action in ("migrate", "fix"):
+                # 0.1.24 — `/citizens migrate FROM` evacuates every
+                # citizen on a specific model (used when the user
+                # KNOWS one of their configured models has a bad
+                # key and wants to move off it). Recognized as
+                # "migrate <something-other-than-keyword>".
+                migrate_from = None
+                if action.startswith("migrate ") and action != "migrate-all":
+                    rest_of = action[len("migrate "):].strip()
+                    if rest_of and rest_of not in ("from",):
+                        migrate_from = rest_of
+
+                if migrate_from is not None:
+                    if not cfg.default_model:
+                        console.print(
+                            "  [yellow]No default model configured.[/yellow]"
+                        )
+                    else:
+                        from anthill.core.citizen_check import (
+                            migrate_citizens_from,
+                        )
+                        n = migrate_citizens_from(
+                            nation.agents,
+                            from_model=migrate_from,
+                            to_model=cfg.default_model,
+                        )
+                        save_nation(nation, config.home)
+                        console.print(
+                            f"  [green]✓[/green] migrated {n} citizen(s) "
+                            f"from [red]{migrate_from}[/red] "
+                            f"to [cyan]{cfg.default_model}[/cyan]"
+                        )
+                elif action in ("migrate", "fix"):
                     if not cfg.default_model:
                         console.print(
                             "  [yellow]No default model configured. "
@@ -1424,6 +1562,28 @@ def run_repl(nation_name: str = "default") -> int:
                             f"  [green]✓[/green] migrated {n} citizen(s) to "
                             f"[cyan]{cfg.default_model}[/cyan]"
                         )
+                        if n == 0:
+                            # 0.1.24 — point the user at the third
+                            # case when /citizens migrate finds nothing.
+                            by_model: dict[str, int] = {}
+                            for a in nation.agents:
+                                if a.is_retired or a.is_quarantined:
+                                    continue
+                                by_model[a.model] = by_model.get(a.model, 0) + 1
+                            other_models = [
+                                m for m in by_model
+                                if m != cfg.default_model
+                            ]
+                            if other_models:
+                                console.print(
+                                    "  [dim]All citizens are on configured models.[/dim]"
+                                )
+                                for m in other_models:
+                                    console.print(
+                                        f"  [dim]If [cyan]{m}[/cyan]'s "
+                                        f"key is the problem: "
+                                        f"[cyan]/citizens migrate {m}[/cyan][/dim]"
+                                    )
                 elif action in ("migrate-all", "fix-all"):
                     if not cfg.default_model:
                         console.print(

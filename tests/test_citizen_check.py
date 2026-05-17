@@ -244,6 +244,69 @@ def test_migrate_leaves_heritage_env_only_users_alone(monkeypatch) -> None:
     assert agents[0].model == "minimax"
 
 
+def test_migrate_from_specific_model() -> None:
+    """0.1.24: the "third case" — model is configured but key is bad.
+    User runs `/citizens migrate minimax` to move off it explicitly.
+    """
+    from anthill.core.citizen_check import migrate_citizens_from
+
+    agents = [
+        Agent(id="ant-1", model="minimax"),
+        Agent(id="ant-2", model="deepseek"),
+        Agent(id="ant-3", model="minimax"),
+    ]
+    n = migrate_citizens_from(agents, from_model="minimax", to_model="deepseek")
+    assert n == 2
+    assert [a.model for a in agents] == ["deepseek", "deepseek", "deepseek"]
+
+
+def test_migrate_from_skips_unrelated_citizens() -> None:
+    """Citizens on other models stay put — migrate_from is scoped."""
+    from anthill.core.citizen_check import migrate_citizens_from
+
+    agents = [
+        Agent(id="ant-1", model="minimax"),
+        Agent(id="ant-2", model="openai"),  # configured but unrelated
+    ]
+    n = migrate_citizens_from(agents, from_model="minimax", to_model="deepseek")
+    assert n == 1
+    assert agents[1].model == "openai"
+
+
+def test_migrate_from_skips_retired_quarantined() -> None:
+    """Retired / quarantined citizens stay on their model."""
+    import time
+
+    from anthill.core.citizen_check import migrate_citizens_from
+
+    a1 = Agent(id="ant-1", model="minimax", retired_at=time.time())
+    a2 = Agent(id="ant-2", model="minimax", quarantined_at=time.time())
+    a3 = Agent(id="ant-3", model="minimax")
+    n = migrate_citizens_from([a1, a2, a3], from_model="minimax", to_model="deepseek")
+    assert n == 1
+    assert a1.model == "minimax"
+    assert a2.model == "minimax"
+    assert a3.model == "deepseek"
+
+
+def test_migrate_from_to_same_is_noop() -> None:
+    from anthill.core.citizen_check import migrate_citizens_from
+
+    agents = [Agent(id="ant-1", model="minimax")]
+    n = migrate_citizens_from(agents, from_model="minimax", to_model="minimax")
+    assert n == 0
+    assert agents[0].model == "minimax"
+
+
+def test_migrate_from_clears_provider_cache() -> None:
+    from anthill.core.citizen_check import migrate_citizens_from
+
+    a = Agent(id="ant-1", model="minimax")
+    a._provider = "fake-cached"  # type: ignore[assignment]
+    migrate_citizens_from([a], from_model="minimax", to_model="deepseek")
+    assert a._provider is None
+
+
 def test_migrate_clears_provider_cache(monkeypatch) -> None:
     """After migration, the lazy provider cache must rebuild — else the
     citizen keeps using the old provider for the rest of the session."""

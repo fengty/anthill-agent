@@ -126,6 +126,36 @@ def find_unresolvable_citizens(
     return issues
 
 
+def migrate_citizens_from(
+    agents: Iterable[Agent],
+    *,
+    from_model: str,
+    to_model: str,
+) -> int:
+    """Move every alive citizen that's on ``from_model`` over to ``to_model``.
+
+    The "third case" repair: the model name IS configured in UserConfig
+    (so find_unresolvable_citizens correctly says it's fine), but its
+    key turned out to be bad. The user runs ``/citizens migrate
+    minimax`` to evacuate.
+
+    Retired / quarantined citizens are NEVER touched — same lower-
+    surprise default the other migration paths use.
+    """
+    if from_model == to_model:
+        return 0
+    n = 0
+    for agent in agents:
+        if agent.is_retired or agent.is_quarantined:
+            continue
+        if agent.model != from_model:
+            continue
+        agent.model = to_model
+        agent._provider = None
+        n += 1
+    return n
+
+
 def migrate_citizens_to(
     agents: Iterable[Agent],
     target_model: str,
