@@ -66,6 +66,12 @@ class AskResult:
     ask_id: str | None = None  # filled when checkpoint was active
     budget: BudgetSnapshot | None = None  # filled when a Budget was set
     replans: int = 0  # number of self-correction passes that ran
+    # 0.1.4+ — history entries Scout actually borrowed from when planning.
+    # Surfaced by the REPL as "📚 borrowed from: id1, id2" so the user can
+    # SEE the nation's memory working, not just trust the readme. Empty
+    # when the cache was a hit / no similar past existed / Scout was
+    # bypassed (trivial fast path).
+    episodic_sources: list[str] = field(default_factory=list)
 
     @property
     def final_output(self) -> str:
@@ -380,6 +386,11 @@ class Nation:
             if fast_classify(request) != "trivial":
                 request = await maybe_clarify(self, request, on_clarify)
 
+        # Track which history entries Scout actually read, for the REPL
+        # "📚 borrowed from" line. Stays empty on resume / pre_plan /
+        # cache-hit / trivial-fast paths where Scout was bypassed.
+        episodic_sources: list[str] = []
+
         if resume is not None:
             plan = resume.plan
             self.last_ask_cache_hit = False
@@ -417,7 +428,9 @@ class Nation:
                         complexity="trivial",
                     )
                 else:
-                    similar_block = self._similar_past_block(request)
+                    similar_block, episodic_sources = (
+                        self._similar_past_block_with_sources(request)
+                    )
                     workflow_block = self._workflow_templates_block()
                     plugin_block = self._plugin_stats_block()
                     episodic_context = "\n\n".join(
@@ -543,6 +556,7 @@ class Nation:
             ask_id=inflight.ask_id if inflight is not None else None,
             budget=snapshot(tracker) if tracker is not None else None,
             replans=replans_done,
+            episodic_sources=episodic_sources,
         )
 
     async def _try_replan(
@@ -621,14 +635,28 @@ class Nation:
 
     def _similar_past_block(self, request: str) -> str:
         """Pull a small context block of similar past asks, if history is available."""
+        text, _ = self._similar_past_block_with_sources(request)
+        return text
+
+    def _similar_past_block_with_sources(
+        self, request: str
+    ) -> tuple[str, list[str]]:
+        """Same as `_similar_past_block` but also returns the entry IDs.
+
+        Used by Nation.ask to populate AskResult.episodic_sources so the
+        REPL can render "📚 borrowed from these past asks." Keeping
+        the simpler `_similar_past_block` as a thin wrapper preserves
+        the API for any caller that just wanted the text.
+        """
         if self.history_path is None or not self.history_path.exists():
-            return ""
+            return "", []
         from anthill.core.history import load_history
         entries = load_history(self.history_path.parent, limit=200)
         if not entries:
-            return ""
+            return "", []
         hits = find_similar(request, entries, top_k=3, min_score=0.2)
-        return format_similar_for_scout(hits)
+        sources = [h.entry.id for h in hits]
+        return format_similar_for_scout(hits), sources
 
     def _workflow_templates_block(self) -> str:
         """Context block listing this nation's known workflow shapes."""

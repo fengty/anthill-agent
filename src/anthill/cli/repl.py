@@ -474,6 +474,18 @@ async def _handle_ask(
                     f"  [magenta]{tt}[/magenta] "
                     f"[dim]→[/dim] [cyan]{aid[:12]}[/cyan][dim]/{model}[/dim]"
                 )
+
+    # 0.1.4+ — episodic sources line. Shows when Scout actually pulled
+    # from similar past asks. Empty list ⇒ no past was similar enough
+    # OR the trivial/cache fast path was taken; either way the nation
+    # didn't "remember" anything for this ask, so we stay quiet.
+    sources = getattr(result, "episodic_sources", None) or []
+    if sources:
+        joined = ", ".join(f"[cyan]{sid[:8]}[/cyan]" for sid in sources)
+        console.print(
+            f"  [yellow]📚[/yellow] [dim]借鉴过去 ask:[/dim] {joined} "
+            f"[dim](use [cyan]/history show {sources[0][:8]}[/cyan] to inspect)[/dim]"
+        )
     console.print()
     console.print(result.final_output)
     console.print()
