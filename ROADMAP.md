@@ -3,16 +3,21 @@
 > **Only the "Next" section is a commitment.** Everything below it is
 > "things we'd like to explore" — no order, no timeline, no promises.
 
-## Next: 0.1.15 — Nation bound to working directory (B-class)
+## Next: 0.1.16 — Startup optimization / lazy imports (A-class)
 
-`cd /path/to/project && anthill` should auto-load the project as
-context — picking up filenames, scanning the README, etc. Today the
-nation is global to `~/.anthill/`.
+First `anthill` launch costs ~1 s of `import` time (rich + click +
+httpx all eager-loaded). Target: ~300 ms by lazy-importing heavy
+deps only when actually invoked.
 
 Status: **planned, no code yet.**
 
 ### Recently shipped
 
+- **0.1.15** — Project context binding. New `core/project.py` detects
+  project root by walking up looking for markers (`pyproject.toml`,
+  `Cargo.toml`, `package.json`, `.git`, etc). Scout sees a project
+  block (name, kind, top-level entries, git branch + dirty count).
+  REPL splash shows the binding. `/project` slash command inspects it.
 - **0.1.14** — Tab completion. ReplCompleter (pure, testable) +
   readline glue. Knows slash commands, slash sub-args (model /
   nation / rate / plan), and `@`-token file paths with glob-aware

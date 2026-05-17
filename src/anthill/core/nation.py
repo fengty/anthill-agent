@@ -455,8 +455,17 @@ class Nation:
                     )
                     workflow_block = self._workflow_templates_block()
                     plugin_block = self._plugin_stats_block()
+                    # 0.1.15 — project context. When the REPL is in
+                    # a git repo / pyproject / etc, Scout sees the
+                    # project name + kind + top-level listing so its
+                    # plan can reference real filenames.
+                    from anthill.core.project import (
+                        find_project_root,
+                        project_context_block,
+                    )
+                    project_block = project_context_block(find_project_root())
                     episodic_context = "\n\n".join(
-                        b for b in (workflow_block, plugin_block, similar_block) if b
+                        b for b in (project_block, workflow_block, plugin_block, similar_block) if b
                     )
                     scout = Scout(model=self.scout_model)
                     plan = await scout.plan(

@@ -154,6 +154,7 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /power        national strength + ages
     /status       compact status card (model, citizens, cost so far)
     /history      recent asks
+    /project      project context Scout sees (cwd, git branch, files)
 
   [bold]Steer[/bold]
     /rate up      strengthen pheromones for the last answer
@@ -305,6 +306,24 @@ def _splash_banner(nation: Nation, stats: SessionStats) -> None:
     stats_table.add_row("trails",     f"[bold]{trail_count}[/bold]")
     stats_table.add_row("vocabulary", vocab_line)
     stats_table.add_row("dimensions", dims_line)
+    # 0.1.15 — show project context when the REPL launches inside a
+    # detectable project root. Surfaces the binding so the user sees
+    # WHICH project Scout will be aware of in subsequent asks.
+    try:
+        from anthill.core.project import find_project_root
+        _proj = find_project_root()
+    except Exception:  # noqa: BLE001 — splash must never crash
+        _proj = None
+    if _proj is not None:
+        branch_suffix = ""
+        if _proj.git_branch:
+            dirty_mark = "*" if _proj.git_dirty_count > 0 else ""
+            branch_suffix = f" [dim]· {_proj.git_branch}{dirty_mark}[/dim]"
+        stats_table.add_row(
+            "project",
+            f"[bold green]{_proj.name}[/bold green] "
+            f"[dim]({_proj.kind})[/dim]{branch_suffix}",
+        )
     if stats.asks > 0:
         stats_table.add_row("session",
             f"{stats.asks} ask(s) · "
@@ -1110,6 +1129,19 @@ def run_repl(nation_name: str = "default") -> int:
                 refreshed = load_nation(nation.name, config.home)
                 if refreshed is not None:
                     nation = refreshed
+            elif cmd == "project":
+                # 0.1.15 — inspect the project context Scout sees.
+                from anthill.core.project import (
+                    find_project_root,
+                    project_context_block,
+                )
+                _proj = find_project_root()
+                if _proj is None:
+                    console.print(
+                        "  [dim]No project detected at cwd or any parent.[/dim]"
+                    )
+                else:
+                    console.print(f"  [dim]{project_context_block(_proj)}[/dim]")
             elif cmd == "plan":
                 # 0.1.13 — toggle plan review. When on, every non-trivial
                 # ask gives the user a chance to skip/keep subtasks before

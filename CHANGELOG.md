@@ -427,3 +427,50 @@ common navigation.
 **Tests** — 808 passing (+16 in `tests/test_completion.py` covering
 prefix matching, mid-cursor behavior, dir traversal, dotfile hiding,
 and the "no completion outside slash/at-token" guard).
+
+---
+
+## v0.1.15 — Project context binding (May 2026)
+
+When the REPL launches inside a project directory, Scout now knows
+about it. No more typing `the file structure is...` — the planner
+sees the project name, language, top-level files, and git status as
+part of its episodic context.
+
+**Detection**
+- Walks up to 6 levels from cwd looking for project markers in
+  priority order: `pyproject.toml`, `setup.py`, `Cargo.toml`,
+  `go.mod`, `package.json`, `Gemfile`, `composer.json`, `pom.xml`,
+  `build.gradle`, `CMakeLists.txt`, `Makefile`, then `.git`.
+- More specific markers win (Python beats Git repo when both exist).
+
+**What Scout sees**
+```
+[project: anthill-agent — Python (pyproject.toml)]
+Top-level entries (8): src/, tests/, README.md, ...
+Git: branch main · 3 modified file(s)
+```
+
+**UX**
+- Splash shows `project: <name> (kind) · branch[*]` row when
+  detected — `*` indicates a dirty repo.
+- New `/project` slash command inspects the block.
+- Listed in Tab completion.
+- Caps: 25 top-level entries; git subprocess 2-second timeout each
+  call; dotfiles hidden except `.github/`.
+
+**Robustness**
+- Every git call is wrapped in try/except. Missing `git` binary,
+  detached HEAD, submodules, permission errors — all degrade to
+  "no branch info" instead of crashing.
+- `_list_top_level` swallows OSError so an unreadable directory
+  returns empty rather than blowing up the splash.
+
+**Tests** — 819 passing (+11 in `tests/test_project_context.py`)
+- Marker detection at root + walking up from a subdirectory
+- Priority (Python beats Git)
+- Top-level sort + dotfile hiding (except `.github`)
+- 25-entry cap
+- Git status fallback for non-git dirs
+- Render block shape
+- Permission-denied iterdir handling
