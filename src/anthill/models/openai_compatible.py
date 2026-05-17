@@ -87,7 +87,8 @@ class OpenAICompatibleProvider(ModelProvider):
             data = response.json()
         latency_ms = (time.perf_counter() - start) * 1000
 
-        text = data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        text = choice["message"]["content"]
         usage = data.get("usage", {})
         return ModelResponse(
             text=text,
@@ -96,6 +97,7 @@ class OpenAICompatibleProvider(ModelProvider):
             output_tokens=usage.get("completion_tokens", 0),
             latency_ms=latency_ms,
             raw=data,
+            finish_reason=choice.get("finish_reason"),
         )
 
     async def stream(
@@ -152,6 +154,7 @@ class OpenAICompatibleProvider(ModelProvider):
 
         input_tokens = 0
         output_tokens = 0
+        finish_reason: str | None = None
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             async with client.stream(
                 "POST", url, json=payload, headers=headers
@@ -168,6 +171,10 @@ class OpenAICompatibleProvider(ModelProvider):
                     try:
                         choice = parsed["choices"][0]
                         delta = choice.get("delta", {}).get("content") or ""
+                        # finish_reason arrives on the last content chunk.
+                        fr = choice.get("finish_reason")
+                        if fr:
+                            finish_reason = fr
                     except (KeyError, IndexError, TypeError):
                         delta = ""
                     usage = parsed.get("usage") if isinstance(parsed, dict) else None
@@ -180,6 +187,7 @@ class OpenAICompatibleProvider(ModelProvider):
             done=True,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            finish_reason=finish_reason,
         )
 
     async def _stream_anthropic(
@@ -209,6 +217,7 @@ class OpenAICompatibleProvider(ModelProvider):
 
         input_tokens = 0
         output_tokens = 0
+        finish_reason: str | None = None
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             async with client.stream(
                 "POST", url, json=payload, headers=headers
@@ -234,12 +243,17 @@ class OpenAICompatibleProvider(ModelProvider):
                         usage = parsed.get("usage") or {}
                         # Anthropic streams cumulative output_tokens here.
                         output_tokens = usage.get("output_tokens", output_tokens)
+                        # And stop_reason lands on the same event.
+                        stop = (parsed.get("delta") or {}).get("stop_reason")
+                        if stop:
+                            finish_reason = "length" if stop == "max_tokens" else stop
                     elif event_type == "message_stop":
                         break
         yield StreamChunk(
             done=True,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            finish_reason=finish_reason,
         )
 
     async def _anthropic(
@@ -279,6 +293,14 @@ class OpenAICompatibleProvider(ModelProvider):
             if block.get("type") == "text"
         )
         usage = data.get("usage", {})
+        # Anthropic uses `stop_reason` instead of OpenAI's `finish_reason`.
+        # Map `max_tokens` → `length` so downstream truncation detection
+        # in ModelResponse.truncated stays provider-agnostic.
+        anthropic_stop = data.get("stop_reason")
+        if anthropic_stop == "max_tokens":
+            finish_reason = "length"
+        else:
+            finish_reason = anthropic_stop
         return ModelResponse(
             text=text,
             model=self.model,
@@ -286,6 +308,7 @@ class OpenAICompatibleProvider(ModelProvider):
             output_tokens=usage.get("output_tokens", 0),
             latency_ms=latency_ms,
             raw=data,
+            finish_reason=finish_reason,
         )
 
 

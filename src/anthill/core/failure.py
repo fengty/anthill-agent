@@ -45,6 +45,7 @@ class FailureReason(str, Enum):
     NETWORK = "network"                        # connection error, DNS, 5xx
     RATE_LIMIT = "rate_limit"                  # 429 / "rate limit exceeded"
     AUTH = "auth"                              # 0.1.21: bad / missing API key, 401, login fail
+    TRUNCATED = "truncated"                    # 0.1.26: stopped on max_tokens (mid-sentence)
     FORMAT_ERROR = "format_error"              # Scout JSON parse, schema mismatch
     MODEL_ERROR = "model_error"                # generic 4xx from provider, hallucinated tool call
     JUDGE_LOW = "judge_low"                    # judge gave a low score (not a hard failure)
@@ -202,6 +203,7 @@ def explain(reason: FailureReason) -> str:
         FailureReason.NETWORK: "network or transport error",
         FailureReason.RATE_LIMIT: "provider rate limit hit",
         FailureReason.AUTH: "API key missing or invalid for this citizen's model",
+        FailureReason.TRUNCATED: "output stopped on max_tokens (mid-sentence)",
         FailureReason.FORMAT_ERROR: "output did not match expected format",
         FailureReason.MODEL_ERROR: "provider returned an API error",
         FailureReason.JUDGE_LOW: "output passed but judge scored it low",

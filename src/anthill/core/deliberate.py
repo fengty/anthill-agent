@@ -106,11 +106,25 @@ def _quality_of(result: "AskResult") -> tuple[float, dict[str, float]]:
     if not result.outcomes:
         return 0.0, {}
 
+    # 0.1.26 — truncation override. If any successful outcome's
+    # winning attempt was truncated (stopped on max_tokens), cap the
+    # overall quality at 0.6 regardless of judge dimension scores.
+    # A mid-sentence answer can't be 100%. This forces the
+    # deliberation loop to go another round instead of declaring
+    # "first_round_fine" on a half-answer.
+    truncated_any = False
+
     per_dim_max: dict[str, float] = {}
     success_scores: list[float] = []
     for outcome in result.outcomes:
         if outcome.status != "ok":
             continue
+        # getattr keeps the duck-typed test fixtures (_FakeOutcome
+        # without a .final field) working — defaults to None which
+        # leaves truncated_any False.
+        winner = getattr(outcome, "final", None)
+        if winner is not None and getattr(winner, "truncated", False):
+            truncated_any = True
         for attempt in outcome.attempts:
             success_scores.append(float(attempt.success_score))
             scores = getattr(attempt, "scores", None) or {}
@@ -132,6 +146,10 @@ def _quality_of(result: "AskResult") -> tuple[float, dict[str, float]]:
         overall = sum(success_scores) / len(success_scores)
     else:
         overall = 0.0
+
+    # Truncation cap, see comment at top of function.
+    if truncated_any and overall > 0.6:
+        overall = 0.6
 
     return max(0.0, min(1.0, overall)), per_dim_max
 

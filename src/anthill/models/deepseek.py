@@ -12,7 +12,7 @@ import time
 
 import httpx
 
-from anthill.models.base import ModelProvider, ModelResponse
+from anthill.models.base import DEFAULT_MAX_TOKENS, ModelProvider, ModelResponse
 
 
 class DeepSeekProvider(ModelProvider):
@@ -48,7 +48,7 @@ class DeepSeekProvider(ModelProvider):
         prompt: str,
         *,
         system: str | None = None,
-        max_tokens: int = 1024,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = 0.7,
     ) -> ModelResponse:
         messages: list[dict[str, str]] = []
@@ -78,7 +78,8 @@ class DeepSeekProvider(ModelProvider):
             data = response.json()
         latency_ms = (time.perf_counter() - start) * 1000
 
-        text = data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        text = choice["message"]["content"]
         usage = data.get("usage", {})
         return ModelResponse(
             text=text,
@@ -87,4 +88,5 @@ class DeepSeekProvider(ModelProvider):
             output_tokens=usage.get("completion_tokens", 0),
             latency_ms=latency_ms,
             raw=data,
+            finish_reason=choice.get("finish_reason"),
         )

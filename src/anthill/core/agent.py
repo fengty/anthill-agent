@@ -45,6 +45,12 @@ class TaskResult:
     # value so JSON round-trip is trivial. None when the attempt
     # succeeded.
     failure_reason: str | None = None
+    # 0.1.26 — True when the provider stopped on max_tokens. Used by
+    # the judge to reject mid-sentence answers and by the
+    # deliberation loop to know it should run another round with a
+    # bigger budget (rather than declaring "100% quality" on a
+    # truncated list of 6 items).
+    truncated: bool = False
 
 
 @dataclass
@@ -138,6 +144,7 @@ class Agent:
         start = time.perf_counter()
 
         try:
+            truncated = False
             if on_token is not None:
                 parts: list[str] = []
                 input_tokens = 0
@@ -149,18 +156,45 @@ class Agent:
                     if chunk.done:
                         input_tokens = chunk.input_tokens
                         output_tokens = chunk.output_tokens
+                        if chunk.finish_reason and chunk.finish_reason.lower() in (
+                            "length", "max_tokens", "max_output_tokens"
+                        ):
+                            truncated = True
                 text = "".join(parts)
             else:
                 response = await provider.complete(prompt, system=effective_system)
                 text = response.text
                 input_tokens = response.input_tokens
                 output_tokens = response.output_tokens
+                # getattr keeps the old duck-typed _FakeResponse test
+                # fixtures (which never carried truncation metadata)
+                # working — they default to "not truncated."
+                truncated = getattr(response, "truncated", False)
             duration = time.perf_counter() - start
-            success_score = 1.0 if text.strip() else 0.0
-            from anthill.core.failure import classify_attempt
+            # 0.1.26 — truncation caps success_score at 0.5. A mid-
+            # sentence answer is not a successful attempt; it's a
+            # signal to the deliberation loop to keep going (or to
+            # the retry machinery to try another citizen). Without
+            # this cap the judge happily gave 100% to a 6-line list
+            # that ended on "MIT CSAIL: https://csail.mit.edu — MIT's
+            # Computer" — clearly mid-thought.
+            from anthill.core.failure import FailureReason, classify_attempt
+            if text.strip() and not truncated:
+                success_score = 1.0
+            elif truncated:
+                # Some signal is better than none, but pheromone
+                # deposit should reflect "this wasn't done."
+                success_score = 0.5
+            else:
+                success_score = 0.0
             reason = classify_attempt(
                 text, exception=None, success_score=success_score
             )
+            # Truncation wins over whatever classify_attempt produced
+            # from the body text — a length-stopped response isn't a
+            # NETWORK / MODEL_ERROR / AUTH / POLICY case.
+            if truncated:
+                reason = FailureReason.TRUNCATED
             return TaskResult(
                 task_id=task_id,
                 agent_id=self.id,
@@ -171,6 +205,7 @@ class Agent:
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 failure_reason=reason.value if reason is not None else None,
+                truncated=truncated,
             )
         except Exception as e:  # noqa: BLE001 — we want any failure to erode the trail
             duration = time.perf_counter() - start
