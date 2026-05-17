@@ -3,16 +3,24 @@
 > **Only the "Next" section is a commitment.** Everything below it is
 > "things we'd like to explore" — no order, no timeline, no promises.
 
-## Next: 0.1.16 — Startup optimization / lazy imports (A-class)
+## Next: 0.1.17 — Skill auto-mining (B-class)
 
-First `anthill` launch costs ~1 s of `import` time (rich + click +
-httpx all eager-loaded). Target: ~300 ms by lazy-importing heavy
-deps only when actually invoked.
+Detect repeating ask shapes from history and auto-suggest them as
+named recipes. The user gets to confirm + name + save — the system
+notices the pattern, the user owns the abstraction.
 
 Status: **planned, no code yet.**
 
 ### Recently shipped
 
+- **0.1.16** — Lazy top-level re-exports. `from anthill import
+  __version__` no longer drags in Nation / Router / Agent and their
+  ~50-module transitive tree. PEP 562 `__getattr__` defers each
+  public name to first access. CLI per-command imports moved
+  inside their callers (benchmark, facts, workflows, power,
+  snapshot, style_learner). Result: `anthill --version` from
+  ~110 ms to ~88 ms; `from anthill import __version__` from
+  ~120 ms to ~4 ms (30× speedup).
 - **0.1.15** — Project context binding. New `core/project.py` detects
   project root by walking up looking for markers (`pyproject.toml`,
   `Cargo.toml`, `package.json`, `.git`, etc). Scout sees a project

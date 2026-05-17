@@ -24,8 +24,12 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+# 0.1.16 — deferred imports. The CLI's heaviest dependencies
+# (benchmark / facts / workflows / power / snapshot / style_learner)
+# are imported inside the commands that need them, not at module
+# load. This cuts `anthill --version` and `--help` from ~120 ms to
+# ~30 ms by keeping ~50 modules out of the eager import tree.
 from anthill import __version__
-from anthill.bench.compare import benchmark
 from anthill.config import AnthillConfig
 from anthill.core.feedback import (
     AskRecord,
@@ -67,12 +71,7 @@ from anthill.core.recipes import (
     save_recipe,
 )
 from anthill.core.costs import load_usage, summarise
-from anthill.core.facts import derive_facts, read_facts, write_facts
-from anthill.core.workflows import load_workflows, mine_workflows, save_workflows
 from anthill.plugins import default_registry
-from anthill.core.power import compute_ages, compute_power
-from anthill.core.snapshot import export_nation, import_nation
-from anthill.core.style_learner import suggest_house_style
 from anthill.core.nation import Nation
 from anthill.core.persistence import load_nation, nation_dir, save_nation
 from anthill.core.router import RouterConfig
@@ -350,6 +349,7 @@ def style_learn(nation_name: str, model: str) -> None:
         return
 
     console.print(f"[dim]Reading {len(exemplars)} exemplars...[/dim]")
+    from anthill.core.style_learner import suggest_house_style
     suggestion = asyncio.run(suggest_house_style(exemplars, model=model))
     console.print()
     console.print("[bold]Suggested house style[/bold]")
@@ -1241,6 +1241,7 @@ def workflows_show(nation_name: str) -> None:
     if load_nation(nation_name, config.home) is None:
         console.print(f"[red]No nation named '{nation_name}'.[/red]")
         return
+    from anthill.core.workflows import load_workflows
     templates = load_workflows(nation_dir(config.home, nation_name))
     if not templates:
         console.print(
@@ -1265,6 +1266,7 @@ def workflows_mine(nation_name: str, min_recurrence: int) -> None:
     if load_nation(nation_name, config.home) is None:
         console.print(f"[red]No nation named '{nation_name}'.[/red]")
         return
+    from anthill.core.workflows import mine_workflows, save_workflows
     history = load_history(nation_dir(config.home, nation_name))
     templates = mine_workflows(history, min_recurrence=min_recurrence)
     save_workflows(templates, nation_dir(config.home, nation_name))
@@ -1284,6 +1286,7 @@ def facts_show(nation_name: str) -> None:
     if load_nation(nation_name, config.home) is None:
         console.print(f"[red]No nation named '{nation_name}'.[/red]")
         return
+    from anthill.core.facts import read_facts
     content = read_facts(nation_dir(config.home, nation_name))
     if not content.strip():
         console.print(
@@ -1302,6 +1305,7 @@ def facts_refresh(nation_name: str) -> None:
     if nation is None:
         console.print(f"[red]No nation named '{nation_name}'.[/red]")
         return
+    from anthill.core.facts import derive_facts, write_facts
     history = load_history(nation_dir(config.home, nation_name))
     discovered = derive_facts(history, nation.pheromones)
     write_facts(discovered, nation_dir(config.home, nation_name))
@@ -1370,6 +1374,7 @@ def power(nation_name: str) -> None:
         console.print(f"[red]No nation named '{nation_name}'.[/red]")
         return
 
+    from anthill.core.power import compute_ages, compute_power
     history = load_history(nation_dir(config.home, nation_name))
     exemplars = load_exemplars(nation_dir(config.home, nation_name))
     report = compute_power(nation, history, exemplars)
@@ -1622,6 +1627,7 @@ def export_cmd(nation_name: str, output: Path) -> None:
         return
     if output.suffix == "":
         output = output.with_suffix(".tar.gz")
+    from anthill.core.snapshot import export_nation
     manifest = export_nation(src, output)
     console.print(f"[green]Exported[/green] '{nation_name}' to {output}")
     console.print(
@@ -1640,6 +1646,7 @@ def import_cmd(archive: Path) -> None:
     config.ensure_home()
     target_root = config.home / "nations"
     try:
+        from anthill.core.snapshot import import_nation
         manifest = import_nation(archive, target_root)
     except FileExistsError as e:
         console.print(f"[red]{e}[/red]")
@@ -1788,6 +1795,7 @@ def bench(
     and the same tasks; only the routing differs.
     """
     console.print(f"[dim]Running benchmark — {terse_tasks + verbose_tasks} tasks per arm[/dim]")
+    from anthill.bench.compare import benchmark
     result = asyncio.run(
         benchmark(
             n_terse_tasks=terse_tasks,

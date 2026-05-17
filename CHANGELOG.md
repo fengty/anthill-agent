@@ -474,3 +474,43 @@ Git: branch main · 3 modified file(s)
 - Git status fallback for non-git dirs
 - Render block shape
 - Permission-denied iterdir handling
+
+---
+
+## v0.1.16 — Lazy imports / startup speedup (May 2026)
+
+A-class baseline. `anthill --version` and `--help` no longer pay for
+loading Nation, Router, Agent, the executor, the model providers, or
+~50 other modules they don't actually need.
+
+**The big win — `anthill/__init__.py`**
+- PEP 562 `__getattr__` defers re-exports. `from anthill import
+  __version__` now drops from ~120 ms to ~4 ms (30×). `from anthill
+  import Nation` still works — Python falls through to our
+  `__getattr__` on the first miss, materializes the class, and
+  caches it on the module.
+- `__all__` still lists the lazy names so `dir(anthill)` and tools
+  that introspect modules see them.
+
+**Per-command lazy imports in `cli/main.py`**
+- Moved inside their command bodies:
+  - `anthill.bench.compare` (only `anthill bench`)
+  - `anthill.core.facts` (only `facts show / refresh`)
+  - `anthill.core.workflows` (only `workflows show / mine`)
+  - `anthill.core.power` (only `power`)
+  - `anthill.core.snapshot` (only `export / import`)
+  - `anthill.core.style_learner` (only `style learn`)
+- Kept eager: `AnthillConfig`, `Nation`, `Console`, click — every
+  command needs these.
+
+**Measured (warm cache)**
+- `anthill --version`: ~110 ms → ~88 ms
+- `anthill --help`: ~100 ms → ~80 ms
+- `from anthill import __version__`: ~120 ms → ~4 ms
+
+**Tests** — 827 passing (+8 in `tests/test_lazy_imports.py`)
+- Subprocess test confirms `from anthill import __version__` does
+  NOT load `anthill.core.nation` — the critical guarantee.
+- `anthill.Nation`, `.Agent`, `.PheromoneTrail`, `.Router` all
+  materialize correctly via `__getattr__`.
+- Unknown attribute raises `AttributeError` (standard contract).
