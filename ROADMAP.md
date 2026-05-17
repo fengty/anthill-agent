@@ -3,17 +3,18 @@
 > **Only the "Next" section is a commitment.** Everything below it is
 > "things we'd like to explore" — no order, no timeline, no promises.
 
-## Next: 0.1.11 — `@file` syntax (B-class)
+## Next: 0.1.12 — multi-line input (A-class)
 
-With streaming landed in 0.1.10, the next pending baseline gap is
-"files as context". `@filename.py` or `@src/**/*.py` should attach
-the file contents to the prompt automatically — currently users
-have to `cat` files in by hand.
+`"""` heredoc to switch into multi-line mode, single message send.
+Today, pasting a code snippet that contains newlines submits early.
 
 Status: **planned, no code yet.**
 
 ### Recently shipped
 
+- **0.1.11** — `@file` / `@glob` syntax. Tokens like `@src/foo.py` or
+  `@src/**/*.py` expand to inlined file contents prepended to the
+  prompt. Binary detection, per-file 100 KB cap, 500 KB total cap.
 - **0.1.10** — Streaming output. Provider layer (`ModelProvider.stream()`),
   agent wiring (`on_token` callback), `ProgressEvent(kind='token')`,
   REPL inline rendering with soft-wrap.

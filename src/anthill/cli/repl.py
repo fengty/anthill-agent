@@ -112,6 +112,11 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     ↑/↓           previous / next from history (saved across sessions)
     Ctrl+A / E    jump to line start / end
     Ctrl+R        reverse-search history
+
+  [bold]Attachments[/bold]
+    @path/to/file       attach a file as context
+    @src/**/*.py        glob — every matching file is read
+    [dim]File size cap 100 KB each, 500 KB total. Binary files skipped.[/dim]
 """
 
 
@@ -386,9 +391,35 @@ async def _handle_ask(
     quality_threshold: float = 0.85,
 ) -> None:
     import time
+    from pathlib import Path as _Path
 
+    from anthill.core.attachments import expand_attachments
     from anthill.core.costs import UsageRecord, append_usage, price_for
     from anthill.core.executor import ProgressEvent
+
+    # v0.1.11 — @file / @glob expansion. Read referenced files BEFORE
+    # the request reaches Scout so the planner can see them as part of
+    # the prompt context. The visible request stays as-typed so history
+    # / plan-cache hashing remains stable across users with different
+    # working directories.
+    attachment_block = expand_attachments(request, base=_Path.cwd())
+    if attachment_block.files:
+        names = ", ".join(f.path for f in attachment_block.files[:3])
+        more = (
+            f" (+{len(attachment_block.files) - 3} more)"
+            if len(attachment_block.files) > 3
+            else ""
+        )
+        total_kb = sum(f.size_bytes for f in attachment_block.files) / 1024
+        console.print(
+            f"  [dim]📎 attached {len(attachment_block.files)} file(s): "
+            f"{names}{more} · {total_kb:.1f} KB[/dim]"
+        )
+    for err in attachment_block.errors:
+        console.print(
+            f"  [yellow]⚠ skipped {err.token}[/yellow] [dim]({err.reason})[/dim]"
+        )
+    effective_request = attachment_block.render() + request
 
     # Live progress: one line per subtask, updated as state changes.
     # Keeps the REPL output scannable while still showing the king that
@@ -559,7 +590,7 @@ async def _handle_ask(
                 console.print(f"  [dim]critique: {snippet}…[/dim]")
 
         delib = await run_deliberate(
-            nation, request,
+            nation, effective_request,
             max_rounds=max_rounds,
             quality_threshold=quality_threshold,
             on_progress=on_progress,
@@ -577,7 +608,7 @@ async def _handle_ask(
         )
     else:
         result = await nation.ask(
-            request,
+            effective_request,
             on_progress=on_progress,
             on_clarify=on_clarify,  # v0.9.0
             nation_dir=nation_dir(config.home, nation.name),

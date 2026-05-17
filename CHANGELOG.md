@@ -278,3 +278,51 @@ Tokens render live as they arrive.
 Tests: 756 passing (+10 for stream contract, SSE parsing for both
 provider shapes, agent streaming path, executor `kind='token'`
 bridge, and edge cases like `on_token=None` short-circuit).
+
+---
+
+## v0.1.11 — `@file` / `@glob` attachments (May 2026)
+
+Files as a first-class prompt context. Type `@src/foo.py` or
+`@src/**/*.py` in the REPL (or `anthill ask`) and the matching files
+are read and inlined above your request before Scout sees it.
+
+**Tokenizer**
+- `@` followed by any run of non-whitespace, non-`@` chars.
+- Trailing punctuation (`,.;:!?)]}`) is trimmed so
+  `look at @foo.py, then @bar.py` works.
+- Tokens that look like email addresses produce a "not found"
+  warning rather than a crash — the REPL renders a yellow `⚠`.
+
+**Resolution**
+- Glob metacharacters (`*?[`) trigger `pathlib.Path.glob` expansion
+  against the working directory. `**` works recursively.
+- Literal paths resolve relative to cwd unless absolute.
+- Same file referenced twice is read once (dedup by `Path.resolve()`).
+
+**Safety caps**
+- Per-file cap: 100 KB. Larger files are skipped with a `⚠` warning.
+- Total cap: 500 KB across all attachments. Once exceeded, later
+  files are skipped and the block is flagged `truncated=True`.
+- Binary detection: a NUL byte in the first 1 KiB ⇒ skip.
+- UTF-8 decode failures fall back to `errors="replace"` so a stray
+  byte doesn't blow up the whole expand.
+
+**REPL feedback**
+- On success: `📎 attached N file(s): foo.py, bar.py · X.X KB`
+- On error: `⚠ skipped @missing.py (not found)` per token.
+- `/help` now lists the attachment syntax under a new section.
+
+**Implementation**
+- `src/anthill/core/attachments.py`: `parse_at_tokens`,
+  `expand_attachments`, `AttachmentBlock.render()`.
+- `cli/repl.py`: expansion happens in `_handle_ask` before
+  `nation.ask`. Visible request stays as-typed (history / plan
+  cache hashing unchanged); the effective request with file
+  contents inlined is what reaches Scout.
+- `cli/main.py`: one-shot `anthill ask "..."` path gets the same
+  treatment (including the deliberate and ensemble branches).
+
+Tests: 773 passing (+17 covering tokenization, glob recursion,
+dedup, caps, binary skip, UTF-8 fallback, rendered block shape,
+absolute paths, and the prompt-prepend round trip).

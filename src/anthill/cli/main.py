@@ -586,9 +586,30 @@ def ask(
         max_cost_usd=max_cost,
         max_seconds=max_seconds,
     )
+
+    # v0.1.11 — @file / @glob expansion for one-shot CLI asks too.
+    # Same semantics as the REPL: visible request stays as the user
+    # typed it (for history / cache hashing); the expanded version with
+    # file contents inlined is what reaches Scout.
+    from pathlib import Path as _Path
+
+    from anthill.core.attachments import expand_attachments
+    _attached = expand_attachments(request, base=_Path.cwd())
+    if _attached.files:
+        names = ", ".join(f.path for f in _attached.files[:3])
+        more = f" (+{len(_attached.files) - 3} more)" if len(_attached.files) > 3 else ""
+        console.print(
+            f"[dim]📎 attached {len(_attached.files)} file(s): {names}{more}[/dim]"
+        )
+    for err in _attached.errors:
+        console.print(
+            f"[yellow]⚠ skipped {err.token}[/yellow] [dim]({err.reason})[/dim]"
+        )
+    effective_request = _attached.render() + request
+
     async def _run():
         result = await nation.ask(
-            request,
+            effective_request,
             nation_dir=nation_dir(config.home, nation_name),
             budget=budget if not budget.is_empty() else None,
             max_replans=max_replans,
@@ -617,14 +638,14 @@ def ask(
         async def _ensemble_run():
             scout = Scout(model=nation.scout_model)
             plan = await scout.plan(
-                request,
+                effective_request,
                 known_task_types=nation.culture.known_task_types(),
             )
             for st in plan.subtasks:
                 st.fanout = ensemble
                 st.strategy = strategy
             return await nation.ask(
-                request,
+                effective_request,
                 nation_dir=nation_dir(config.home, nation_name),
                 budget=budget if not budget.is_empty() else None,
                 max_replans=max_replans,
@@ -656,7 +677,7 @@ def ask(
         async def _deliberate_run():
             return await run_deliberate(
                 nation,
-                request,
+                effective_request,
                 max_rounds=rounds,
                 quality_threshold=quality,
                 budget=budget if not budget.is_empty() else None,
