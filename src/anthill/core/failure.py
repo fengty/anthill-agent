@@ -44,6 +44,7 @@ class FailureReason(str, Enum):
     TIMEOUT = "timeout"                        # network or provider timeout
     NETWORK = "network"                        # connection error, DNS, 5xx
     RATE_LIMIT = "rate_limit"                  # 429 / "rate limit exceeded"
+    AUTH = "auth"                              # 0.1.21: bad / missing API key, 401, login fail
     FORMAT_ERROR = "format_error"              # Scout JSON parse, schema mismatch
     MODEL_ERROR = "model_error"                # generic 4xx from provider, hallucinated tool call
     JUDGE_LOW = "judge_low"                    # judge gave a low score (not a hard failure)
@@ -86,6 +87,23 @@ _NETWORK_PATTERNS = (
 _RATE_LIMIT_PATTERNS = (
     "rate limit", "too many requests", "429",
     "quota exceeded", "tokens per minute", "request per minute",
+)
+
+# 0.1.21 — auth-related failures. Catches the case from the real-user
+# report: a citizen has model="minimax" but no ModelEntry / no key
+# loaded, so MiniMax returns "error 1004: login fail". Same bucket
+# covers OpenAI 401, Anthropic invalid_api_key, etc. Goes BEFORE
+# RATE_LIMIT in match order via classify_attempt's ordering below.
+_AUTH_PATTERNS = (
+    "401", "unauthorized",
+    "invalid api key", "invalid_api_key",
+    "incorrect api key",
+    "api key not found", "api key required",
+    "missing api key", "no api key",
+    "authentication failed", "authentication error",
+    "login fail", "error 1004",   # MiniMax-style
+    "carry the api secret key",   # MiniMax's exact wording
+    "invalid x-api-key",
 )
 
 _FORMAT_ERROR_PATTERNS = (
@@ -145,6 +163,11 @@ def classify_attempt(
 
     haystack = text.lower()
 
+    # Auth comes BEFORE rate-limit/model-error: "401 Unauthorized" is
+    # ambiguous between those buckets without this priority. The user-
+    # facing remedy is also distinct ("check your key", not "wait").
+    if _any_match(haystack, _AUTH_PATTERNS):
+        return FailureReason.AUTH
     if _any_match(haystack, _RATE_LIMIT_PATTERNS):
         return FailureReason.RATE_LIMIT
     if _any_match(haystack, _POLICY_REFUSAL_PATTERNS):
@@ -178,6 +201,7 @@ def explain(reason: FailureReason) -> str:
         FailureReason.TIMEOUT: "request timed out",
         FailureReason.NETWORK: "network or transport error",
         FailureReason.RATE_LIMIT: "provider rate limit hit",
+        FailureReason.AUTH: "API key missing or invalid for this citizen's model",
         FailureReason.FORMAT_ERROR: "output did not match expected format",
         FailureReason.MODEL_ERROR: "provider returned an API error",
         FailureReason.JUDGE_LOW: "output passed but judge scored it low",

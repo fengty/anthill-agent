@@ -144,6 +144,59 @@ def _read_request_line(prompt: str = "» ") -> str:
     return "\n".join(buffer).rstrip()
 
 
+def _citizen_model_preflight(nation: Nation) -> None:
+    """Warn at startup when citizens point at unresolvable model names.
+
+    The scenario: user ran setup with provider A, the nation got 3
+    citizens with model="A". Then they reconfigured under a different
+    name; old citizens still say "A" but UserConfig no longer has
+    a ModelEntry named "A". Every ask becomes 3 auth failures.
+
+    Strategy: spot the gap and offer a one-liner remedy. The
+    interactive fix is `/citizens migrate` which calls
+    `migrate_citizens_to(default_model)`.
+    """
+    from anthill.core.citizen_check import find_unresolvable_citizens
+    from anthill.core.userconfig import load_config
+
+    cfg = load_config()
+    configured = [m.name for m in cfg.models]
+    issues = find_unresolvable_citizens(nation.agents, configured)
+    if not issues:
+        return
+
+    # Group by model name so the message stays compact when 3 citizens
+    # share the same broken model (typical case).
+    grouped: dict[str, list[str]] = {}
+    for issue in issues:
+        grouped.setdefault(issue.model, []).append(issue.agent_id)
+
+    console.print(
+        f"[yellow]⚠ {len(issues)} citizen(s) point at model name(s) "
+        "you no longer have configured:[/yellow]"
+    )
+    for model_name, citizen_ids in grouped.items():
+        sample = ", ".join(citizen_ids[:3])
+        more = f" (+{len(citizen_ids) - 3} more)" if len(citizen_ids) > 3 else ""
+        console.print(
+            f"  [dim]·[/dim] [red]{model_name}[/red] "
+            f"used by {sample}{more}"
+        )
+    if cfg.default_model:
+        console.print(
+            f"  [dim]Fix:[/dim] [cyan]/citizens migrate[/cyan] "
+            f"[dim](point all unresolvable citizens at "
+            f"'{cfg.default_model}')[/dim]"
+        )
+    else:
+        console.print(
+            "  [dim]Fix:[/dim] configure a model with "
+            "[cyan]/setup[/cyan] [dim]first, then run "
+            "[cyan]/citizens migrate[/cyan][/dim]"
+        )
+    console.print()
+
+
 def _proxy_preflight() -> None:
     """Warn early when a proxy env var is set but the transport can't use it.
 
@@ -199,6 +252,9 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /history      recent asks
     /project      project context Scout sees (cwd, git branch, files)
     /skills       recurring patterns the nation has noticed in history
+    /citizens     list alive citizens + which models they use
+    /citizens migrate
+                  point all unresolvable citizens at the default model
 
   [bold]Steer[/bold]
     /rate up      strengthen pheromones for the last answer
@@ -1224,6 +1280,13 @@ def run_repl(nation_name: str = "default") -> int:
     # this BEFORE the first ask burns three retries.
     _proxy_preflight()
 
+    # 0.1.21 — citizen-model preflight. Same shape as proxy_preflight:
+    # the actual bug is a citizen pointing at a model name the user no
+    # longer has configured ("minimax" left over after the user
+    # reconfigured as "deepseek"). Without this warning, every ask
+    # burns three retries with "(auth)" errors.
+    _citizen_model_preflight(nation)
+
     # 0.1.5+ — first-run gate. If no model is configured we can't do
     # ANYTHING useful in the REPL; instead of letting the user type
     # into a broken state (and watch every ask fail 3 times), offer
@@ -1314,6 +1377,77 @@ def run_repl(nation_name: str = "default") -> int:
                 refreshed = load_nation(nation.name, config.home)
                 if refreshed is not None:
                     nation = refreshed
+            elif cmd in ("citizens", "citizen"):
+                # 0.1.21 — repair unresolvable citizens. /citizens
+                # alone prints diagnostic; /citizens migrate fixes
+                # everything broken; /citizens migrate-all blasts
+                # every alive citizen at the default.
+                from anthill.core.citizen_check import (
+                    find_unresolvable_citizens,
+                    migrate_citizens_to,
+                )
+                from anthill.core.userconfig import load_config
+
+                cfg = load_config()
+                configured = [m.name for m in cfg.models]
+                action = rest.strip().lower()
+
+                if action in ("migrate", "fix"):
+                    if not cfg.default_model:
+                        console.print(
+                            "  [yellow]No default model configured. "
+                            "Run /setup first.[/yellow]"
+                        )
+                    else:
+                        n = migrate_citizens_to(
+                            nation.agents,
+                            cfg.default_model,
+                            only_unresolvable=True,
+                            configured_model_names=configured,
+                        )
+                        save_nation(nation, config.home)
+                        console.print(
+                            f"  [green]✓[/green] migrated {n} citizen(s) to "
+                            f"[cyan]{cfg.default_model}[/cyan]"
+                        )
+                elif action in ("migrate-all", "fix-all"):
+                    if not cfg.default_model:
+                        console.print(
+                            "  [yellow]No default model configured.[/yellow]"
+                        )
+                    else:
+                        n = migrate_citizens_to(
+                            nation.agents,
+                            cfg.default_model,
+                            only_unresolvable=False,
+                        )
+                        save_nation(nation, config.home)
+                        console.print(
+                            f"  [green]✓[/green] migrated {n} citizen(s) "
+                            f"(all alive) to [cyan]{cfg.default_model}[/cyan]"
+                        )
+                else:
+                    # No-arg / "show" — diagnostic
+                    issues = find_unresolvable_citizens(nation.agents, configured)
+                    alive = [a for a in nation.agents if not a.is_retired and not a.is_quarantined]
+                    console.print(
+                        f"  [bold]{len(alive)}[/bold] alive citizen(s) "
+                        f"[dim]({sum(1 for a in nation.agents if a.is_retired)} retired)[/dim]"
+                    )
+                    by_model: dict[str, int] = {}
+                    for a in alive:
+                        by_model[a.model] = by_model.get(a.model, 0) + 1
+                    for m, count in sorted(by_model.items()):
+                        broken = m in {i.model for i in issues}
+                        tag = "[red](broken)[/red]" if broken else ""
+                        console.print(f"    [cyan]{count}×[/cyan] {m} {tag}")
+                    if issues:
+                        console.print(
+                            "  [dim]/citizens migrate     repair broken ones[/dim]"
+                        )
+                        console.print(
+                            "  [dim]/citizens migrate-all  reset ALL to default[/dim]"
+                        )
             elif cmd in ("skills", "skill"):
                 # 0.1.17 — show what skill_mining sees in this nation's
                 # history. Useful for "what does the system think I do
