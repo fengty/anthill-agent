@@ -72,6 +72,11 @@ class AskResult:
     # when the cache was a hit / no similar past existed / Scout was
     # bypassed (trivial fast path).
     episodic_sources: list[str] = field(default_factory=list)
+    # 0.1.13+ — set to True if the user cancelled the plan review.
+    # `outcomes` will be empty and `final_output` returns "". The REPL
+    # surfaces this distinctly from "no subtasks succeeded" so the user
+    # sees that nothing ran (vs. everything failed).
+    cancelled_by_user: bool = False
 
     @property
     def final_output(self) -> str:
@@ -81,6 +86,11 @@ class AskResult:
         we find a step that did produce something — better to show partial
         progress than an opaque error.
         """
+        # 0.1.13 — user-cancelled plans have no work to surface. Return
+        # empty so the REPL doesn't paste "[No subtask completed
+        # successfully.]" for a deliberate cancel.
+        if self.cancelled_by_user:
+            return ""
         for outcome in reversed(self.outcomes):
             if outcome.status == "ok":
                 return outcome.output
@@ -345,6 +355,7 @@ class Nation:
         *,
         on_progress=None,
         on_clarify=None,
+        on_plan=None,
         resume: InflightAsk | None = None,
         nation_dir: Path | None = None,
         budget: Budget | None = None,
@@ -463,6 +474,29 @@ class Nation:
                         plan.complexity = "complex"
                 cache_remember(request, plan, self.plan_cache)
                 self.last_ask_cache_hit = False
+            # 0.1.13 — plan review hook. Fires only when Scout actually
+            # ran (not on resume / pre_plan / cache hit / trivial fast).
+            # The callback gets the Plan and returns either:
+            #   - a (possibly modified) Plan to execute
+            #   - None to cancel the ask entirely
+            # For non-Scout paths we keep the existing behavior (plan
+            # runs as-is) since those are either deterministic (recipe,
+            # resume) or already optimized (cache, trivial).
+            if (
+                on_plan is not None
+                and not self.last_ask_cache_hit
+                and plan.complexity != "trivial"
+            ):
+                reviewed = await on_plan(plan)
+                if reviewed is None:
+                    return AskResult(
+                        request=request,
+                        plan=plan,
+                        outcomes=[],
+                        episodic_sources=episodic_sources,
+                        cancelled_by_user=True,
+                    )
+                plan = reviewed
             inflight = InflightAsk.new(request=request, plan=plan) if nation_dir else None
 
         # Pre-seed the executor with already-completed steps (resume only).

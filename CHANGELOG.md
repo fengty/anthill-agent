@@ -361,3 +361,35 @@ Tests: 785 passing (+12 in `tests/test_multiline_input.py` covering
 the inline pair, opener-with-content, trailing-closer, blank lines,
 indentation preservation, EOF/Ctrl+C semantics, empty block, and
 `@file` survival).
+
+---
+
+## v0.1.13 — Editable Plan (May 2026)
+
+Scout's plan is no longer opaque-and-immediate. With plan review on,
+the user sees the proposed subtasks first and can skip / keep / cancel
+before any model burns tokens.
+
+**The hook**
+- `Nation.ask(on_plan=...)` — async callback that receives the Plan
+  and returns either a (possibly modified) Plan or None to cancel.
+- Fires only on real Scout output. Bypassed on cache hits,
+  trivial-fast classification, `pre_plan=` (recipes), and `resume=`
+  (already-locked plans).
+- Cancellation surfaces as `AskResult(cancelled_by_user=True,
+  outcomes=[], final_output="")`. The REPL skips history / cost
+  bookkeeping for cancelled asks — nothing dirtied.
+
+**REPL UI**
+- Numbered subtask list with task_type, depends_on, and a prompt
+  preview.
+- Enter = run as-is. `s 2,3` = skip those indices. `k 1` = keep
+  only #1. `c` = cancel. Loops until Enter or cancel.
+- `/plan` slash command toggles review on/off per session. Default
+  is off so nothing surprises users who haven't opted in.
+
+**Tests** — 792 passing (+7 in `tests/test_editable_plan.py`)
+- on_plan returning the plan unchanged ⇒ runs normally
+- on_plan mutating ⇒ executor honors the modified plan
+- on_plan returning None ⇒ cancelled_by_user=True, no calls to run
+- pre_plan / cache hit / trivial-fast / resume all skip the hook

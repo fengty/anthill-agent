@@ -161,6 +161,7 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /model        list configured models
     /model use X  switch default model
     /nation X     switch to a different nation (creates if missing)
+    /plan         toggle plan review (skip/keep subtasks before run)
     /setup        relaunch the interactive setup wizard
 
   [bold]Session[/bold]
@@ -190,6 +191,10 @@ class SessionStats:
         self.tokens_out = 0
         self.cost_usd = 0.0
         self.asks = 0
+        # v0.1.13 — opt-in plan review. When True, Scout's plan goes
+        # through an interactive prompt before execution so the user
+        # can skip / keep subtasks or cancel. Toggle with /plan.
+        self.plan_review = False
 
     def add(self, input_tokens: int, output_tokens: int, cost: float) -> None:
         self.tokens_in += input_tokens
@@ -496,6 +501,81 @@ async def _handle_ask(
                 return a.model
         return "?"
 
+    # v0.1.13 — plan review handler. Scout's output goes through here
+    # before execution starts. The user can: hit Enter to accept, type
+    # `s N[,N]` to skip subtasks, `k N[,N]` to keep only those, or `c`
+    # to cancel the whole ask. Returns the (possibly modified) plan,
+    # or None to signal cancel.
+    async def on_plan(plan):  # noqa: ANN001, ANN202
+        from anthill.core.scout import Plan as _Plan
+
+        if not plan.subtasks:
+            return plan  # nothing to review
+        console.print()
+        console.print(
+            f"  [bold cyan]Plan[/bold cyan] "
+            f"[dim]({len(plan.subtasks)} subtask(s), "
+            f"complexity={plan.complexity})[/dim]"
+        )
+        current = list(plan.subtasks)
+        while True:
+            for i, st in enumerate(current, start=1):
+                deps = f" [dim]← {', '.join(st.depends_on)}[/dim]" if st.depends_on else ""
+                prompt_snip = st.prompt[:80].replace("\n", " ")
+                if len(st.prompt) > 80:
+                    prompt_snip += "…"
+                console.print(
+                    f"    [cyan]{i}[/cyan]. [magenta]{st.task_type}[/magenta]"
+                    f"{deps}  [dim]{prompt_snip}[/dim]"
+                )
+            console.print(
+                "  [dim]Enter=run · "
+                "s N[,N]=skip · k N[,N]=keep only · c=cancel[/dim]"
+            )
+            try:
+                choice = input("  plan? ").strip()
+            except (EOFError, KeyboardInterrupt):
+                return None
+            if not choice:
+                return _Plan(subtasks=current, complexity=plan.complexity)
+            if choice.lower() in ("c", "cancel"):
+                return None
+            head, _, rest = choice.partition(" ")
+            head = head.lower()
+            if head in ("s", "skip", "k", "keep"):
+                try:
+                    indices = {
+                        int(part) - 1 for part in rest.replace(",", " ").split() if part
+                    }
+                except ValueError:
+                    console.print("  [yellow](numbers please)[/yellow]")
+                    continue
+                if not indices or any(
+                    not 0 <= idx < len(current) for idx in indices
+                ):
+                    console.print(
+                        f"  [yellow](valid indices: 1-{len(current)})[/yellow]"
+                    )
+                    continue
+                if head in ("s", "skip"):
+                    current = [
+                        st for i, st in enumerate(current) if i not in indices
+                    ]
+                else:
+                    current = [
+                        st for i, st in enumerate(current) if i in indices
+                    ]
+                if not current:
+                    console.print(
+                        "  [yellow](no subtasks left — cancelling)[/yellow]"
+                    )
+                    return None
+                console.print(
+                    f"  [dim]updated — {len(current)} subtask(s) remaining[/dim]"
+                )
+                continue
+            console.print("  [yellow](didn't understand — Enter, s, k, or c)[/yellow]")
+
     # v0.9.0 — clarification turn handler. When the clarifier inside
     # Nation.ask flags a request as ambiguous, this callback runs in
     # the REPL: print the questions, read one line of user response,
@@ -657,6 +737,7 @@ async def _handle_ask(
             quality_threshold=quality_threshold,
             on_progress=on_progress,
             on_clarify=on_clarify,  # v0.9.0
+            on_plan=on_plan if stats.plan_review else None,  # v0.1.13
             nation_dir=nation_dir(config.home, nation.name),
             on_round=_on_round,
         )
@@ -673,9 +754,16 @@ async def _handle_ask(
             effective_request,
             on_progress=on_progress,
             on_clarify=on_clarify,  # v0.9.0
+            on_plan=on_plan if stats.plan_review else None,  # v0.1.13
             nation_dir=nation_dir(config.home, nation.name),
         )
     save_nation(nation, config.home)
+
+    # v0.1.13 — plan review cancelled the ask. No outcomes to record;
+    # don't dirty history / last-ask / usage logs.
+    if getattr(result, "cancelled_by_user", False):
+        console.print("  [dim]plan cancelled — nothing ran.[/dim]")
+        return
 
     pairs = [
         (o.final.agent_id, o.subtask.task_type)
@@ -1018,6 +1106,25 @@ def run_repl(nation_name: str = "default") -> int:
                 refreshed = load_nation(nation.name, config.home)
                 if refreshed is not None:
                     nation = refreshed
+            elif cmd == "plan":
+                # 0.1.13 — toggle plan review. When on, every non-trivial
+                # ask gives the user a chance to skip/keep subtasks before
+                # execution. Default off — opt-in for the user who wants
+                # to micromanage Scout.
+                arg = rest.strip().lower()
+                if arg in ("on", "yes", "1"):
+                    stats.plan_review = True
+                elif arg in ("off", "no", "0"):
+                    stats.plan_review = False
+                else:
+                    stats.plan_review = not stats.plan_review
+                state = (
+                    "[green]on[/green]" if stats.plan_review else "[dim]off[/dim]"
+                )
+                console.print(
+                    f"  Plan review {state} "
+                    f"[dim](Scout's plan will be reviewed before execution)[/dim]"
+                )
             else:
                 console.print(f"[yellow]Unknown command: /{cmd}.[/yellow] Try /help.")
             continue

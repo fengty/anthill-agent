@@ -3,16 +3,20 @@
 > **Only the "Next" section is a commitment.** Everything below it is
 > "things we'd like to explore" — no order, no timeline, no promises.
 
-## Next: 0.1.13 — editable Plan (B-class)
+## Next: 0.1.14 — Tab completion (A-class)
 
-After Scout proposes a plan, give the user a chance to skip / edit /
-reorder subtasks before execution starts. Today the plan is opaque
-and immediate.
+Slash commands, model names, nation names, and `@`-token file paths
+should all complete on Tab. Today everything is full-text.
 
 Status: **planned, no code yet.**
 
 ### Recently shipped
 
+- **0.1.13** — Editable Plan. `Nation.ask(on_plan=...)` callback fires
+  after Scout produces a plan but before execution. REPL UI lets users
+  skip / keep subtasks or cancel. `/plan` slash command toggles
+  review on/off per session. Cache hits, trivial-fast, resume, and
+  `pre_plan` paths bypass the hook (already-locked plans).
 - **0.1.12** — Multi-line input. Type `"""` to enter heredoc mode;
   newlines inside don't auto-submit. Closes with `"""` on its own
   line or trailing a content line. Preserves indentation for paste.
