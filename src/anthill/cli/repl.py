@@ -333,6 +333,7 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /rate up      strengthen pheromones for the last answer
     /rate down    erode pheromones for the last answer
     /model         list configured models (numbered)
+    /model add     interactive — add a new model (same flow as /setup)
     /model use X   switch default model (X = name or list index)
     /model rm X    delete a model (X = name or index)
     /model rm      interactive — walk each model with y/N
@@ -1216,8 +1217,8 @@ def _handle_model_cmd(rest: str) -> None:
                 f"[dim]{m.provider} / {m.model}[/dim]"
             )
         console.print(
-            "  [dim]/model use NAME  ·  /model rm NAME-or-N  ·  "
-            "/model rm  (interactive)[/dim]"
+            "  [dim]/model add  ·  /model use NAME  ·  /model rm NAME-or-N  ·  "
+            "/model test NAME[/dim]"
         )
 
     def _resolve(token: str):  # noqa: ANN202
@@ -1264,11 +1265,15 @@ def _handle_model_cmd(rest: str) -> None:
         )
         for entry in list(cfg.models):  # snapshot, _delete_one mutates cfg.models
             star = " ★" if entry.name == cfg.default_model else ""
+            # 0.1.25 — input() can't render rich markup; print the
+            # prompt via console.print then read with a bare input("").
+            console.print(
+                f"  remove [cyan]{entry.name}[/cyan]{star}"
+                f"  [dim]({entry.provider}/{entry.model})[/dim]? [y/N] ",
+                end="",
+            )
             try:
-                answer = input(
-                    f"  remove [cyan]{entry.name}[/cyan]"
-                    f"{star}  ({entry.provider}/{entry.model})? [y/N] "
-                ).strip().lower()
+                answer = input("").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 console.print()
                 console.print("  [dim]stopped.[/dim]")
@@ -1294,11 +1299,15 @@ def _handle_model_cmd(rest: str) -> None:
                 console.print(f"[red]No model named or indexed '{token}'.[/red]")
                 continue
             if not force:
+                # 0.1.25 — same render-then-read split for the
+                # single-target rm path.
+                console.print(
+                    f"  remove [cyan]{entry.name}[/cyan]? "
+                    f"[dim]This is permanent.[/dim] [y/N] ",
+                    end="",
+                )
                 try:
-                    confirm = input(
-                        f"  remove [cyan]{entry.name}[/cyan]? "
-                        f"This is permanent. [y/N] "
-                    ).strip().lower()
+                    confirm = input("").strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     console.print()
                     return
@@ -1306,6 +1315,32 @@ def _handle_model_cmd(rest: str) -> None:
                     console.print("  [dim]skipped.[/dim]")
                     continue
             _delete_one(entry)
+        return
+
+    if rest in ("add", "new"):
+        # 0.1.25 — interactive add inside the REPL. Reuses the same
+        # _add_model_interactive helper the setup wizard calls, so
+        # the flow (provider picker → save-as → model id picker →
+        # secret prompt) is identical and stays in sync. Solves
+        # "I want to add the deepseek key but don't want to leave
+        # the REPL to run `anthill model add`."
+        from anthill.cli.setup_cmd import _add_model_interactive, _is_tty
+
+        if not _is_tty():
+            console.print(
+                "[yellow]/model add needs an interactive terminal.[/yellow]"
+            )
+            return
+        try:
+            name, _secret_ref = _add_model_interactive(cfg)
+        except KeyboardInterrupt:
+            console.print()
+            console.print("  [dim]cancelled.[/dim]")
+            return
+        except RuntimeError as e:
+            console.print(f"[red]{e}[/red]")
+            return
+        console.print(f"  [green]✓[/green] added [cyan]{name}[/cyan]")
         return
 
     if rest.startswith("test ") or rest == "test":
@@ -1343,7 +1378,7 @@ def _handle_model_cmd(rest: str) -> None:
         return
 
     console.print(
-        "[yellow]Usage: /model | /model use NAME | "
+        "[yellow]Usage: /model | /model add | /model use NAME | "
         "/model rm [NAME-or-N] | /model test NAME[/yellow]"
     )
 

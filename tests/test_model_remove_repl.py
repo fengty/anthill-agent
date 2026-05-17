@@ -196,7 +196,73 @@ def test_model_use_accepts_index(monkeypatch) -> None:
     assert load_config().default_model == "broken"
 
 
-def test_model_rm_secret_also_removed(monkeypatch) -> None:
+def test_model_add_delegates_to_wizard_helper(monkeypatch) -> None:
+    """0.1.25 — `/model add` in REPL must call the same flow as
+    `anthill setup` step 1, so REPL and setup never disagree on
+    what a new model entry looks like.
+    """
+    from anthill.cli import repl as repl_mod
+    from anthill.core.userconfig import load_config
+
+    called = {}
+
+    def fake_add(user_config):  # noqa: ANN001
+        from anthill.core.userconfig import (
+            ModelEntry,
+            save_config,
+            upsert_secret,
+        )
+
+        called["yes"] = True
+        upsert_secret("model.via-repl", "sk-fake")
+        user_config.models.append(
+            ModelEntry(
+                name="via-repl",
+                provider="deepseek",
+                model="deepseek-v4-pro",
+                secret_ref="model.via-repl",
+            )
+        )
+        save_config(user_config)
+        return "via-repl", "model.via-repl"
+
+    monkeypatch.setattr("anthill.cli.setup_cmd._add_model_interactive", fake_add)
+    monkeypatch.setattr("anthill.cli.setup_cmd._is_tty", lambda: True)
+    repl_mod._handle_model_cmd("add")
+    assert called == {"yes": True}
+    assert load_config().find_model("via-repl") is not None
+
+
+def test_model_add_refuses_when_no_tty(monkeypatch) -> None:
+    """Scripted environments (no TTY) get a clear refusal instead of hanging."""
+    from anthill.cli import repl as repl_mod
+
+    monkeypatch.setattr("anthill.cli.setup_cmd._is_tty", lambda: False)
+    # If the helper got called, the test would mutate user config.
+    # The assertion is just "no crash, no entry added".
+    repl_mod._handle_model_cmd("add")
+    from anthill.core.userconfig import load_config
+    assert load_config().models == []  # _seed_models not called here
+
+
+def test_model_rm_confirm_prompt_renders_no_literal_markup(
+    monkeypatch, capsys
+) -> None:
+    """0.1.25 regression: input() can't render rich markup, so the
+    confirm prompt had to be a console.print(..., end="") + bare
+    input(""). Check that no `[cyan]` literal text appears in stdout.
+    """
+    from anthill.cli import repl as repl_mod
+
+    _seed_models()
+    monkeypatch.setattr("builtins.input", lambda _p="": "y")
+    repl_mod._handle_model_cmd("rm broken")
+    captured = capsys.readouterr()
+    # Either the markup got rendered (no literal "[cyan]" in output)
+    # OR the prompt was suppressed entirely. Either way: not literal.
+    assert "[cyan]" not in captured.out
+    assert "[/cyan]" not in captured.out
+    assert "[dim]" not in captured.out
     """Deleting a model wipes its API-key secret too — no orphan secrets."""
     from anthill.cli.repl import _handle_model_cmd
     from anthill.core.userconfig import load_secrets
