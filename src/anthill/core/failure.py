@@ -75,6 +75,12 @@ _NETWORK_PATTERNS = (
     "dns", "name resolution",
     "503", "502", "504",
     "remote end closed", "broken pipe",
+    # 0.1.20 — proxy / transport config issues. Surfacing these as
+    # NETWORK so the retry log says "(network)" instead of "(unknown)"
+    # — and so the user knows the bug is in their proxy setup, not
+    # the model.
+    "socks proxy", "socksio",
+    "proxy", "no proxy",
 )
 
 _RATE_LIMIT_PATTERNS = (

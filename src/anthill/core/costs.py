@@ -68,6 +68,43 @@ _DEFAULT_PRICES_USD: dict[str, tuple[float, float]] = {
     "claude-sonnet-4-5": (3.00, 15.00),
     "claude-opus-4-5": (5.00, 25.00),
     "claude-opus-4-1": (15.00, 75.00),
+
+    # --- Google Gemini (ai.google.dev/.../pricing) ---
+    "gemini-3.1-pro-preview": (1.25, 10.00),
+    "gemini-3-flash-preview": (0.30, 2.50),
+    "gemini-3.1-flash-lite": (0.25, 1.50),
+    "gemini-2.5-pro": (1.25, 10.00),
+    "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-2.5-flash-lite": (0.10, 0.40),
+
+    # --- xAI Grok (docs.x.ai/.../models) ---
+    "grok-4.3": (1.25, 2.50),
+    "grok-4.20-0309-reasoning": (3.00, 15.00),
+    "grok-4.20-0309-non-reasoning": (3.00, 15.00),
+    "grok-4.20-multi-agent-0309": (5.00, 25.00),
+
+    # --- Moonshot Kimi (platform.moonshot.ai) ---
+    "kimi-k2.6": (0.60, 2.50),
+    "kimi-k2.5": (0.60, 2.50),
+    "kimi-k2-turbo-preview": (1.00, 3.00),
+    "kimi-k2": (0.60, 2.50),
+
+    # --- Alibaba Qwen (DashScope, alibabacloud.com/help/.../qwen-api) ---
+    "qwen3-max": (1.20, 4.80),
+    "qwen3.5-plus": (0.40, 1.20),
+    "qwen3.5-flash": (0.15, 0.60),
+    "qwen-max": (1.60, 6.40),
+    "qwen-plus": (0.40, 1.20),
+    "qwen-flash": (0.15, 0.60),
+    "qwen-turbo": (0.05, 0.20),
+    "qwen3-coder-plus": (0.50, 2.00),
+    "qwen3-coder-flash": (0.15, 0.60),
+
+    # --- Zhipu GLM (docs.z.ai) ---
+    "glm-5": (0.60, 2.20),
+    "glm-4.7": (0.50, 2.00),
+    "glm-4.6": (0.50, 2.00),
+    "glm-4.5": (0.50, 2.00),
 }
 
 

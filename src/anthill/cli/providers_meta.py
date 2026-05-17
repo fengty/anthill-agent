@@ -102,6 +102,87 @@ PROVIDER_PRESETS: dict[str, ProviderPreset] = {
             "claude-opus-4-1",
         ),
     ),
+    # --- 0.1.20 — added mainstream providers via their OpenAI-compatible
+    # endpoints. The runtime adapter is the same OpenAICompatibleProvider;
+    # only the base URL changes. Setting needs_base_url=False means we
+    # bake in the canonical URL (see model_catalog._PROVIDER_BASE_URLS)
+    # and the user doesn't have to type it.
+    "google": ProviderPreset(
+        name="google",
+        description="Google Gemini (3.1 Pro / Flash / 2.5 — OpenAI-compatible)",
+        default_model="gemini-3.1-pro-preview",
+        key_prompt="Google AI API key (AIza...)",
+        # Per ai.google.dev/gemini-api/docs/models (May 2026).
+        known_models=(
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+        ),
+    ),
+    "xai": ProviderPreset(
+        name="xai",
+        description="xAI Grok (4.3 — 1M context, OpenAI-compatible)",
+        default_model="grok-4.3",
+        key_prompt="xAI API key (xai-...)",
+        # Per docs.x.ai/developers/models (May 2026). Eight older
+        # variants retired 2026-05-15 and are intentionally omitted.
+        known_models=(
+            "grok-4.3",
+            "grok-4.20-0309-reasoning",
+            "grok-4.20-0309-non-reasoning",
+            "grok-4.20-multi-agent-0309",
+        ),
+    ),
+    "moonshot": ProviderPreset(
+        name="moonshot",
+        description="Moonshot Kimi (K2.6 — agentic, OpenAI-compatible)",
+        default_model="kimi-k2.6",
+        key_prompt="Moonshot API key (sk-...)",
+        # Per platform.moonshot.ai (May 2026). K2.5 / K2 retained as
+        # active prior generations.
+        known_models=(
+            "kimi-k2.6",
+            "kimi-k2.5",
+            "kimi-k2-turbo-preview",
+            "kimi-k2",
+        ),
+    ),
+    "qwen": ProviderPreset(
+        name="qwen",
+        description="Alibaba Qwen (Qwen3 / 3.5 — DashScope, OpenAI-compatible)",
+        default_model="qwen3-max",
+        key_prompt="DashScope API key (sk-...)",
+        # Per alibabacloud.com/help/.../model-studio/qwen-api (May 2026).
+        # Snapshot-dated ids intentionally omitted from the picker —
+        # users on a pinned snapshot should refresh the live catalog.
+        known_models=(
+            "qwen3-max",
+            "qwen3.5-plus",
+            "qwen3.5-flash",
+            "qwen-max",
+            "qwen-plus",
+            "qwen-flash",
+            "qwen-turbo",
+            "qwen3-coder-plus",
+            "qwen3-coder-flash",
+        ),
+    ),
+    "zhipu": ProviderPreset(
+        name="zhipu",
+        description="Zhipu GLM (GLM-5 / 4.7 — OpenAI-compatible)",
+        default_model="glm-5",
+        key_prompt="Zhipu API key",
+        # Per docs.z.ai (May 2026).
+        known_models=(
+            "glm-5",
+            "glm-4.7",
+            "glm-4.6",
+            "glm-4.5",
+        ),
+    ),
     "custom": ProviderPreset(
         name="custom",
         description="Any OpenAI-compatible endpoint",

@@ -1,6 +1,6 @@
 [project]
 name = "anthill-agent"
-version = "0.1.19"
+version = "0.1.20"
 description = "Multi-model AI nation that decomposes one request across specialists, learns who's best at what, and gets better the longer you use it."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -47,7 +47,12 @@ classifiers = [
 dependencies = [
     "click>=8.1.0",
     "rich>=13.0.0",
-    "httpx>=0.27.0",
+    # 0.1.20 — `httpx[socks]` instead of bare `httpx` so users behind
+    # SOCKS proxies (common with corp VPNs and on Chinese networks
+    # via shadowsocks-style tunnels) don't get "socksio package not
+    # installed" errors when httpx auto-respects ALL_PROXY /
+    # HTTPS_PROXY env vars.
+    "httpx[socks]>=0.27.0",
     "tomli>=2.0.0; python_version < '3.11'",
 ]
 

@@ -81,9 +81,12 @@ def _from_user_config(name: str) -> ModelProvider | None:
             group_id=group_id,
             model=entry.model,
         )
-    if provider in ("openai", "anthropic", "custom"):
-        # OpenAI-compatible covers OpenAI, Anthropic (via base_url
-        # workaround), and any custom endpoint.
+    if provider in _OPENAI_COMPAT_PROVIDERS or provider == "custom":
+        # OpenAI-compatible covers a growing set of providers — OpenAI
+        # itself, Anthropic (via the OpenAI-compat base_url), and the
+        # 5 added in 0.1.20 (google/xai/moonshot/qwen/zhipu). All
+        # speak the same /chat/completions shape; only the base URL
+        # changes.
         base_url = entry.base_url or _DEFAULT_BASE_URLS.get(provider)
         if not base_url:
             raise RuntimeError(
@@ -100,9 +103,20 @@ def _from_user_config(name: str) -> ModelProvider | None:
     raise RuntimeError(f"unknown provider '{entry.provider}' for model '{name}'")
 
 
+_OPENAI_COMPAT_PROVIDERS = frozenset({
+    "openai", "anthropic",
+    # 0.1.20 — additional mainstream providers via OpenAI-compatible mode.
+    "google", "xai", "moonshot", "qwen", "zhipu",
+})
+
 _DEFAULT_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
     "anthropic": "https://api.anthropic.com/v1",
+    "google": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "xai": "https://api.x.ai/v1",
+    "moonshot": "https://api.moonshot.ai/v1",
+    "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "zhipu": "https://open.bigmodel.cn/api/paas/v4",
 }
 
 

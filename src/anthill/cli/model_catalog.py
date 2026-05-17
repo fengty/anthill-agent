@@ -116,6 +116,13 @@ _PROVIDER_BASE_URLS: dict[str, str] = {
     "openai": "https://api.openai.com/v1",
     "anthropic": "https://api.anthropic.com/v1",
     "minimax": "https://api.minimax.chat/v1",
+    # 0.1.20 — additional mainstream providers via OpenAI-compatible
+    # endpoints. Each exposes /chat/completions + /models the same way.
+    "google": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "xai": "https://api.x.ai/v1",
+    "moonshot": "https://api.moonshot.ai/v1",
+    "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "zhipu": "https://open.bigmodel.cn/api/paas/v4",
 }
 
 

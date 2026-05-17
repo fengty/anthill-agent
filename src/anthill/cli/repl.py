@@ -144,6 +144,49 @@ def _read_request_line(prompt: str = "» ") -> str:
     return "\n".join(buffer).rstrip()
 
 
+def _proxy_preflight() -> None:
+    """Warn early when a proxy env var is set but the transport can't use it.
+
+    The exact case we hit in 0.1.19: a user has ``ALL_PROXY=socks5://...``
+    in their shell (common with shadowsocks / clash). httpx auto-respects
+    the env var, but won't follow socks:// without the ``socksio`` extra
+    installed. Every provider call then errors with "SOCKS proxy, but
+    the 'socksio' package is not installed" and the REPL just shows
+    "retry failed (unknown)" three times.
+
+    0.1.20 pins ``httpx[socks]`` in our deps so this won't happen on a
+    fresh install — but anyone upgrading from <0.1.20 keeps the old
+    install, so the early warning still earns its keep.
+    """
+    import os
+
+    proxy_var = next(
+        (v for v in ("ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "all_proxy", "https_proxy", "http_proxy")
+         if os.environ.get(v)),
+        None,
+    )
+    if proxy_var is None:
+        return
+    proxy_value = os.environ[proxy_var]
+    if not proxy_value.lower().startswith(("socks4://", "socks5://", "socks5h://")):
+        return  # http/https proxy is fine without an extra
+    try:
+        import socksio  # noqa: F401, PLC0415
+    except ImportError:
+        console.print(
+            f"[yellow]⚠ {proxy_var}={proxy_value} is a SOCKS proxy, "
+            f"but the 'socksio' package is not installed.[/yellow]"
+        )
+        console.print(
+            "  [dim]Fix one of:[/dim]\n"
+            "  [dim]·[/dim] [cyan]pip install 'httpx[socks]'[/cyan] "
+            "[dim](or re-run the install one-liner)[/dim]\n"
+            f"  [dim]·[/dim] [cyan]unset {proxy_var}[/cyan] "
+            "[dim](if you didn't mean to route Anthill through it)[/dim]"
+        )
+        console.print()
+
+
 HELP_TEXT = """[bold]REPL commands[/bold]
 
   Just type a question to send it to the nation.
@@ -1174,6 +1217,12 @@ def run_repl(nation_name: str = "default") -> int:
     console.print()
     _splash_banner(nation, stats)
     console.print()
+
+    # 0.1.20 — proxy preflight. We just hit a real user whose
+    # ALL_PROXY=socks5://... made every attempt fail with "socksio
+    # not installed" — the symptom looked like a model bug. Catch
+    # this BEFORE the first ask burns three retries.
+    _proxy_preflight()
 
     # 0.1.5+ — first-run gate. If no model is configured we can't do
     # ANYTHING useful in the REPL; instead of letting the user type

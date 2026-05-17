@@ -639,3 +639,70 @@ kept so users on stable releases aren't forced to migrate.
   retired ids creeping back into the allow-list (`deepseek-chat`
   and `deepseek-reasoner` must NOT be present).
 - `test_model_catalog.*` updated to reference v4-pro / v4-flash.
+
+---
+
+## v0.1.20 — Mainstream provider lineup + SOCKS proxy fix (May 2026)
+
+Two threads in one patch: expand the provider menu to cover the
+mainstream lineup, and fix a real-user crash where SOCKS-proxy
+users saw every ask fail with an opaque `(unknown)` error.
+
+### Added providers
+
+All wired via OpenAI-compatible endpoints; the existing
+`OpenAICompatibleProvider` handles them transparently:
+
+| Provider | Default model | Base URL | Source |
+|---|---|---|---|
+| google | `gemini-3.1-pro-preview` | `generativelanguage.googleapis.com/v1beta/openai` | ai.google.dev |
+| xai | `grok-4.3` | `api.x.ai/v1` | docs.x.ai |
+| moonshot | `kimi-k2.6` | `api.moonshot.ai/v1` | platform.moonshot.ai |
+| qwen | `qwen3-max` | `dashscope.aliyuncs.com/compatible-mode/v1` | alibabacloud.com |
+| zhipu | `glm-5` | `open.bigmodel.cn/api/paas/v4` | docs.z.ai |
+
+Each provider:
+- Added to `PROVIDER_PRESETS` with `known_models` containing every
+  currently active id (retired snapshots omitted).
+- Base URL wired into both `cli/model_catalog._PROVIDER_BASE_URLS`
+  (so `anthill model catalog refresh` works) and
+  `cli/model_cmd._probe_model` (so `anthill model test` works).
+- Pricing rows in `core/costs._DEFAULT_PRICES_USD` from each
+  provider's published rate card.
+- `models/registry._OPENAI_COMPAT_PROVIDERS` set so `get_provider`
+  builds the right transport.
+
+### SOCKS proxy fix
+
+A user hit a frustrating bug: `ALL_PROXY=socks5://...` (shadowsocks
+/ clash setup) meant httpx auto-followed the proxy, but couldn't
+without the `socksio` extra. Every ask failed three times with
+"(unknown)" in the retry log.
+
+- `pyproject.toml`: `httpx>=0.27.0` → `httpx[socks]>=0.27.0`. Fresh
+  installs work automatically.
+- `core/failure.py`: SOCKS / generic "proxy" patterns now bucket to
+  `FailureReason.NETWORK` — the retry log says `(network)` so the
+  user knows the bug is in their transport setup, not the model.
+- `cli/repl.py`: new `_proxy_preflight()` runs once at REPL startup.
+  When `ALL_PROXY`/`HTTPS_PROXY`/etc. is `socks*://` AND `socksio`
+  isn't importable, prints actionable guidance before the first
+  ask burns three retries:
+
+  ```
+  ⚠ ALL_PROXY=socks5://127.0.0.1:1080 is a SOCKS proxy, but the
+    'socksio' package is not installed.
+    Fix one of:
+    · pip install 'httpx[socks]'   (or re-run the install one-liner)
+    · unset ALL_PROXY              (if you didn't mean to route through it)
+  ```
+
+**Tests** — 865 passing (+18)
+- `tests/test_provider_lineup.py`: 11 tests covering preset coverage,
+  default-in-allow-list, base-URL wiring, pricing-row presence,
+  registry transport selection, and the "no retired snapshots"
+  guard (Qwen, Grok).
+- `tests/test_proxy_preflight.py`: 7 tests covering the SOCKS error
+  classification, the http-proxy no-op, the SOCKS+socksio-missing
+  warning, the SOCKS+socksio-present silent case, and the pyproject
+  pin guard.
