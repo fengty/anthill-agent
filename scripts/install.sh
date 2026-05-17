@@ -58,14 +58,21 @@ command -v git >/dev/null 2>&1 || die "git required."
 ok "git at $(command -v git)"
 
 # --- clone or update ---
+# Why we DON'T pass --quiet to git/pip below: silent operations look
+# identical to a hang. A pip install that's 60 seconds of slow dep
+# resolution and a frozen network call are the same to the user. So
+# we let the tools print their normal status lines.
 if [ -d "$ANTHILL_DIR/.git" ]; then
-  info "Existing install at $ANTHILL_DIR — updating"
-  git -C "$ANTHILL_DIR" fetch --quiet origin "$ANTHILL_BRANCH"
-  git -C "$ANTHILL_DIR" reset --hard "origin/$ANTHILL_BRANCH" --quiet
+  info "Existing install at $ANTHILL_DIR — fetching latest"
+  if ! git -C "$ANTHILL_DIR" fetch origin "$ANTHILL_BRANCH"; then
+    die "git fetch failed. Check your network or remove $ANTHILL_DIR to do a clean install."
+  fi
+  info "Resetting to origin/$ANTHILL_BRANCH"
+  git -C "$ANTHILL_DIR" reset --hard "origin/$ANTHILL_BRANCH"
 else
   info "Cloning into $ANTHILL_DIR"
   rm -rf "$ANTHILL_DIR"
-  git clone --quiet --branch "$ANTHILL_BRANCH" "$ANTHILL_REPO" "$ANTHILL_DIR"
+  git clone --branch "$ANTHILL_BRANCH" "$ANTHILL_REPO" "$ANTHILL_DIR"
 fi
 ok "Source ready at $ANTHILL_DIR"
 
@@ -75,8 +82,12 @@ if [ ! -d "$VENV" ]; then
   info "Creating virtualenv"
   "$PYTHON" -m venv "$VENV"
 fi
-"$VENV/bin/pip" install --quiet --upgrade pip
-"$VENV/bin/pip" install --quiet -e "$ANTHILL_DIR"
+info "Upgrading pip"
+"$VENV/bin/pip" install --upgrade pip
+info "Installing Anthill + dependencies (this can take 30-60s on first run)"
+# We do NOT silence pip — when deps take a minute, the user needs to
+# see "Collecting X" rolling by, not an empty stare.
+"$VENV/bin/pip" install -e "$ANTHILL_DIR"
 ok "Anthill installed into $VENV"
 
 # --- wrapper ---

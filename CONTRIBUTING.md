@@ -75,6 +75,18 @@ Before opening an issue, please check:
 3. Does it conflict with the "framework stays small, nations grow
    unbounded" philosophy?
 
+## Versioning
+
+**Default to patch bumps.** Anthill expects thousands of iterations
+across its lifetime; bumping minor for every interesting commit would
+exhaust the number space within a year. Minor and major bumps are
+reserved for moments the maintainer explicitly flags as milestones.
+
+Full policy + examples: [`VERSIONING.md`](VERSIONING.md).
+
+In one sentence: **patch by default, minor only with maintainer signoff
+written into the commit message.**
+
 ## Philosophy
 
 Read [`docs/why-anthill.md`](docs/why-anthill.md). If you disagree with
