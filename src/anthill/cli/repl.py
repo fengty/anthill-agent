@@ -381,6 +381,14 @@ class SessionStats:
         # provider's internal model id).
         self.auth_failures_by_model: dict[str, int] = {}
         self.auth_fix_hinted: set[str] = set()
+        # 0.1.28 — in-session conversation memory. Real user hit:
+        # "» 最近热门电影 → answer / » 我说的是 2026 年的 → 'what 2026
+        # topic?'" — citizens had no idea what the user just said
+        # one turn ago. This rolling window of recent (req, resp)
+        # tuples is injected into prompts when the next ask looks
+        # like a follow-up.
+        from anthill.core.conversation import ConversationContext
+        self.conversation = ConversationContext()
         # v0.1.17 — skill-mining nudge bookkeeping. We surface a
         # "you've done this 3x — save as recipe?" hint at most once
         # per session per cluster, keyed by the cluster's first
@@ -697,6 +705,23 @@ async def _handle_ask(
             f"  [yellow]⚠ skipped {err.token}[/yellow] [dim]({err.reason})[/dim]"
         )
     effective_request = attachment_block.render() + request
+
+    # 0.1.28 — conversation memory injection. When the current ask
+    # looks like a follow-up ("我说的是 2026 年的", "tell me more",
+    # short ambiguous fragment after a real ask), prepend the recent
+    # turn(s) to the prompt that reaches Scout so the planner sees
+    # what the user is actually continuing.
+    from anthill.core.conversation import is_follow_up, wrap_with_context
+    last_turn = stats.conversation.last_turn()
+    if is_follow_up(request, last_turn):
+        effective_request = wrap_with_context(
+            effective_request, stats.conversation.recent()
+        )
+        # Visible signal so the user knows context is being carried.
+        n_turns = len(stats.conversation)
+        console.print(
+            f"  [dim]↳ continuing from {n_turns} previous turn(s)[/dim]"
+        )
 
     # Live progress: one line per subtask, updated as state changes.
     # Keeps the REPL output scannable while still showing the king that
@@ -1065,6 +1090,16 @@ async def _handle_ask(
         build_entry_from_ask(request, result.plan.subtasks, result.outcomes),
         nation_dir(config.home, nation.name),
     )
+    # 0.1.28 — record this turn in the rolling conversation window so
+    # follow-up asks within the same session can reach the recent
+    # exchange. Keyed on the VISIBLE request (not effective_request)
+    # so the next turn's wrapper doesn't re-wrap our own wrapper.
+    final_output = ""
+    for outcome in result.outcomes:
+        if outcome.status == "ok" and outcome.final is not None:
+            final_output = str(outcome.final.output)
+    if final_output:
+        stats.conversation.record(request, final_output, timestamp=time.time())
     # 0.1.17 — skill auto-mining hint. After history is appended,
     # scan for clusters of similar past asks and nudge the user once
     # per session per cluster if the current request belongs to one
@@ -1578,10 +1613,18 @@ def run_repl(nation_name: str = "default") -> int:
                 _show_history(config, nation)
             elif cmd == "clear":
                 console.clear()
+                # 0.1.28 — also reset the rolling conversation window
+                # so the next ask doesn't get prepended with whatever
+                # was on screen before /clear.
+                stats.conversation.reset()
                 _print_status_bar(nation, stats)
             elif cmd == "model":
                 _handle_model_cmd(rest)
             elif cmd == "nation":
+                # Switching nations breaks the conversational thread;
+                # different nation = different organism = different
+                # memory. Drop the window.
+                stats.conversation.reset()
                 nation = _handle_nation_switch(rest, nation, config)
             elif cmd == "rate":
                 verdict = rest.strip().lower()

@@ -74,6 +74,53 @@ _TRIVIAL_LONE_WORDS = (
 )
 
 
+# 0.1.28 — follow-up markers. Split into two tiers:
+#
+#   _FOLLOW_UP_ANYWHERE: phrases whose mere presence signals a
+#     continuation. "I meant ..." / "再深入..." carry their own
+#     "I'm referring back" semantics regardless of position.
+#
+#   _FOLLOW_UP_LEADERS: short connector words that only signal
+#     continuation when they LEAD the input (start-of-string).
+#     "And X" at the head is a follow-up; "X and Y" in the middle
+#     of a long fresh ask is not.
+#
+# Splitting the two avoids the false-positive where any long fresh
+# question that happens to contain "and " gets wrapped with context.
+_FOLLOW_UP_ANYWHERE = (
+    # English
+    "i meant", "i mean", "i said", "i was saying",
+    "go deeper", "tell me more", "more on",
+    "the previous", "earlier you said",
+    # Chinese
+    "我说的", "我是说", "我意思", "我指的",
+    "再深入", "再来", "再具体", "再详细", "展开",
+    "你刚才", "你之前", "上面那",
+)
+
+_FOLLOW_UP_LEADERS = (
+    # English leading connectors
+    "and ", "also ", "plus ", "but ", "actually,",
+    "continue", "what about", "no, ", "wait,",
+    # Chinese leading connectors / corrections
+    "还有", "加上", "另外", "顺便",
+    "那么", "但是", "不对", "不是这个", "不是这样",
+    "继续", "接着",
+)
+
+# Public name preserved for the conversation module's import.
+_FOLLOW_UP_MARKERS = _FOLLOW_UP_ANYWHERE + _FOLLOW_UP_LEADERS
+
+
+def has_follow_up_marker(lower_text: str) -> bool:
+    """Tier-aware marker check used by both fast_classify and
+    conversation.is_follow_up so the two stay in sync."""
+    if any(m in lower_text for m in _FOLLOW_UP_ANYWHERE):
+        return True
+    stripped = lower_text.lstrip()
+    return any(stripped.startswith(m) for m in _FOLLOW_UP_LEADERS)
+
+
 def fast_classify(request: str) -> Complexity | None:
     """Pre-Scout heuristic. Returns None when not confident (let Scout decide).
 
@@ -102,6 +149,12 @@ def fast_classify(request: str) -> Complexity | None:
     words = text.split()
     if len(words) == 1 and words[0].lower().strip("!.?,") in _TRIVIAL_LONE_WORDS:
         return "trivial"
+
+    # 0.1.28 — follow-up markers BEFORE the short-input trivial path.
+    # A continuation like "我说的是 2026 年的" is short but needs
+    # context, NOT to be sent to a single citizen as a fresh ask.
+    if has_follow_up_marker(lower):
+        return None  # let Scout (with conversation context) decide
 
     # 4. Very short + no markers + no obvious question → trivial.
     if len(words) <= 5 and not _has_complex_punctuation(text):
