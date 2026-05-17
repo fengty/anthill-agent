@@ -243,18 +243,29 @@ class Nation:
         prompt: str,
         *,
         forbid: set[str] | None = None,
+        on_token=None,
     ) -> TaskResult:
         """Execute one typed task: route, run, judge, deposit pheromone.
 
         `forbid` lets a caller exclude specific citizens — typically used on
         retry to avoid the citizen that just failed.
 
+        ``on_token`` (v0.1.10+) is an optional async callback that
+        receives each incremental text delta as the provider produces
+        it. When set, the agent uses the provider's streaming API; the
+        cumulative text matches the non-streaming path.
+
         When use_judge is true, the LLM judge replaces the worker's binary
         success score with a [0, 1] quality score. Pheromones now reinforce
         quality rather than mere liveness.
         """
         agent = self.router.assign(task_type, forbid=forbid)
-        result = await agent.execute(task_type, prompt, system=self._compose_system(agent))
+        result = await agent.execute(
+            task_type,
+            prompt,
+            system=self._compose_system(agent),
+            on_token=on_token,
+        )
 
         if self.use_judge and result.success_score > 0:
             verdict = await judge_output(prompt, str(result.output), model=self.judge_model)

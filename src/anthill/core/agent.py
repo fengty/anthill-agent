@@ -5,9 +5,15 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from anthill.models import ModelProvider, get_provider
+
+
+# Callback signature for live streaming: invoked with each incremental
+# text delta as the provider produces it. Used by the REPL to render
+# tokens as they arrive instead of waiting for the full response.
+TokenCallback = Callable[[str], Awaitable[None]]
 
 
 @dataclass
@@ -111,12 +117,20 @@ class Agent:
         prompt: str,
         *,
         system: str | None = None,
+        on_token: TokenCallback | None = None,
     ) -> TaskResult:
         """Run one task. The nation scores the result and deposits pheromone.
 
         Success scoring is intentionally crude in v0.0.2: a non-empty,
         non-error response scores 1.0; an exception scores 0.0. Real
         scoring (LLM-judge, task-specific rubrics) lives in v0.0.4.
+
+        When ``on_token`` is provided (v0.1.10+), this calls the
+        provider's streaming interface and invokes the callback with
+        each incremental text delta. The final ``TaskResult.output``
+        is the concatenation of all deltas — semantically identical
+        to the non-streaming path. Callbacks that raise propagate;
+        the agent does not swallow REPL render errors silently.
         """
         task_id = f"task-{uuid.uuid4().hex[:8]}"
         provider = self._get_provider()
@@ -124,22 +138,38 @@ class Agent:
         start = time.perf_counter()
 
         try:
-            response = await provider.complete(prompt, system=effective_system)
+            if on_token is not None:
+                parts: list[str] = []
+                input_tokens = 0
+                output_tokens = 0
+                async for chunk in provider.stream(prompt, system=effective_system):
+                    if chunk.delta:
+                        parts.append(chunk.delta)
+                        await on_token(chunk.delta)
+                    if chunk.done:
+                        input_tokens = chunk.input_tokens
+                        output_tokens = chunk.output_tokens
+                text = "".join(parts)
+            else:
+                response = await provider.complete(prompt, system=effective_system)
+                text = response.text
+                input_tokens = response.input_tokens
+                output_tokens = response.output_tokens
             duration = time.perf_counter() - start
-            success_score = 1.0 if response.text.strip() else 0.0
+            success_score = 1.0 if text.strip() else 0.0
             from anthill.core.failure import classify_attempt
             reason = classify_attempt(
-                response.text, exception=None, success_score=success_score
+                text, exception=None, success_score=success_score
             )
             return TaskResult(
                 task_id=task_id,
                 agent_id=self.id,
                 task_type=task_type,
-                output=response.text,
+                output=text,
                 success_score=success_score,
                 duration_seconds=duration,
-                input_tokens=response.input_tokens,
-                output_tokens=response.output_tokens,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 failure_reason=reason.value if reason is not None else None,
             )
         except Exception as e:  # noqa: BLE001 — we want any failure to erode the trail

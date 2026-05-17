@@ -427,15 +427,54 @@ async def _handle_ask(
             return None
         return ans
 
+    # v0.1.10: track inline-token streaming state so we know when to
+    # close the dim-gutter line before printing the next discrete event.
+    streaming_state = {"open": False, "chars": 0}
+
+    def _close_stream_line() -> None:
+        if streaming_state["open"]:
+            console.print()  # newline to terminate the inline stream
+            streaming_state["open"] = False
+            streaming_state["chars"] = 0
+
     async def on_progress(event: ProgressEvent) -> None:
         st = event.subtask
         idx = event.index + 1
         if event.kind == "started":
+            _close_stream_line()
             console.print(
                 f"  [dim]·[/dim] [{idx}] [magenta]{st.task_type}[/magenta] "
                 f"[dim]running...[/dim]"
             )
+        elif event.kind == "token":
+            # Live-stream tokens dimly under the running subtask. We
+            # cap the visible width per line — long single-paragraph
+            # outputs would otherwise scroll the terminal sideways.
+            delta = event.delta
+            if not delta:
+                return
+            if not streaming_state["open"]:
+                # First token of this attempt — open the gutter line.
+                console.print("    [dim]┊[/dim] ", end="")
+                streaming_state["open"] = True
+                streaming_state["chars"] = 0
+            # Hard-wrap at ~80 chars so the dim gutter stays readable.
+            for piece in delta.splitlines(keepends=True):
+                line = piece.rstrip("\n")
+                ends_with_nl = piece.endswith("\n")
+                if line:
+                    console.print(f"[dim]{line}[/dim]", end="")
+                    streaming_state["chars"] += len(line)
+                if ends_with_nl or streaming_state["chars"] >= 80:
+                    console.print()
+                    streaming_state["chars"] = 0
+                    # If more text remains, continue with a fresh gutter.
+                    streaming_state["open"] = False
+                    if piece is not delta.splitlines(keepends=True)[-1]:
+                        console.print("    [dim]┊[/dim] ", end="")
+                        streaming_state["open"] = True
         elif event.kind == "attempt" and not event.success:
+            _close_stream_line()
             # 0.1.8 — surface WHAT failed, not just "failed". On the
             # latest attempt we read failure_reason (v0.5 structured)
             # and the raw output (often "[error] 404 model not found").
@@ -464,6 +503,7 @@ async def _handle_ask(
             if err_blurb:
                 console.print(err_blurb)
         elif event.kind == "finished":
+            _close_stream_line()
             outcome = event.outcome
             duration = outcome.duration_seconds
             if outcome.status == "ok" and outcome.final is not None:

@@ -138,7 +138,7 @@ class _FakeNation:
         self._counters: dict[str, int] = {}
         self.calls: list[tuple[str, str, frozenset[str]]] = []
 
-    async def run(self, task_type: str, prompt: str, *, forbid=None):  # noqa: ANN201
+    async def run(self, task_type: str, prompt: str, *, forbid=None, on_token=None, **_kw):  # noqa: ANN201
         forbid_set = frozenset(forbid or set())
         self.calls.append((task_type, prompt, forbid_set))
 
@@ -290,7 +290,7 @@ class _SlowFakeNation:
         self._delay = delay
         self.calls: list[tuple[str, float]] = []  # (task_type, start time)
 
-    async def run(self, task_type: str, prompt: str, *, forbid=None):  # noqa: ANN201
+    async def run(self, task_type: str, prompt: str, *, forbid=None, on_token=None, **_kw):  # noqa: ANN201
         import time as _time
         self.calls.append((task_type, _time.perf_counter()))
         await asyncio.sleep(self._delay)

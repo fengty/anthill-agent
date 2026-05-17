@@ -230,3 +230,51 @@ happens whenever someone runs the command and proposes a PR.
 
 Tests: 746 passing (+12 for picker UX + catalog roundtrip + HTTP
 shape parsing + degraded-mode handling).
+
+---
+
+## v0.1.10 — Streaming output (May 2026)
+
+The long-promised A-class baseline patch. Subtasks no longer freeze
+the REPL for 5–30 seconds while the provider finishes a long answer.
+Tokens render live as they arrive.
+
+**Provider layer**
+- `ModelProvider.stream()` is now part of the base contract. The
+  default implementation calls `complete()` and yields a single
+  terminal `StreamChunk` — so every existing provider already
+  "streams", just in one chunk. Providers with native SSE override.
+- `OpenAICompatibleProvider.stream()` implements real SSE for both
+  OpenAI-shape (`/v1/chat/completions` with `stream: true` + final
+  `[DONE]`) and Anthropic-shape (`/v1/messages` with
+  `content_block_delta` + `message_stop` events). One shared SSE
+  reader, dispatched on `provider_name`.
+- New `StreamChunk(delta, done, input_tokens, output_tokens)`.
+  Terminal chunk carries usage metrics; intermediate chunks just
+  carry delta text.
+
+**Agent / Executor**
+- `Agent.execute(..., on_token=...)` calls the provider's streaming
+  API when the callback is set. The accumulated text is byte-for-
+  byte identical to the non-streaming path.
+- `Nation.run` grew an `on_token` kwarg that forwards to the agent.
+- `ProgressEvent` gained a new `kind='token'` with a `delta` field.
+  The executor wraps the user's `on_progress` callback into an
+  `on_token` so the REPL sees one ProgressEvent per delta with the
+  right `attempt_number`.
+
+**REPL**
+- Tokens render dimly under each running subtask, gutter-prefixed
+  with `┊` and soft-wrapped at ~80 chars so long single-paragraph
+  outputs don't blow up the terminal width.
+- State machine closes the stream cleanly when the subtask
+  transitions to `attempt` / `finished` — no orphan partial lines.
+
+**Backwards compatibility**
+- `on_token` is opt-in at every layer. Callers that don't pass it
+  get exactly the v0.1.9 behavior. Three pre-v0.1.10 test mocks
+  were updated to accept the new kwarg (gracefully via `**_kw`).
+
+Tests: 756 passing (+10 for stream contract, SSE parsing for both
+provider shapes, agent streaming path, executor `kind='token'`
+bridge, and edge cases like `on_token=None` short-circuit).

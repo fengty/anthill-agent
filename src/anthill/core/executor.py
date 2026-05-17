@@ -106,16 +106,25 @@ class ProgressEvent:
 
     kind:
       'started'    a subtask just started its first attempt
+      'token'      one incremental text delta arrived (v0.1.10+).
+                   ``delta`` carries the new text; ``attempt_number``
+                   identifies the in-progress attempt. The token
+                   stream is fire-and-forget — callers may drop
+                   tokens for rate-limiting without breaking
+                   semantics; the final ``attempt`` event always
+                   carries the cumulative text in ``outcome.attempts``.
       'attempt'    a subtask attempt completed (success or failure)
       'finished'   a subtask reached its final status (ok/failed/skipped)
     """
 
-    kind: Literal["started", "attempt", "finished"]
+    kind: Literal["started", "token", "attempt", "finished"]
     index: int           # subtask index in plan order
     subtask: Subtask
     outcome: SubtaskOutcome
     attempt_number: int = 0   # 1-based; 0 for 'started' / 'finished'
     success: bool = False
+    # v0.1.10: text delta for kind=='token'; empty otherwise.
+    delta: str = ""
 
 
 # Type alias for the async callback consumers register.
@@ -314,8 +323,41 @@ async def _run_one_subtask(
         # Legacy serial retry path — unchanged behavior for fanout=1.
         forbid: set[str] = set()
         for attempt_idx in range(policy.max_attempts):
+            # Bridge: convert provider-level token deltas into
+            # ProgressEvent(kind='token') so the REPL can render live.
+            # Captured in a closure so each attempt's tokens carry the
+            # right attempt_number.
+            on_token = None
+            if on_progress is not None:
+                attempt_num = attempt_idx + 1
+                cb = on_progress
+
+                async def on_token(delta: str, _n=attempt_num) -> None:
+                    await cb(
+                        ProgressEvent(
+                            kind="token",
+                            index=i,
+                            subtask=subtask,
+                            outcome=outcome,
+                            attempt_number=_n,
+                            delta=delta,
+                        )
+                    )
             try:
-                result = await nation.run(subtask.task_type, augmented_prompt, forbid=forbid)
+                # Only pass on_token when we actually have one — keeps
+                # backward compatibility with test mocks of nation.run
+                # that pre-date v0.1.10 streaming.
+                if on_token is not None:
+                    result = await nation.run(
+                        subtask.task_type,
+                        augmented_prompt,
+                        forbid=forbid,
+                        on_token=on_token,
+                    )
+                else:
+                    result = await nation.run(
+                        subtask.task_type, augmented_prompt, forbid=forbid
+                    )
             except RuntimeError:
                 break
             outcome.attempts.append(result)

@@ -3,15 +3,27 @@
 > **Only the "Next" section is a commitment.** Everything below it is
 > "things we'd like to explore" — no order, no timeline, no promises.
 
-## Next: 0.1.7 — streaming output
+## Next: 0.1.11 — `@file` syntax (B-class)
 
-The biggest "feels slow" complaint isn't actual latency, it's the
-silent wait. Provider layer adds streaming; REPL renders tokens as
-they arrive. Long deliberation rounds become bearable.
+With streaming landed in 0.1.10, the next pending baseline gap is
+"files as context". `@filename.py` or `@src/**/*.py` should attach
+the file contents to the prompt automatically — currently users
+have to `cat` files in by hand.
 
 Status: **planned, no code yet.**
 
-The path beyond 0.1.7 is laid out in
+### Recently shipped
+
+- **0.1.10** — Streaming output. Provider layer (`ModelProvider.stream()`),
+  agent wiring (`on_token` callback), `ProgressEvent(kind='token')`,
+  REPL inline rendering with soft-wrap.
+- **0.1.9** — Model id picker + refreshable catalog
+  (`anthill model catalog refresh`).
+- **0.1.8** — Setup hardening (int / model-id validation) + REPL
+  error visibility + English audit.
+- **0.1.7** — Claude CLI / Hermes deep comparison + 0.1.x roadmap.
+
+The path beyond is laid out in
 [`docs/comparison.md`](docs/comparison.md) — 12 patches (0.1.7 → 0.1.18)
 alternating between **baseline-UX-parity** with Claude CLI and
 **differentiation** (multi-model collab, lifecycle, deliberation).

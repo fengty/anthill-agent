@@ -56,7 +56,7 @@ class _FakeNation:
         self._outputs = outputs or {}
         self.calls: list[tuple[str, str]] = []
 
-    async def run(self, task_type: str, prompt: str, *, forbid=None):  # noqa: ANN201
+    async def run(self, task_type: str, prompt: str, *, forbid=None, on_token=None, **_kw):  # noqa: ANN201
         self.calls.append((task_type, prompt))
         return _FakeResult(
             output=self._outputs.get(task_type, f"<{task_type}>"),
@@ -301,7 +301,7 @@ def _make_real_nation() -> "object":
     n.agents = [Agent(model="fake", id="ant-1")]
     call_log: list[tuple[str, str]] = []
 
-    async def fake_run(task_type: str, prompt: str, *, forbid=None):  # noqa: ANN201
+    async def fake_run(task_type: str, prompt: str, *, forbid=None, on_token=None, **_kw):  # noqa: ANN201
         call_log.append((task_type, prompt))
         return _FakeResult(output=f"<{task_type}>", agent_id="ant-1", task_type=task_type)
 
@@ -339,7 +339,7 @@ async def test_nation_ask_can_resume_from_inflight(tmp_path: Path) -> None:
     n.agents = [Agent(model="fake", id="ant-1")]
     calls: list[tuple[str, str]] = []
 
-    async def fake_run(task_type: str, prompt: str, *, forbid=None):  # noqa: ANN201
+    async def fake_run(task_type: str, prompt: str, *, forbid=None, on_token=None, **_kw):  # noqa: ANN201
         calls.append((task_type, prompt))
         return _FakeResult(
             output=f"fresh-{task_type}", agent_id="ant-1", task_type=task_type
@@ -401,7 +401,7 @@ async def test_nation_ask_checkpoints_each_completed_subtask(tmp_path: Path) -> 
     n.agents = [Agent(model="fake", id="ant-1")]
     snapshots: list[int] = []
 
-    async def fake_run(task_type: str, prompt: str, *, forbid=None):  # noqa: ANN201
+    async def fake_run(task_type: str, prompt: str, *, forbid=None, on_token=None, **_kw):  # noqa: ANN201
         # Sample the checkpoint state every time the executor calls run().
         listing = list_inflight(tmp_path)
         snapshots.append(len(listing[0].completed) if listing else -1)
