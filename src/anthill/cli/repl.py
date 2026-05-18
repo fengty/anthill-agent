@@ -665,7 +665,9 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /skills       recurring patterns the nation has noticed in history
     /skill save X distill the last complex ask into a named skill
                   (next similar ask uses it automatically)
-    /skill list   show all saved skills
+    /skill list   show all saved skills (with usage stats)
+    /skill rm X   remove a specific saved skill
+    /skill prune  remove all 🌫 stale skills (>14d unused)
     /memory       this nation's persistent MEMORY.md
     /memory consolidate
                   dedup near-duplicates, archive overflow
@@ -3018,10 +3020,74 @@ def run_repl(
                                 )
                     except Exception as e:  # noqa: BLE001
                         console.print(f"  [red]{e}[/red]")
+                elif sub == "rm" or sub == "remove":
+                    # 0.1.51 — direct removal by name. Surgical
+                    # delete; for batch cleanup of stale skills,
+                    # /skill prune is friendlier.
+                    if not tail:
+                        console.print(
+                            "[yellow]Usage: /skill rm <skill-name>[/yellow]"
+                        )
+                    else:
+                        try:
+                            from anthill.core.recipes import remove_recipe
+                            ok = remove_recipe(tail, ndir)
+                            if ok:
+                                console.print(
+                                    f"  [green]✓[/green] removed skill "
+                                    f"[cyan]{tail}[/cyan]"
+                                )
+                            else:
+                                console.print(
+                                    f"  [yellow]no such skill: {tail}[/yellow]"
+                                )
+                        except Exception as e:  # noqa: BLE001
+                            console.print(f"  [red]rm failed: {e}[/red]")
+                elif sub == "prune":
+                    # 0.1.51 — bulk cleanup of skills that have been
+                    # on disk > 14 days with 0 matches. The 0.1.50
+                    # /skill list already flags these as 🌫 stale;
+                    # this command removes them in one shot.
+                    try:
+                        from anthill.core.recipes import (
+                            list_recipes,
+                            remove_recipe,
+                        )
+                        from anthill.core.skill_stats import partition_stale
+                        recipes = list_recipes(ndir)
+                        stale, _ = partition_stale(recipes)
+                        if not stale:
+                            console.print(
+                                "  [dim]nothing to prune — all saved skills "
+                                "have been used recently or are still fresh."
+                                "[/dim]"
+                            )
+                        else:
+                            # No interactive y/n: the user already saw the
+                            # 🌫 stale flag in /skill list. Echo each name
+                            # as we remove so they can scroll-back to
+                            # verify if needed.
+                            console.print(
+                                f"  [bold]pruning {len(stale)} stale "
+                                f"skill(s)[/bold] [dim](>14d, 0 matches)[/dim]"
+                            )
+                            for r in stale:
+                                if remove_recipe(r.name, ndir):
+                                    console.print(
+                                        f"    [red]✗[/red] {r.name}"
+                                    )
+                                else:
+                                    console.print(
+                                        f"    [yellow]?[/yellow] {r.name} "
+                                        f"(failed to remove)"
+                                    )
+                    except Exception as e:  # noqa: BLE001
+                        console.print(f"  [red]prune failed: {e}[/red]")
                 else:
                     console.print(
                         "[yellow]Usage: /skill save <name> | "
-                        "/skill list[/yellow]"
+                        "/skill list | /skill rm <name> | /skill prune"
+                        "[/yellow]"
                     )
             elif cmd in ("skills",):
                 # 0.1.17 — show what skill_mining sees in this nation's
