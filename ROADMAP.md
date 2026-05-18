@@ -2,6 +2,11 @@
 
 > **Only the "Next" section is a commitment.** Everything below it is
 > "things we'd like to explore" — no order, no timeline, no promises.
+>
+> **Bound by [`docs/strengths.md`](docs/strengths.md).** New patches
+> must amplify one of Anthill's section-1 mechanisms OR adopt one of
+> the section-2 borrowed strengths. Anything outside that gets pushed
+> to "Explorations" or rejected. **集合百家长处，不做大而全**.
 
 ## Direction: "越用越聪明，越来越像你"
 
@@ -23,76 +28,70 @@ from session events.
 **Anthill ships none of this today.** Fixing it is the entire focus
 of 0.1.29 → 0.1.34 (Arc M — Memory).
 
-## Next: 0.1.29 — USER.md + MEMORY.md foundation (Arc M, A-class)
+## Next: 0.1.35 — Pheromone delta card (Arc V, amplifies §1.1)
 
-Two persistent plain-text files, loaded at session start, injected
-into every Scout + worker system prompt, viewable + editable from
-the REPL.
+After each ask, a one-line card shows which citizens just gained or
+lost expertise on which task_types:
 
-  - `~/.anthill/USER.md` — global user profile (your preferences,
-    communication style, languages you work in, things you've
-    explicitly asked the nation to remember about you)
-  - `~/.anthill/nations/<name>/MEMORY.md` — per-nation knowledge
-    (project facts, conventions, "this nation's job is X", lessons
-    learned, what's worked and what hasn't)
+```
+🐜 pheromone update:
+  +0.18  ant-3a4b  research      (now your strongest researcher, was #3)
+  +0.05  ant-9c2d  review
+  -0.02  ant-7g23  translate     (failed retry)
+```
 
-Slash commands:
-  - `/memory` — show MEMORY.md
-  - `/memory edit` — open in `$EDITOR`
-  - `/profile` — show USER.md (alias `/preferences`)
-  - `/profile edit` — open in `$EDITOR`
-  - `/remember <text>` — append one timestamped line to MEMORY.md
-  - `/remember-me <text>` — same but to USER.md
+Plus `/trails diff` for "since last week".
 
-Splash card: `📓 N memory lines · M about you` when either file
-has content.
+Strengths.md justification: amplifies §1.1 (pheromone-based
+emergent specialization). The mechanism exists; this makes it
+visible to the user per ask, which closes the reported "感受不到
+进化" complaint.
 
 Status: **planned, no code yet.**
 
-## Planned arc: 0.1.29 → 0.1.38 (10 patches)
+## Disciplined arc: 0.1.35 → 0.1.40 (six patches)
 
-### Arc M — Memory & personalization (0.1.29-0.1.34)
+Each one mapped against [`docs/strengths.md`](docs/strengths.md). No
+patch enters this list unless it amplifies a §1 mechanism OR is one
+of the three remaining §2 borrowings.
 
-The whole reason for this re-plan. Each patch closes one piece of
-the "the more you use it the more it knows about you" loop.
+| Version | What | strengths.md ref |
+|---|---|---|
+| **0.1.35** | Pheromone delta card + `/trails diff` + specialist emergence callouts | §1.1 — make emergent specialization visible |
+| **0.1.36** | `@tool def f(): ...` decorator (Plugin subclass kept for back-compat). Pydantic auto-infers the schema | §2.3 — borrowed from OpenAI Agents SDK |
+| **0.1.37** | Unified `HookRegistry` consolidating `on_progress` / `on_clarify` / `on_plan` / `on_phase` / `on_token` / `on_critique_token` / `on_round` into one bus | §2.4 — borrowed from Anthropic Agent SDK |
+| **0.1.38** | `MemoryBackend` interface + `BuiltinFTS5Backend` default. Community can plug mem0 / chromadb without forking | §2.2 — borrowed from Hermes |
+| **0.1.39** | `/iterate <ask>` forces multi-round depth with rotating critic perspectives (completeness → originality → counter-arguments → user-bias) | §1.2 + §1.4 — multi-model collab + complexity classification |
+| **0.1.40** | Mid-execution self-correction: post-subtask "did I actually answer the question?" gates declaring done, using USER.md as the rubric | §1.3 + §2.1 — failure attribution + persistent memory |
 
-| Version | Class | What | Why |
-|---|---|---|---|
-| **0.1.29** | A | `USER.md` + `MEMORY.md` files + slash commands + system-prompt injection | Foundation. Without explicit files there's nothing for the user to see, edit, or trust. Mirrors Claude Code / Hermes convention. |
-| **0.1.30** | A | Auto-memory: after each successful ask, a lightweight pass decides whether the turn produced a "durable lesson" worth appending. Conservative — captures recurring patterns, environment facts, declared preferences, NOT raw output dumps. Triggers visible (📝 noted). | The "agent quietly learns" thing. Without auto-memory the foundation stays empty unless the user manually `/remember`s everything. |
-| **0.1.31** | A | Cross-session conversation recall via FTS5. Extends 0.1.28's in-session rolling window. `/recall <query>` finds prior asks; auto-fires when a follow-up references content beyond the window. Uses SQLite FTS5, same shape as Hermes session_search. | "Tell me about that thing we discussed last week" — answers it. |
-| **0.1.32** | B | User-model inference from feedback signals. Aggregates `/rate up`/`down` history, completion stats, language detection, output-length preferences over time → derives a structured profile that auto-edits `USER.md` (with diff confirmation). | The "越来越像你" payoff. Pheromones currently shape WHICH citizen runs a task — this shapes HOW the nation talks back. |
-| **0.1.33** | A | Mid-execution self-correction using USER.md preferences as the rubric. After each subtask, citizen self-checks "did I answer in the style this user prefers? did I cover what they actually asked?" → auto-patches before declaring done. | The Hermes "不断想办法完成任务" gap. Once we have user-profile context (0.1.32), the self-check has a real yardstick. |
-| **0.1.34** | A | Memory hygiene. 200-line cap per file (mirrors Claude Code's design rule). When over-cap, agent consolidates similar lines; oldest get archived to `MEMORY-ARCHIVE.md`. `/memory consolidate` triggers manually. Weekly check on session start. | Without this, MEMORY.md grows to 5K lines and stops being useful. |
+### Explicitly dropped from earlier roadmap drafts
 
-### Arc V — Visible evolution (0.1.35-0.1.36)
+The "10-patch Arc V+D" version of this plan had: tracing/Span,
+image input, custom slash commands, declarative YAML agents,
+per-node checkpoints. Per `strengths.md` §3:
 
-Once memory works, surface the OTHER half of the learning loop —
-pheromones — so the user feels both layers compounding.
+- **Tracing/Span** (§3.1): revisit at 0.2.x when there's a real
+  customer needing Sentry / Langfuse integration.
+- **Image input** (was 0.1.37): orthogonal to §1.* mechanisms.
+  Pushed to "Explorations." A user pulling Anthill into a vision
+  task would convince us; today nobody is.
+- **Custom slash commands** (was 0.1.38): we're at ~25 slashes
+  already — §3.8 caps that.
+- **Per-node checkpoints**: `inflight.py` already covers crash
+  resume; §2.5 — marginal upgrade.
+- **Declarative YAML agents**: §3.10 — anti-pattern for §1.1.
 
-| Version | Class | What | Why |
-|---|---|---|---|
-| **0.1.35** | B | Pheromone delta card after each ask. `+0.18 ant-3a4b on research · -0.05 ant-9c2d on review`. Specialist emergence callouts: "🐜 ant-3a4b is now your strongest researcher (was #3)". `/trails diff` for "since last week". | Solves "感受不到进化" — pheromones run silently today. |
-| **0.1.36** | B | `/iterate <ask>` forced multi-round mode + rotating critic perspectives. Even when judge is happy, force depth: completeness → originality → counter-arguments → user-bias. | On-demand depth knob, complements auto-self-correction (0.1.33). |
+### After 0.1.40 — candidate 0.2.0
 
-### Arc D — Outstanding A/B roadmap closeout (0.1.37-0.1.38)
+Natural trigger: 0.1.34 introduced new on-disk formats (USER.md /
+MEMORY.md / MEMORY-ARCHIVE.md / FTS5 session search index); 0.1.38
+introduces the MemoryBackend interface. After 0.1.40, the
+strengths-driven arc closes — the §1 mechanisms are all visible
+or surfaced, the §2 borrowings are all landed. That's the
+candidate moment for the package-split (anthill-core /
+anthill-memory / anthill-cli / anthill-channels) plus an
+import-path migration.
 
-| Version | Class | What | Why |
-|---|---|---|---|
-| **0.1.37** | A | Image input. `attach <path>` for screenshots, vision-capable citizen routing. | Was 0.1.18 in original 12-patch arc; the only A-class baseline still missing. |
-| **0.1.38** | A | Custom slash commands via `~/.anthill/commands/*.md` + builtin `commands.d/`. Inherits the Claude Code / Hermes file-as-command convention. | Power-user extensibility without forking. |
-
-Nation-to-nation collaboration moves to the explorations list —
-it's substantial enough that it should anchor a future 0.2.0
-discussion rather than fit inside a 10-patch arc.
-
-### After 0.1.38 — candidate 0.2.0
-
-Per [VERSIONING.md](VERSIONING.md), a minor bump needs explicit
-maintainer signoff. The natural trigger: 0.1.34 introduces a new
-on-disk format (USER.md / MEMORY.md / MEMORY-ARCHIVE.md / FTS5
-session search index). Once 0.1.38 lands, the Arc M+V+D wrap is
-complete and the file format has stabilized — candidate moment.
 **Not a commitment** — maintainer decides at the moment.
 
 ### Recently shipped (most-recent first)
