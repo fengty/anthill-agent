@@ -1775,13 +1775,16 @@ async def _handle_ask(
             for a in o.attempts
         )
         already_skill = find_matching_skill(request, ndir) is not None
-        # 0.1.45 — single filter for "is this a skill?". Was implicit
-        # before via inline conditions; now explicit + shared with the
-        # mining hint above so the two paths can't disagree.
-        verdict, _reason = worth_saving_as_skill(
+        # 0.1.45/46 — single filter for "is this a skill?". Was
+        # implicit before via inline conditions; now explicit + shared
+        # with the mining hint above so the two paths can't disagree.
+        # 0.1.46 adds final_output so the output-structure signal can
+        # fire on report-shaped deliverables.
+        verdict, save_reason = worth_saving_as_skill(
             request,
             plan_subtasks=result.plan.subtasks,
             had_refusal_retry=had_refusal_retry,
+            final_output=result.final_output,
         )
         plan_size = len(result.plan.subtasks)
         if (
@@ -1808,11 +1811,13 @@ async def _handle_ask(
             )
             try:
                 save_recipe(recipe, ndir)
+                # 0.1.46 — surface WHY we saved this one. The score
+                # reason ("score 2.5: refusal_retry + diversity") lets
+                # the user calibrate trust in auto-save without
+                # opening source.
                 console.print(
                     f"  [dim]💾 saved skill [cyan]{slug}[/cyan] "
-                    f"({plan_size} subtask(s)) — next time a similar "
-                    f"ask shows up, the citizens will use this directly."
-                    f"[/dim]"
+                    f"({plan_size} subtask(s)) — {save_reason}[/dim]"
                 )
             except Exception:  # noqa: BLE001 — auto-save must not break the REPL
                 pass

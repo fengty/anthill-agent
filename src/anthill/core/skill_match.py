@@ -249,68 +249,205 @@ def is_trivial_request(request: str) -> bool:
     return False
 
 
-def worth_saving_as_skill(
+# 0.1.46 — signal weights for the skill-save scoring model. Each
+# weight is "how many bits of evidence does firing this signal give
+# us that this ask is worth saving as a skill?". Threshold
+# `SAVE_SCORE_THRESHOLD` is what the sum has to clear to auto-save.
+#
+# Tuned so:
+#   - refusal_retry alone (2.0) → save
+#   - variable_content alone (1.5) → save
+#   - diversity + depth or diversity + count → save
+#   - any SINGLE weak signal alone → don't save
+#
+# The threshold sits at 1.5 so the weakest single-positive case is
+# exactly a variable_content match — meaning if a request mentions
+# a URL/ID/date, we save the workflow even without other signals.
+# That's the "禅道 bug 56128 → 67890" case the user pointed at.
+_SIGNAL_WEIGHTS: dict[str, float] = {
+    "refusal_retry": 2.0,
+    "variable_content": 1.5,
+    "task_type_diversity": 1.0,
+    "plan_depth_ge_2": 1.0,
+    "subtask_count_ge_3": 0.8,
+    "output_rich": 0.8,
+    "request_long": 0.5,
+}
+
+SAVE_SCORE_THRESHOLD: float = 1.5
+
+
+def _plan_depth(subtasks: list[object]) -> int:
+    """Longest dependency chain in the DAG.
+
+    A plan of [research, analyze(depends=research), synthesize(depends=analyze)]
+    is depth 3 — a real pipeline. A plan of three parallel "general"
+    subtasks is depth 1 — three parallel queries. The former is
+    skill-worthy in a way the latter isn't.
+    """
+    # Build (task_type → depends_on names) lookup, taking the first
+    # occurrence per task_type to keep this O(n).
+    depmap: dict[str, list[str]] = {}
+    for s in subtasks:
+        tt = getattr(s, "task_type", None)
+        deps = getattr(s, "depends_on", []) or []
+        if isinstance(tt, str) and tt not in depmap:
+            depmap[tt] = [d for d in deps if isinstance(d, str)]
+
+    memo: dict[str, int] = {}
+
+    def depth_of(name: str, visiting: set[str]) -> int:
+        if name in memo:
+            return memo[name]
+        if name in visiting:
+            # Cycle defense — depmap is user-derived, don't trust it.
+            return 1
+        visiting.add(name)
+        parents = depmap.get(name, [])
+        if not parents:
+            d = 1
+        else:
+            d = 1 + max(depth_of(p, visiting) for p in parents)
+        visiting.remove(name)
+        memo[name] = d
+        return d
+
+    if not depmap:
+        return 0
+    return max(depth_of(name, set()) for name in depmap)
+
+
+# Markdown / structural markers that indicate a "real report"-shaped
+# output worth re-running on similar inputs. A 30-character text reply
+# carries no structure; a multi-section report with headers, lists,
+# and tables means the workflow produced something substantial.
+_STRUCTURE_MARKERS = (
+    "\n#",       # markdown header (with newline so we don't catch hashtags)
+    "\n##",
+    "\n- ",      # bulleted list
+    "\n* ",
+    "\n1.",      # numbered list
+    "| ",        # table row separator (loose — false-positives on stylized prose)
+    "```",       # code block
+)
+
+
+def _output_rich(text: str, *, min_length: int = 200) -> bool:
+    """Does ``text`` look like a structured deliverable, not a one-line reply?
+
+    Threshold pair: (length >= 200 chars) AND (>=2 structural markers).
+    Either alone false-positives — a long flat paragraph is just chatty;
+    a single `#` could be hashtag prose. Both together are a strong
+    signal that the workflow produced a real artifact.
+    """
+    if len(text) < min_length:
+        return False
+    hits = sum(1 for m in _STRUCTURE_MARKERS if m in text)
+    return hits >= 2
+
+
+def skill_save_signals(
     request: str,
     *,
     plan_subtasks: Iterable[object] | None = None,
     had_refusal_retry: bool = False,
-) -> tuple[bool, str]:
-    """0.1.45 — should this ask be saved as a reusable skill?
+    final_output: str = "",
+) -> dict[str, bool]:
+    """0.1.46 — compute the diagnostic signal map for a candidate skill.
 
-    Both the post-success auto-distillation (0.1.43) and the mining
-    hint (0.1.17) need to agree on this question — otherwise users
-    see "save 你好 as a skill" (mining false positive) while we
-    silently refuse to auto-save it (correctly). One filter, one
-    source of truth.
-
-    Decision tree:
-      1. Trivial pattern → NEVER worth it. (greetings, "ok", "test")
-      2. Single-subtask plan → workflow doesn't exist; just direct Q&A.
-      3. Multi-subtask + refusal-retry → STRONGLY worth it (citizens
-         had to work it out from scratch).
-      4. Multi-subtask + variable content (URL/ID/date) → worth it
-         (template will match future related asks).
-      5. Multi-subtask + diverse task_types (not all "general") →
-         worth it (real decomposition happened).
-      6. Otherwise → not worth it for now.
-
-    Returns (verdict, reason). The reason is a short human-readable
-    string so the REPL can explain "we didn't suggest this because
-    plan was single-subtask" instead of staying silent.
+    Surfaces the SAME signals `worth_saving_as_skill` uses for its
+    decision so callers (REPL `/skill explain`, tests, debug
+    output) can see exactly which signals fired. Reasonable default
+    values when info is missing (e.g. mining hint has no final_output).
     """
-    if is_trivial_request(request):
-        return False, "trivial pattern (greeting/pleasantry)"
-
     subtasks = list(plan_subtasks) if plan_subtasks is not None else []
-    plan_size = len(subtasks)
-
-    if plan_size < 2:
-        return False, "single-subtask asks aren't workflows"
-
-    if had_refusal_retry:
-        return True, "complex ask that required refusal-retry — high signal"
-
-    # Variable content = URL / numeric id / date in request. Strong
-    # signal that the recipe template will MATCH future related asks
-    # ("analyze bug 12345" → next time it's "analyze bug 67890" still
-    # hits via {id} placeholder).
-    if any(p.search(request) for p, _ in _VARIABLE_PATTERNS):
-        return True, "request has variable content (URL/ID/date) — reusable template"
-
-    # Diverse task_types = real decomposition. If every subtask is
-    # "general" the plan didn't really specialize, so saving it
-    # wouldn't teach the nation anything new.
     task_types: set[str] = set()
     for s in subtasks:
         tt = getattr(s, "task_type", None)
         if isinstance(tt, str):
             task_types.add(tt)
-    if len(task_types) >= 2:
-        return True, f"diverse task_types ({len(task_types)}) — real decomposition"
-    if task_types and "general" not in task_types:
-        return True, "specialized task_type — non-trivial work"
 
-    return False, "no strong reuse signal yet"
+    return {
+        "refusal_retry": had_refusal_retry,
+        "variable_content": any(
+            p.search(request) for p, _ in _VARIABLE_PATTERNS
+        ),
+        "task_type_diversity": (
+            len(task_types) >= 2
+            or (len(task_types) == 1 and "general" not in task_types)
+        ),
+        "plan_depth_ge_2": _plan_depth(subtasks) >= 2,
+        "subtask_count_ge_3": len(subtasks) >= 3,
+        "output_rich": _output_rich(final_output),
+        "request_long": len(request) >= 100,
+    }
+
+
+def worth_saving_as_skill(
+    request: str,
+    *,
+    plan_subtasks: Iterable[object] | None = None,
+    had_refusal_retry: bool = False,
+    final_output: str = "",
+) -> tuple[bool, str]:
+    """0.1.45/0.1.46 — should this ask be saved as a reusable skill?
+
+    Both the post-success auto-distillation (0.1.43) and the mining
+    hint (0.1.17) route through here. They can't disagree on what
+    "skill-worthy" means.
+
+    0.1.45 implemented hard filters (trivial / single-subtask reject;
+    refusal-retry / URL / task-diversity accept). 0.1.46 replaces the
+    accept side with a *weighted score over 7 signals* so:
+
+      - **Multiple weak signals can add up** to a save. E.g. a plan
+        with depth>=2, diverse task_types, AND a long request was
+        previously rejected (any single signal alone wasn't enough);
+        now it scores 1.0 + 1.0 + 0.5 = 2.5 and saves correctly.
+      - **Per-signal weights stay tunable** in one place
+        (`_SIGNAL_WEIGHTS`) instead of being scattered through nested
+        if-branches.
+      - **Hard rejects stay hard** — trivial pattern and single-subtask
+        plans still short-circuit before scoring. This is the
+        "你好" guard that the user explicitly called out.
+
+    Reason string carries the actual numbers so the REPL can say
+    "saved (score 2.5: refusal_retry + diversity + length)" or
+    "not saved (score 0.8: only request_long fired)" — surfacing
+    judgment, not just verdict.
+    """
+    # Hard rejects — these are bright lines, not soft signals.
+    if is_trivial_request(request):
+        return False, "trivial pattern (greeting/pleasantry)"
+
+    subtasks = list(plan_subtasks) if plan_subtasks is not None else []
+    if len(subtasks) < 2:
+        return False, "single-subtask asks aren't workflows"
+
+    # Soft signals — compute then score.
+    signals = skill_save_signals(
+        request,
+        plan_subtasks=subtasks,
+        had_refusal_retry=had_refusal_retry,
+        final_output=final_output,
+    )
+    fired = [name for name, val in signals.items() if val]
+    score = sum(_SIGNAL_WEIGHTS[name] for name in fired)
+
+    if score >= SAVE_SCORE_THRESHOLD:
+        if not fired:
+            # Defensive — shouldn't be reachable but mypy doesn't know.
+            return True, f"score {score:.1f}"
+        return True, f"score {score:.1f}: " + " + ".join(fired)
+
+    if not fired:
+        return False, "no positive signals"
+    return (
+        False,
+        f"score {score:.1f} below threshold {SAVE_SCORE_THRESHOLD}: only "
+        + " + ".join(fired)
+        + " fired",
+    )
 
 
 def unique_slug(base: str, existing: Iterable[str]) -> str:

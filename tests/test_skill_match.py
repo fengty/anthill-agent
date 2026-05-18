@@ -22,11 +22,15 @@ from anthill.core.recipes import Recipe, RecipeSubtask, save_recipe
 from anthill.core.skill_match import (
     MATCH_CONFIDENCE_THRESHOLD,
     MIN_REQUEST_TOKENS,
+    SAVE_SCORE_THRESHOLD,
     DistillationSuggestion,
     SkillMatch,
+    _output_rich,
+    _plan_depth,
     distill_request_to_recipe_fields,
     find_matching_skill,
     is_trivial_request,
+    skill_save_signals,
     suggest_distillation,
     unique_slug,
     worth_saving_as_skill,
@@ -484,14 +488,20 @@ def test_worth_saving_accepts_variable_content() -> None:
     assert "url" in reason.lower() or "variable" in reason.lower()
 
 
-def test_worth_saving_accepts_diverse_task_types() -> None:
-    # Multi-subtask + different task_types → real decomposition.
+def test_worth_saving_accepts_diverse_task_types_with_depth() -> None:
+    # 0.1.46: diversity alone (1.0) is INTENTIONALLY below threshold
+    # (1.5) — the old 0.1.45 "any diversity saves" was too generous.
+    # Pair diversity with a dependency so plan_depth>=2 also fires,
+    # bringing the score to 2.0 ≥ 1.5.
     ok, reason = worth_saving_as_skill(
         "review this proposal and write feedback",
-        plan_subtasks=[_FakeSubtask("research"), _FakeSubtask("analyze")],
+        plan_subtasks=[
+            _SubWithDeps("research"),
+            _SubWithDeps("analyze", depends_on=["research"]),
+        ],
     )
-    assert ok is True
-    assert "decomposition" in reason.lower() or "task" in reason.lower()
+    assert ok is True, f"expected save; reason: {reason}"
+    assert "task_type_diversity" in reason or "plan_depth" in reason
 
 
 def test_worth_saving_rejects_homogeneous_general_plan() -> None:
@@ -510,3 +520,260 @@ def test_worth_saving_handles_none_plan() -> None:
     # Defensive: None plan_subtasks shouldn't crash, just rejects.
     ok, _ = worth_saving_as_skill("your usual ask")
     assert ok is False
+
+
+# --- 0.1.46 — multi-signal weighted scoring -------------------------------
+
+
+class _SubWithDeps:
+    """Minimal stand-in for scout.Subtask supporting depends_on."""
+
+    def __init__(self, task_type: str, depends_on: list[str] | None = None) -> None:
+        self.task_type = task_type
+        self.depends_on = depends_on or []
+
+
+# --- _plan_depth -----------------------------------------------------------
+
+
+def test_plan_depth_empty_plan() -> None:
+    assert _plan_depth([]) == 0
+
+
+def test_plan_depth_three_parallel_general_is_one() -> None:
+    # Three subtasks, all `general`, no dependencies → flat fan-out,
+    # not a real pipeline. Depth 1.
+    plan = [
+        _SubWithDeps("general"),
+        _SubWithDeps("general"),
+        _SubWithDeps("general"),
+    ]
+    assert _plan_depth(plan) == 1
+
+
+def test_plan_depth_linear_chain() -> None:
+    # research → analyze → synthesize is a depth-3 pipeline.
+    plan = [
+        _SubWithDeps("research"),
+        _SubWithDeps("analyze", depends_on=["research"]),
+        _SubWithDeps("synthesize", depends_on=["analyze"]),
+    ]
+    assert _plan_depth(plan) == 3
+
+
+def test_plan_depth_branching_dag() -> None:
+    # research (depth 1)
+    # ├─ analyze (depth 2)
+    # └─ critique (depth 2)
+    # └─ merge (depth 3, depends on both)
+    plan = [
+        _SubWithDeps("research"),
+        _SubWithDeps("analyze", depends_on=["research"]),
+        _SubWithDeps("critique", depends_on=["research"]),
+        _SubWithDeps("merge", depends_on=["analyze", "critique"]),
+    ]
+    assert _plan_depth(plan) == 3
+
+
+def test_plan_depth_tolerates_cycles() -> None:
+    # Pathological: a depends on b, b depends on a. Should not loop.
+    plan = [
+        _SubWithDeps("a", depends_on=["b"]),
+        _SubWithDeps("b", depends_on=["a"]),
+    ]
+    d = _plan_depth(plan)
+    assert isinstance(d, int)
+    assert d >= 1  # don't care about exact value, just no crash
+
+
+# --- _output_rich ----------------------------------------------------------
+
+
+def test_output_rich_short_text_is_not_rich() -> None:
+    assert _output_rich("a quick reply") is False
+
+
+def test_output_rich_long_flat_paragraph_is_not_rich() -> None:
+    # 500 chars, but no markdown structure → just chatty, not a deliverable.
+    assert _output_rich("some text. " * 60) is False
+
+
+def test_output_rich_long_structured_report_is_rich() -> None:
+    # A real deliverable: headers + bullet list + length.
+    report = (
+        "Here's the analysis:\n"
+        "\n## Background\n"
+        "Lorem ipsum dolor sit amet, " * 10
+        + "\n## Findings\n"
+        "\n- finding one with detailed explanation\n"
+        "\n- finding two with detailed explanation\n"
+        "\n## Recommendations\n"
+        "Do this, then that."
+    )
+    assert _output_rich(report) is True
+
+
+def test_output_rich_one_marker_not_enough() -> None:
+    # Single `#` could be hashtag prose — need 2+ markers.
+    text = "a long text that mentions some `# topic` in passing " * 5
+    assert _output_rich(text) is False
+
+
+# --- skill_save_signals (diagnostic map) -----------------------------------
+
+
+def test_skill_save_signals_returns_all_keys() -> None:
+    sigs = skill_save_signals(
+        "analyze bug 56128",
+        plan_subtasks=[_SubWithDeps("research"), _SubWithDeps("analyze")],
+        had_refusal_retry=False,
+        final_output="",
+    )
+    # All expected signal names present.
+    assert set(sigs.keys()) == {
+        "refusal_retry",
+        "variable_content",
+        "task_type_diversity",
+        "plan_depth_ge_2",
+        "subtask_count_ge_3",
+        "output_rich",
+        "request_long",
+    }
+
+
+def test_skill_save_signals_variable_content_fires_on_id() -> None:
+    sigs = skill_save_signals(
+        "analyze bug 56128 root cause",
+        plan_subtasks=[_SubWithDeps("research"), _SubWithDeps("analyze")],
+    )
+    assert sigs["variable_content"] is True
+
+
+def test_skill_save_signals_variable_content_fires_on_url() -> None:
+    sigs = skill_save_signals(
+        "scrape https://example.com/page",
+        plan_subtasks=[_SubWithDeps("research"), _SubWithDeps("analyze")],
+    )
+    assert sigs["variable_content"] is True
+
+
+def test_skill_save_signals_depth_signal() -> None:
+    sigs = skill_save_signals(
+        "do something",
+        plan_subtasks=[
+            _SubWithDeps("research"),
+            _SubWithDeps("analyze", depends_on=["research"]),
+        ],
+    )
+    assert sigs["plan_depth_ge_2"] is True
+
+
+def test_skill_save_signals_subtask_count() -> None:
+    short_plan = [_SubWithDeps("a"), _SubWithDeps("b")]
+    long_plan = [_SubWithDeps("a"), _SubWithDeps("b"), _SubWithDeps("c")]
+    assert skill_save_signals("x", plan_subtasks=short_plan)["subtask_count_ge_3"] is False
+    assert skill_save_signals("x", plan_subtasks=long_plan)["subtask_count_ge_3"] is True
+
+
+def test_skill_save_signals_request_long() -> None:
+    short = skill_save_signals("short ask", plan_subtasks=[_SubWithDeps("a")])
+    long_text = "x" * 150
+    long_ = skill_save_signals(long_text, plan_subtasks=[_SubWithDeps("a")])
+    assert short["request_long"] is False
+    assert long_["request_long"] is True
+
+
+# --- worth_saving_as_skill scoring behavior --------------------------------
+
+
+def test_worth_saving_score_weak_signals_alone_dont_qualify() -> None:
+    # Only "request_long" fires (0.5) — below threshold 1.5 — reject.
+    long_request = "tell me something interesting " * 4
+    ok, reason = worth_saving_as_skill(
+        long_request,
+        plan_subtasks=[_SubWithDeps("general"), _SubWithDeps("general")],
+    )
+    assert ok is False
+    # The score should be in the reason for transparency.
+    assert "score" in reason.lower()
+
+
+def test_worth_saving_score_combined_weak_signals_can_qualify() -> None:
+    # Diverse task_types (1.0) + plan_depth>=2 (1.0) = 2.0 ≥ 1.5 → save.
+    # The 0.1.45 version would have rejected because no single hard
+    # signal fired; the 0.1.46 score-based judge gets this right.
+    ok, reason = worth_saving_as_skill(
+        "review and rewrite my proposal",
+        plan_subtasks=[
+            _SubWithDeps("research"),
+            _SubWithDeps("analyze", depends_on=["research"]),
+        ],
+    )
+    assert ok is True, f"expected save; got reason: {reason}"
+
+
+def test_worth_saving_score_threshold_is_exposed() -> None:
+    # The threshold is a public constant so users can rerun
+    # historical data with a different cut.
+    assert SAVE_SCORE_THRESHOLD > 0
+
+
+def test_worth_saving_refusal_retry_alone_qualifies() -> None:
+    # refusal_retry weight (2.0) ≥ threshold (1.5) — save by itself.
+    ok, _ = worth_saving_as_skill(
+        "do this hard thing",
+        plan_subtasks=[_SubWithDeps("research"), _SubWithDeps("analyze")],
+        had_refusal_retry=True,
+    )
+    assert ok is True
+
+
+def test_worth_saving_variable_content_alone_qualifies() -> None:
+    # variable_content weight (1.5) == threshold (1.5) — save by itself.
+    ok, _ = worth_saving_as_skill(
+        "look at bug 12345",
+        plan_subtasks=[_SubWithDeps("general"), _SubWithDeps("general")],
+    )
+    assert ok is True
+
+
+def test_worth_saving_reason_mentions_fired_signals() -> None:
+    # When we save, the reason string must enumerate which signals
+    # fired — this is what the REPL prints to the user.
+    ok, reason = worth_saving_as_skill(
+        "look at bug 12345",
+        plan_subtasks=[_SubWithDeps("general"), _SubWithDeps("general")],
+    )
+    assert ok is True
+    assert "variable_content" in reason
+
+
+def test_worth_saving_reason_explains_why_when_below_threshold() -> None:
+    # When the score is non-zero but below threshold, the reason
+    # should say what fired and that it was below threshold.
+    ok, reason = worth_saving_as_skill(
+        "x" * 150,  # only request_long fires (0.5)
+        plan_subtasks=[_SubWithDeps("general"), _SubWithDeps("general")],
+    )
+    assert ok is False
+    assert "request_long" in reason
+    assert "threshold" in reason.lower() or "below" in reason.lower()
+
+
+def test_worth_saving_output_rich_contributes_to_score() -> None:
+    # output_rich (0.8) + task_type_diversity (1.0) = 1.8 ≥ threshold
+    # → save. Verifies the final_output kwarg actually flows through.
+    rich_report = (
+        "## Section A\n" + "Lorem ipsum dolor sit amet. " * 20
+        + "\n## Section B\n" + "\n- item one\n- item two\n- item three\n"
+    )
+    ok, reason = worth_saving_as_skill(
+        "compile that report",
+        plan_subtasks=[
+            _SubWithDeps("research"),
+            _SubWithDeps("analyze"),
+        ],
+        final_output=rich_report,
+    )
+    assert ok is True
+    assert "output_rich" in reason or "task_type_diversity" in reason
