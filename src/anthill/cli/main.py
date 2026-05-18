@@ -1029,7 +1029,10 @@ def bg_ask(request: str, nation_name: str) -> None:
     target_dir = nation_dir(config.home, nation_name)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    job = start_background(request, nation_name, target_dir)
+    job = start_background(
+        request, nation_name, target_dir,
+        origin_surface="cli",
+    )
     console.print(
         f"[green]Started[/green] background ask "
         f"[cyan]{job.job_id}[/cyan]  [dim](pid {job.pid})[/dim]"

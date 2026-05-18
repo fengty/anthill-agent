@@ -59,6 +59,18 @@ class BackgroundJob:
     exit_code: int | None = None
     completed_at: float | None = None
     cancelled: bool = False
+    # 0.1.37 — origin metadata so the completion notifier knows
+    # which surface to deliver to. "repl" / "im" / "cli" / "unknown".
+    # When surface == "im" the extra fields (platform, chat_id)
+    # let the daemon post the result back to the originating chat.
+    origin_surface: str = "unknown"
+    origin_session_id: str = ""
+    origin_platform: str = ""    # for IM: "lark" / "telegram" / etc.
+    origin_chat_id: str = ""     # for IM: the chat/group/dm id
+    # Timestamp the REPL / daemon notified the user about completion.
+    # None means "completed but not yet announced." Cheap dedup so
+    # we don't re-notify on every prompt iteration.
+    delivered_at: float | None = None
 
     @property
     def log_path(self) -> Path:
@@ -136,6 +148,10 @@ def start_background(
     *,
     anthill_bin: str | None = None,
     extra_env: dict[str, str] | None = None,
+    origin_surface: str = "unknown",
+    origin_session_id: str = "",
+    origin_platform: str = "",
+    origin_chat_id: str = "",
 ) -> BackgroundJob:
     """Spawn an anthill ask in its own session and return immediately.
 
@@ -196,6 +212,11 @@ def start_background(
         "nation": nation_name,
         "pid": proc.pid,
         "started_at": time.time(),
+        # 0.1.37 — origin tracking for delivery routing.
+        "origin_surface": origin_surface,
+        "origin_session_id": origin_session_id,
+        "origin_platform": origin_platform,
+        "origin_chat_id": origin_chat_id,
     }
     (jd / "meta.json").write_text(json.dumps(meta, indent=2))
 
@@ -205,6 +226,10 @@ def start_background(
         pid=proc.pid,
         started_at=meta["started_at"],
         job_dir=jd,
+        origin_surface=origin_surface,
+        origin_session_id=origin_session_id,
+        origin_platform=origin_platform,
+        origin_chat_id=origin_chat_id,
     )
 
 
@@ -260,6 +285,17 @@ def _read_job(directory: Path) -> BackgroundJob | None:
             pass
 
     cancelled_marker = directory / "cancelled"
+    # 0.1.37 — delivery flag lives next to done.json so it's
+    # observable from the daemon AND the REPL without needing to
+    # rewrite meta.json.
+    delivered_path = directory / "delivered.json"
+    delivered_at: float | None = None
+    if delivered_path.exists():
+        try:
+            d = json.loads(delivered_path.read_text())
+            delivered_at = float(d.get("delivered_at", 0.0)) or None
+        except (OSError, json.JSONDecodeError, ValueError):
+            delivered_at = None
     return BackgroundJob(
         job_id=str(meta.get("job_id", directory.name)),
         request=str(meta.get("request", "")),
@@ -269,7 +305,59 @@ def _read_job(directory: Path) -> BackgroundJob | None:
         exit_code=exit_code,
         completed_at=completed_at,
         cancelled=cancelled_marker.exists(),
+        # Origin metadata. Old jobs without these fields default to
+        # "unknown" — they'll still get notified, just without
+        # surface-aware routing.
+        origin_surface=str(meta.get("origin_surface", "unknown")),
+        origin_session_id=str(meta.get("origin_session_id", "")),
+        origin_platform=str(meta.get("origin_platform", "")),
+        origin_chat_id=str(meta.get("origin_chat_id", "")),
+        delivered_at=delivered_at,
     )
+
+
+def mark_delivered(job: BackgroundJob) -> None:
+    """0.1.37 — write a `delivered.json` next to the job's done.json
+    so the next REPL prompt / daemon poll won't re-notify.
+
+    Best-effort: missing-dir / write-error is ignored. Worst case the
+    user gets the same "task complete" line twice — that's better
+    than missing it entirely.
+    """
+    try:
+        path = job.job_dir / "delivered.json"
+        path.write_text(json.dumps({"delivered_at": time.time()}))
+        job.delivered_at = time.time()
+    except OSError:
+        pass
+
+
+def pending_deliveries(
+    nation_dir_path: Path,
+    *,
+    origin_surface: str | None = None,
+    origin_session_id: str | None = None,
+) -> list[BackgroundJob]:
+    """0.1.37 — completed bg jobs that haven't been delivered yet.
+
+    ``origin_surface`` / ``origin_session_id`` narrow the set so the
+    REPL only sees jobs that were started FROM the REPL, the daemon
+    only sees its own jobs, etc. Both filters None means "show all,"
+    which the bg list command uses.
+    """
+    out: list[BackgroundJob] = []
+    for job in list_jobs(nation_dir_path):
+        # Only jobs that are actually done are candidates.
+        if job.exit_code is None and not job.cancelled:
+            continue
+        if job.delivered_at is not None:
+            continue
+        if origin_surface is not None and job.origin_surface != origin_surface:
+            continue
+        if origin_session_id is not None and job.origin_session_id != origin_session_id:
+            continue
+        out.append(job)
+    return out
 
 
 # --- control ---------------------------------------------------------------

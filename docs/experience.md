@@ -158,7 +158,7 @@ Honest assessment of where we are on each element:
 | Multi-turn within session | ✅ persistent JSONL | ✅ session policy | ✅ 0.1.28 rolling window |
 | Resume across days | ✅ `--resume <id>` | ✅ idle-based | ⚠️ `/recall` finds old asks but can't actually CONTINUE the thread |
 | Visible thinking | ✅ extended thinking toggle + thinking blocks | ✅ tool progress notifications | ✅ 0.1.27 deliberation phases (but **only** for deliberation, not plugins) |
-| Tool transparency | ✅ each tool shows + reversible | ✅ progress per tool | ⚠️ plugins run silently; only the subtask result is shown |
+| Tool transparency | ✅ each tool shows + reversible | ✅ progress per tool | n/a — **Anthill plugins are not invoked during asks today** (they're CLI utilities + MCP exports). Re-evaluate if we add LLM tool-calling. |
 | Interrupt + steer | ✅ press anything, Claude adjusts | ✅ send any message → SIGTERM/SIGKILL | ❌ **Ctrl+C kills the whole ask**, no steer |
 | Permission modes | ✅ 4 modes via Shift+Tab | (n/a — terminal cmd approval) | ❌ binary: plugin on / off |
 | Checkpoints / undo | ✅ Esc Esc | (n/a) | ⚠️ `inflight.py` can resume after CRASH but not after USER mistake |
@@ -168,7 +168,12 @@ Honest assessment of where we are on each element:
 | Three-phase loop (gather/act/verify) | ✅ blended loop | ✅ tool-using loop | ❌ **Scout plans once, executor runs, then stops** |
 | Context compaction | ✅ `/compact` + auto | ✅ context_compressor.py | ❌ none — we just truncate |
 
-### Score: 4 ✅ / 4 ⚠️ / 4 ❌
+### Score: 4 ✅ / 3 ⚠️ / 4 ❌ / 1 n/a
+
+(Tool transparency was misclassified in the first draft — plugins
+aren't part of the ask flow in Anthill today. Revisit if 0.1.x
+adds LLM tool-calling, which would itself be a bigger architectural
+patch than this arc covers.)
 
 Anthill has **parts** of the experience but not the **connective
 tissue**. The four ❌s are the killers:
@@ -229,14 +234,14 @@ It's **the four ❌s and four ⚠️s**, in order of leverage:
 
 | Patch | What | Closes which gap |
 |---|---|---|
-| **0.1.35** | Session as a persisted JSONL: `~/.anthill/sessions/<id>.jsonl`. Every turn (request + response + outcomes + costs) appends. `anthill --resume <id>` lists & reopens. 0.1.28's conversation window now hydrates from this file on startup, not from blank state | ⚠️ "Resume across days" — closes |
-| **0.1.36** | Interrupt-and-steer: Ctrl+C in mid-ask stops the current subtask, asks "redirect / cancel?" instead of killing. Typed input during a streaming response is queued and applied as a follow-up after current subtask completes | ❌ "No interrupt-and-steer" — closes |
-| **0.1.37** | Tool transparency: when a plugin runs, surface `🔍 plugin-name(args)` line before the call, `✓` line after with elapsed time. Configurable verbosity (off / brief / verbose) | ⚠️ "Plugins silent" — closes |
-| **0.1.38** | Background → delivery: when `start_background` is invoked from REPL OR IM, completion posts back to the originating surface. Telegram bg task result drops back into the same Telegram thread | ❌ "Background doesn't deliver" — closes |
-| **0.1.39** | Permission gradient: 3 modes via slash (`/permissions full-ask` / `/permissions auto-safe` / `/permissions full-auto`). Plugins declare safety class; mode controls which classes need approval | ❌ "No permission gradient" — closes |
-| **0.1.40** | Three-phase loop: after the executor produces a result, an automatic "verify" step (using USER.md / MEMORY.md as rubric) decides whether to iterate. If gap is concrete → auto-issue a follow-up subtask | ❌ "No three-phase loop" — closes |
-| **0.1.41** | IM ↔ REPL shared session: IM-sourced asks load + write to the same session store as the REPL. User can switch surfaces and the agent recognizes them | ⚠️ "IM is separate world" — closes |
-| **0.1.42** | Context compaction: when nation.ask exceeds N% of context budget, compact older episodes summarily. `/compact focus on X` for steering | ❌ "No context compaction" — closes |
+| **0.1.35** ✅ | Session as persisted JSONL + `anthill --resume` + 24h idle policy | ⚠️ "Resume across days" |
+| **0.1.36** ✅ | Interrupt-and-steer: Ctrl+C → cancel / redirect menu | ❌ "No interrupt-and-steer" |
+| ~~0.1.37 plugin transparency~~ | **Dropped** — plugins aren't invoked during asks today. Revisit if LLM tool-calling lands | (premise was wrong) |
+| **0.1.37** | Background → delivery: when `start_background` is invoked from REPL OR IM, completion posts back to the originating surface | ❌ "Background doesn't deliver" |
+| **0.1.38** | Permission gradient: 3 modes via slash. Plugins declare safety class; mode controls which classes need approval | ❌ "No permission gradient" |
+| **0.1.39** | Three-phase loop: post-execute `verify` step using USER.md / MEMORY.md as rubric. Concrete gap → auto-issue follow-up subtask | ❌ "No three-phase loop" |
+| **0.1.40** | IM ↔ REPL shared session: IM-sourced asks read+write the same session JSONL the REPL uses | ⚠️ "IM is separate world" |
+| **0.1.41** | Context compaction: summarize older episodes at N% budget. `/compact focus on X` for steering | ❌ "No context compaction" |
 
 The 4 already-shipped Arc M borrowings stay valid; they're the
 **memory** half of the experience. The above 8 are the

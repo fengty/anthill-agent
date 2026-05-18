@@ -268,6 +268,69 @@ def _citizen_model_preflight(nation: Nation) -> None:
     console.print()
 
 
+def _surface_pending_bg_deliveries(nation, config, stats) -> None:  # noqa: ANN001
+    """0.1.37 — notify user of background jobs that finished since last prompt.
+
+    Scoped to deliveries originating from THIS REPL session (so a job
+    started by `anthill bg ask` from another terminal doesn't pop into
+    THIS REPL — it'll surface in whichever surface started it).
+    Marks each notified job `delivered.json` so we don't re-notify
+    on every prompt tick.
+
+    Best-effort throughout: any filesystem hiccup is swallowed.
+    """
+    try:
+        from anthill.core.background import (
+            mark_delivered,
+            pending_deliveries,
+        )
+    except Exception:  # noqa: BLE001
+        return
+    session = getattr(stats, "session", None)
+    session_id = session.session_id if session else ""
+    try:
+        ndir = nation_dir(config.home, nation.name)
+        pending = pending_deliveries(
+            ndir,
+            origin_surface="repl",
+            origin_session_id=session_id,
+        )
+    except Exception:  # noqa: BLE001
+        return
+    for job in pending:
+        # Pull the FIRST 120 chars of the result for a one-line teaser.
+        snippet = ""
+        try:
+            log_text = job.log_path.read_text(encoding="utf-8")
+            # The "final answer" tends to be after the synthesis card
+            # but we don't reliably know where; just show last non-
+            # blank chunk.
+            lines = [ln for ln in log_text.splitlines() if ln.strip()]
+            if lines:
+                snippet = lines[-1][:120]
+        except OSError:
+            snippet = ""
+        ok = job.status == "completed"
+        icon = "✅" if ok else "⚠️"
+        req_short = job.request.replace("\n", " ")[:60]
+        if len(job.request) > 60:
+            req_short += "…"
+        console.print(
+            f"  {icon} [bold]background job done[/bold] "
+            f"[cyan]{job.job_id[:8]}[/cyan]  "
+            f"[dim]({job.runtime_seconds:.0f}s)[/dim]"
+        )
+        console.print(
+            f"     [dim]request:[/dim] {req_short}"
+        )
+        if snippet:
+            console.print(f"     [dim]↳ {snippet}[/dim]")
+        console.print(
+            f"     [dim]View full: [cyan]/bg show {job.job_id[:8]}[/cyan][/dim]"
+        )
+        mark_delivered(job)
+
+
 def _prompt_steer_choice(original_request: str) -> "str | None":
     """0.1.36 — interrupt-and-steer menu after Ctrl+C during an ask.
 
@@ -616,6 +679,9 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /recall X     full-text search every past ask in this nation
     /session      info about current + recent saved sessions
                   (resume from outside with: anthill --resume <id>)
+    /bg ask X     fire an ask in the background; result returns here
+                  automatically when done. /bg list and /bg show <id>
+                  for the rest.
 
   [bold]Mid-ask controls (0.1.36+)[/bold]
     Ctrl+C        pause the current ask → [c]ancel · [r]edirect with new instruction
@@ -2134,6 +2200,15 @@ def run_repl(
         _onboarding_card(nation)
 
     while True:
+        # 0.1.37 — background → REPL delivery. Before every prompt,
+        # surface any background jobs (started from THIS session via
+        # `/bg ask` slash or by the user explicitly tagging origin)
+        # that have completed since the last check. Mirrors Hermes's
+        # "Results arrive in the same chat automatically when the
+        # task finishes." Best-effort: file-system errors swallowed
+        # so the prompt never gets blocked by stale bg state.
+        _surface_pending_bg_deliveries(nation, config, stats)
+
         try:
             line = _read_request_line(prompt="» ")
         except (KeyboardInterrupt, EOFError):
@@ -2201,6 +2276,90 @@ def run_repl(
                 refreshed = load_nation(nation.name, config.home)
                 if refreshed is not None:
                     nation = refreshed
+            elif cmd in ("bg", "background"):
+                # 0.1.37 — `/bg <ask>` fires a background ask AND tags
+                # its origin as this REPL session, so the
+                # delivery-notifier above picks it up next prompt.
+                # `/bg list` shows recent jobs; `/bg show <id>` views.
+                arg = rest.strip()
+                sub = arg.split(" ", 1)[0].lower() if arg else ""
+                tail = arg.split(" ", 1)[1].strip() if " " in arg else ""
+                ndir = nation_dir(config.home, nation.name)
+                if sub == "list":
+                    from anthill.core.background import list_jobs
+                    jobs = list_jobs(ndir)
+                    if not jobs:
+                        console.print("  [dim]No background jobs yet.[/dim]")
+                    else:
+                        for j in jobs[:10]:
+                            icon = {
+                                "running": "•",
+                                "completed": "✓",
+                                "failed": "✗",
+                                "died": "?",
+                                "cancelled": "·",
+                            }.get(j.status, "·")
+                            req = j.request.replace("\n", " ")[:60]
+                            console.print(
+                                f"    {icon} [cyan]{j.job_id[:8]}[/cyan] "
+                                f"[dim]{j.status} · {j.runtime_seconds:.0f}s[/dim]  "
+                                f"{req}"
+                            )
+                elif sub == "show":
+                    if not tail:
+                        console.print(
+                            "[yellow]Usage: /bg show <job-id-or-prefix>[/yellow]"
+                        )
+                    else:
+                        from anthill.core.background import load_job, read_log
+                        j = load_job(tail, ndir)
+                        if j is None:
+                            console.print(
+                                f"[red]No background job matches '{tail}'.[/red]"
+                            )
+                        else:
+                            console.print(
+                                f"  [bold]{j.job_id}[/bold] "
+                                f"[dim]{j.status} · {j.runtime_seconds:.0f}s[/dim]"
+                            )
+                            console.print(f"  [dim]request:[/dim] {j.request}")
+                            log = read_log(j)
+                            if log.strip():
+                                console.print(log[-2000:])
+                elif sub in ("", "ask"):
+                    request_text = tail or arg
+                    if sub == "ask":
+                        request_text = tail
+                    if not request_text:
+                        console.print(
+                            "[yellow]Usage: /bg ask <request> | "
+                            "/bg list | /bg show <id>[/yellow]"
+                        )
+                    else:
+                        from anthill.core.background import start_background
+                        session = getattr(stats, "session", None)
+                        ndir.mkdir(parents=True, exist_ok=True)
+                        job = start_background(
+                            request_text, nation.name, ndir,
+                            origin_surface="repl",
+                            origin_session_id=(
+                                session.session_id if session else ""
+                            ),
+                        )
+                        console.print(
+                            f"  [green]Started[/green] background ask "
+                            f"[cyan]{job.job_id[:8]}[/cyan] "
+                            f"[dim](pid {job.pid})[/dim]"
+                        )
+                        console.print(
+                            "  [dim]It'll surface here when done; "
+                            "you can keep working.[/dim]"
+                        )
+                else:
+                    console.print(
+                        "[yellow]Usage: /bg ask <request> | "
+                        "/bg list | /bg show <id>[/yellow]"
+                    )
             elif cmd in ("session", "sessions"):
                 # 0.1.35 — inspect / list saved sessions. Mostly a
                 # debugging aid; main entry is `anthill --resume`.

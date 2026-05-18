@@ -81,7 +81,7 @@ KNOWN_SLASH_COMMANDS: tuple[str, ...] = (
     "/citizens", "/citizen",
     "/memory", "/mem", "/profile", "/preferences", "/prefs",
     "/remember", "/remember-me", "/recall",
-    "/session", "/sessions",
+    "/session", "/sessions", "/bg", "/background",
     "/rate", "/model", "/nation", "/plan", "/setup",
 )
 
@@ -153,6 +153,8 @@ class ReplCompleter:
             candidates = ("on", "off")
         elif slash in ("/citizens", "/citizen"):
             candidates = ("migrate", "migrate-all", "fix", "fix-all")
+        elif slash in ("/bg", "/background"):
+            candidates = ("ask", "list", "show")
         elif slash in ("/memory", "/mem"):
             candidates = ("edit", "path", "consolidate")
         elif slash in ("/profile", "/preferences", "/prefs"):
