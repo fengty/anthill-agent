@@ -50,9 +50,23 @@ DEFAULT_TOTAL_CHARS = 30000
 # response as "this is a login wall, the real content isn't here."
 # Skips wasting tokens on an HTML login form.
 _LOGIN_WALL_MARKERS = (
-    "login", "sign in", "请登录", "请登陆", "用户登录",
-    "session expired", "unauthorized", "您没有权限",
+    "login", "log in", "sign in", "signin",
+    "请登录", "请登陆", "用户登录", "登录页", "登录注册",
+    "session expired", "unauthorized", "您没有权限", "未授权",
+    "auth required", "authentication required",
+    "禅道", "zentao",   # 0.1.39: real-user case — Zentao redirects to /user-login
+    "csrf", "_csrf",
 )
+
+# 0.1.39 — "thin content" trip. The real-user Zentao URL returned
+# ~100 bytes (probably a meta-refresh redirect to /login). That's
+# below ANY real bug-tracker page. If the stripped text is under
+# this threshold AND we expected substantive content, treat as
+# "fetched but unusable" — show the user, don't feed Scout
+# garbage. 500 chars covers the common "minimal redirect HTML" /
+# "empty error JSON" / "captcha gate" cases without false-flagging
+# genuinely brief but useful pages (which are rare on the modern web).
+THIN_CONTENT_THRESHOLD_CHARS = 500
 
 
 @dataclass
@@ -221,6 +235,23 @@ async def expand_urls_async(
                     reason=(
                         "fetched but looks like a login wall — "
                         "paste the content directly if you can"
+                    ),
+                )
+            )
+            continue
+        # 0.1.39 — thin-content demotion. If the response is too
+        # short to plausibly be the page the user wanted, treat it
+        # the same way as a login wall. Avoids the real-user case
+        # where Zentao returned ~100 bytes (a redirect stub) and
+        # we'd happily inline it as if it were a bug report.
+        if fetched.char_count < THIN_CONTENT_THRESHOLD_CHARS:
+            block.errors.append(
+                FetchError(
+                    url=url,
+                    reason=(
+                        f"fetched only {fetched.char_count} chars — "
+                        f"looks like a redirect / auth gate / empty "
+                        f"response. Paste the content directly."
                     ),
                 )
             )

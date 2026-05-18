@@ -116,8 +116,14 @@ async def test_expand_urls_fetches_and_renders(monkeypatch) -> None:
     from anthill.core.url_attachments import expand_urls_async
     from anthill.plugins.base import PluginResult
 
+    # Body needs to clear the 500-char thin-content threshold so it
+    # actually lands in `fetched` rather than getting demoted to error.
+    body = (
+        "actual bug body content here " * 50
+    )
+
     async def fake_call(self, *, url, max_chars=4000, **_):
-        return PluginResult(output="actual bug body content here", ok=True)
+        return PluginResult(output=body, ok=True)
 
     monkeypatch.setattr(
         "anthill.plugins.web.WebFetchPlugin.call", fake_call
@@ -155,11 +161,16 @@ async def test_expand_urls_demotes_login_walls(monkeypatch) -> None:
     from anthill.core.url_attachments import expand_urls_async
     from anthill.plugins.base import PluginResult
 
+    # Long enough to clear thin-content threshold; relies on marker
+    # density instead. Mimics a typical full login page.
+    body = (
+        "Please login. Sign in below to continue. "
+        "Your session expired and authentication is required to view this page. "
+        * 30
+    )
+
     async def fake_call(self, *, url, max_chars=4000, **_):
-        return PluginResult(
-            output="Please login. Sign in below to continue.",
-            ok=True,
-        )
+        return PluginResult(output=body, ok=True)
 
     monkeypatch.setattr(
         "anthill.plugins.web.WebFetchPlugin.call", fake_call
@@ -168,6 +179,81 @@ async def test_expand_urls_demotes_login_walls(monkeypatch) -> None:
     assert block.fetched == []
     assert len(block.errors) == 1
     assert "login" in block.errors[0].reason.lower()
+
+
+@pytest.mark.asyncio
+async def test_expand_urls_demotes_thin_content(monkeypatch) -> None:
+    """0.1.39 — the real-user Zentao case. A 100-byte response is
+    almost certainly a redirect / auth gate, not the real page.
+    Demote to error with a useful hint."""
+    from anthill.core.url_attachments import expand_urls_async
+    from anthill.plugins.base import PluginResult
+
+    async def fake_call(self, *, url, max_chars=4000, **_):
+        # 100 chars total — way below THIN_CONTENT_THRESHOLD_CHARS (500)
+        return PluginResult(output="redirecting..." + "x" * 80, ok=True)
+
+    monkeypatch.setattr(
+        "anthill.plugins.web.WebFetchPlugin.call", fake_call
+    )
+    block = await expand_urls_async("https://gated.example/secret")
+    assert block.fetched == []
+    assert len(block.errors) == 1
+    # Hint should mention the byte count + the remedy.
+    err = block.errors[0]
+    assert "chars" in err.reason or "char" in err.reason
+    assert "paste" in err.reason.lower()
+
+
+@pytest.mark.asyncio
+async def test_expand_urls_zentao_marker_caught(monkeypatch) -> None:
+    """A Zentao login page typically mentions 'Zentao' / '禅道' more than once."""
+    from anthill.core.url_attachments import expand_urls_async
+    from anthill.plugins.base import PluginResult
+
+    async def fake_call(self, *, url, max_chars=4000, **_):
+        # Long enough to skip the thin-content trip; relies on
+        # marker count instead.
+        body = (
+            "禅道项目管理系统 用户登录 Zentao login required. "
+            * 100
+        )
+        return PluginResult(output=body, ok=True)
+
+    monkeypatch.setattr(
+        "anthill.plugins.web.WebFetchPlugin.call", fake_call
+    )
+    block = await expand_urls_async("https://zentao.example/bug/1")
+    assert block.fetched == []
+    assert len(block.errors) == 1
+    assert "login" in block.errors[0].reason.lower()
+
+
+@pytest.mark.asyncio
+async def test_expand_urls_accepts_real_content(monkeypatch) -> None:
+    """Mirror test: a substantial body that doesn't hit any wall
+    markers DOES get inlined. Guards against the thin-content
+    threshold being too aggressive."""
+    from anthill.core.url_attachments import expand_urls_async
+    from anthill.plugins.base import PluginResult
+
+    body = (
+        "## Bug 56128 — Cannot save changes\n\n"
+        "Reproduction: click Save twice and the second click silently "
+        "drops the form state. Affects every browser tested."
+        * 5
+    )
+
+    async def fake_call(self, *, url, max_chars=4000, **_):
+        return PluginResult(output=body, ok=True)
+
+    monkeypatch.setattr(
+        "anthill.plugins.web.WebFetchPlugin.call", fake_call
+    )
+    block = await expand_urls_async("https://example.com/bug/56128")
+    assert len(block.fetched) == 1
+    assert block.fetched[0].char_count > 500
+    assert "Bug 56128" in block.fetched[0].content
 
 
 @pytest.mark.asyncio
@@ -215,8 +301,10 @@ def test_expand_urls_sync_wrapper_works(monkeypatch) -> None:
     from anthill.core.url_attachments import expand_urls
     from anthill.plugins.base import PluginResult
 
+    body = "hello world " * 60  # clears 500-char threshold
+
     async def fake_call(self, *, url, max_chars=4000, **_):
-        return PluginResult(output="hello world", ok=True)
+        return PluginResult(output=body, ok=True)
 
     monkeypatch.setattr(
         "anthill.plugins.web.WebFetchPlugin.call", fake_call
