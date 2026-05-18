@@ -265,3 +265,78 @@ def test_session_turn_from_dict_loads_timings() -> None:
     }
     turn = SessionTurn.from_dict(d)
     assert turn.timings == {"total_seconds": 5.0, "plan_source": "trivial"}
+
+
+# --- 0.1.47 — clarify_seconds captures the "hidden" pre-Scout cost --------
+
+
+def test_asktimings_clarify_seconds_defaults_none() -> None:
+    """When clarify didn't run, the field is None (not 0.0) — so post-hoc
+    analysis can tell "clarify skipped" apart from "clarify ran in 0s"."""
+    t = AskTimings()
+    assert t.clarify_seconds is None
+    assert t.to_dict()["clarify_seconds"] is None
+
+
+def test_asktimings_clarify_seconds_round_trips() -> None:
+    t = AskTimings(clarify_seconds=7.42)
+    assert t.to_dict()["clarify_seconds"] == 7.42
+
+
+@pytest.mark.asyncio
+async def test_ask_captures_clarify_seconds_when_clarifier_runs(monkeypatch) -> None:
+    """Wire on_clarify into a non-trivial ask → clarify_seconds > 0."""
+    import asyncio
+
+    from anthill.core import clarify as clarify_module
+
+    n = Nation(name="t")
+    n.agents = [Agent(id="ant-1", model="x")]
+
+    async def fake_run(task_type, prompt, **kwargs):  # noqa: ANN001, ANN201, ARG002
+        return _ok_result(task_type)
+
+    n.run = fake_run  # type: ignore[assignment]
+
+    async def fake_plan(self, *a, **kw):  # noqa: ANN001, ANN201, ARG002
+        return _Plan(subtasks=[_Sub("general", "do it", [])])
+
+    monkeypatch.setattr(_Scout, "plan", fake_plan)
+
+    # Stub maybe_clarify to add measurable delay and return the request
+    # unchanged. This is the SAME code path Nation.ask hits — we just
+    # make its cost visible.
+    async def slow_clarify(nation, request, handler):  # noqa: ANN001, ANN201, ARG001
+        await asyncio.sleep(0.02)
+        return request
+
+    monkeypatch.setattr(clarify_module, "maybe_clarify", slow_clarify)
+
+    async def handler(_q):  # noqa: ANN001, ANN202
+        return "ok"
+
+    result = await n.ask(
+        "help me figure out a presentation thing for next week",
+        on_clarify=handler,
+    )
+    assert result.timings.clarify_seconds is not None
+    assert result.timings.clarify_seconds >= 0.015
+
+
+@pytest.mark.asyncio
+async def test_ask_clarify_seconds_none_on_trivial(monkeypatch) -> None:
+    """Trivial requests skip clarify; the field stays None."""
+    n = Nation(name="t")
+    n.agents = [Agent(id="ant-1", model="x")]
+
+    async def fake_run(task_type, prompt, **kwargs):  # noqa: ANN001, ANN201, ARG002
+        return _ok_result(task_type)
+
+    n.run = fake_run  # type: ignore[assignment]
+
+    async def handler(_q):  # noqa: ANN001, ANN202
+        return "ok"
+
+    # "hi" is trivial → fast_classify == "trivial" → clarify skipped.
+    result = await n.ask("hi", on_clarify=handler)
+    assert result.timings.clarify_seconds is None

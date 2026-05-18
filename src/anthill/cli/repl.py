@@ -1539,6 +1539,10 @@ async def _handle_ask(
     timings = getattr(result, "timings", None)
     if timings is not None and timings.total_seconds > 0:
         parts: list[str] = []
+        # 0.1.47 — show clarify before Scout. If it dominated total,
+        # user immediately sees "the clarifier ate 7s, not the work".
+        if getattr(timings, "clarify_seconds", None) is not None:
+            parts.append(f"Clarify {timings.clarify_seconds:.1f}s")
         if timings.scout_seconds is not None:
             parts.append(f"Scout {timings.scout_seconds:.1f}s")
         for tt, secs in timings.subtask_seconds:

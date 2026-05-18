@@ -69,10 +69,17 @@ class AskTimings:
     (parallel subtasks within a wave will overlap, so summing them
     overshoots `total_seconds` by design — that's how the user can
     SEE parallelism happened).
+
+    0.1.47 added `clarify_seconds` after a real user-reported case
+    where total=11.8s but Scout(1.5s)+general(2.9s)=4.4s only — the
+    missing 7.4s turned out to be `maybe_clarify` running invisibly.
     """
 
     total_seconds: float = 0.0
     scout_seconds: float | None = None
+    # 0.1.47 — `maybe_clarify` round-trip when on_clarify is wired
+    # AND the request isn't trivial. None when clarify was skipped.
+    clarify_seconds: float | None = None
     # (task_type, wall_clock_seconds) per subtask, in plan order.
     subtask_seconds: list[tuple[str, float]] = field(default_factory=list)
     # Count of attempts whose failure_reason was user_serving_refusal —
@@ -94,6 +101,11 @@ class AskTimings:
             "scout_seconds": (
                 round(self.scout_seconds, 3)
                 if self.scout_seconds is not None
+                else None
+            ),
+            "clarify_seconds": (
+                round(self.clarify_seconds, 3)
+                if self.clarify_seconds is not None
                 else None
             ),
             "subtask_seconds": [
@@ -495,7 +507,11 @@ class Nation:
             from anthill.core.clarify import maybe_clarify
             from anthill.core.complexity import fast_classify
             if fast_classify(request) != "trivial":
+                # 0.1.47 — capture clarify wall-clock. This was the
+                # 7.4s "hidden" cost in real session logs.
+                _clarify_t0 = time.perf_counter()
                 request = await maybe_clarify(self, request, on_clarify)
+                timings.clarify_seconds = time.perf_counter() - _clarify_t0
 
         # Track which history entries Scout actually read, for the REPL
         # "📚 borrowed from" line. Stays empty on resume / pre_plan /
