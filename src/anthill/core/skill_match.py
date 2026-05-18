@@ -198,6 +198,121 @@ def suggest_distillation(
     )
 
 
+# 0.1.45 — patterns that should NEVER be saved as skills regardless
+# of how many times they repeat. "你好"+3 fires mining but isn't a
+# workflow; a recipe of it is dead weight. List intentionally short
+# — only obvious pleasantries / meta-asks. Longer wishlist goes in
+# the "soft signal" section (multi-subtask, variable content, etc).
+#
+# Matched against normalized request (lowercased, punctuation stripped).
+# Patterns are SUBSTRINGS not regex — keep it boring & fast.
+_TRIVIAL_PATTERNS: tuple[str, ...] = (
+    # English pleasantries
+    "hi", "hello", "hey", "yo", "sup",
+    "thanks", "thank you", "thx", "ty",
+    "bye", "goodbye", "see you", "see ya",
+    "ok", "okay", "k", "got it",
+    "test", "ping", "ack",
+    "how are you", "whats up", "what s up",
+    # Chinese pleasantries (lowercase irrelevant for hanzi)
+    "你好", "您好", "在吗", "在么", "在不在",
+    "谢谢", "感谢", "thx", "多谢",
+    "再见", "拜拜", "晚安", "早上好", "下午好", "晚上好",
+    "好的", "好", "嗯", "嗯嗯", "收到",
+    "测试", "测一下",
+)
+
+
+def is_trivial_request(request: str) -> bool:
+    """0.1.45 — does the request look like a pleasantry / meta-ask
+    that's never worth saving as a skill, no matter how many times
+    it repeats?
+
+    Strict match: the normalized request equals or is contained in
+    one of the trivial patterns. We do NOT do substring-of-request
+    (which would flag "你好 can you analyze X" as trivial). Instead
+    we strip punctuation/whitespace and check if what's left IS the
+    pattern. Bag-of-tokens (`你好 啊`) also matches because the
+    normalized form drops whitespace.
+    """
+    # Lowercase + strip punctuation + collapse whitespace, same shape
+    # as plan_cache.normalise_request. We want "你好！" and "你好 "
+    # to both count as the literal greeting.
+    import re as _re
+    cleaned = _re.sub(r"[^\w]", "", request.lower())
+    if not cleaned:
+        return True  # empty request is the most trivial possible case
+    for pat in _TRIVIAL_PATTERNS:
+        pat_cleaned = _re.sub(r"[^\w]", "", pat.lower())
+        if cleaned == pat_cleaned:
+            return True
+    return False
+
+
+def worth_saving_as_skill(
+    request: str,
+    *,
+    plan_subtasks: Iterable[object] | None = None,
+    had_refusal_retry: bool = False,
+) -> tuple[bool, str]:
+    """0.1.45 — should this ask be saved as a reusable skill?
+
+    Both the post-success auto-distillation (0.1.43) and the mining
+    hint (0.1.17) need to agree on this question — otherwise users
+    see "save 你好 as a skill" (mining false positive) while we
+    silently refuse to auto-save it (correctly). One filter, one
+    source of truth.
+
+    Decision tree:
+      1. Trivial pattern → NEVER worth it. (greetings, "ok", "test")
+      2. Single-subtask plan → workflow doesn't exist; just direct Q&A.
+      3. Multi-subtask + refusal-retry → STRONGLY worth it (citizens
+         had to work it out from scratch).
+      4. Multi-subtask + variable content (URL/ID/date) → worth it
+         (template will match future related asks).
+      5. Multi-subtask + diverse task_types (not all "general") →
+         worth it (real decomposition happened).
+      6. Otherwise → not worth it for now.
+
+    Returns (verdict, reason). The reason is a short human-readable
+    string so the REPL can explain "we didn't suggest this because
+    plan was single-subtask" instead of staying silent.
+    """
+    if is_trivial_request(request):
+        return False, "trivial pattern (greeting/pleasantry)"
+
+    subtasks = list(plan_subtasks) if plan_subtasks is not None else []
+    plan_size = len(subtasks)
+
+    if plan_size < 2:
+        return False, "single-subtask asks aren't workflows"
+
+    if had_refusal_retry:
+        return True, "complex ask that required refusal-retry — high signal"
+
+    # Variable content = URL / numeric id / date in request. Strong
+    # signal that the recipe template will MATCH future related asks
+    # ("analyze bug 12345" → next time it's "analyze bug 67890" still
+    # hits via {id} placeholder).
+    if any(p.search(request) for p, _ in _VARIABLE_PATTERNS):
+        return True, "request has variable content (URL/ID/date) — reusable template"
+
+    # Diverse task_types = real decomposition. If every subtask is
+    # "general" the plan didn't really specialize, so saving it
+    # wouldn't teach the nation anything new.
+    task_types: set[str] = set()
+    for s in subtasks:
+        tt = getattr(s, "task_type", None)
+        if isinstance(tt, str):
+            task_types.add(tt)
+    if len(task_types) >= 2:
+        return True, f"diverse task_types ({len(task_types)}) — real decomposition"
+    if task_types and "general" not in task_types:
+        return True, "specialized task_type — non-trivial work"
+
+    return False, "no strong reuse signal yet"
+
+
 def unique_slug(base: str, existing: Iterable[str]) -> str:
     """Pick a non-colliding slug. Returns ``base`` if free, else
     ``base-2``, ``base-3``, … until we find a fresh one.

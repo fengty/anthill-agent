@@ -1709,9 +1709,15 @@ async def _handle_ask(
     # 0.1.17 — skill auto-mining hint. After history is appended,
     # scan for clusters of similar past asks and nudge the user once
     # per session per cluster if the current request belongs to one
-    # with ≥3 occurrences. Keeps the user in control: we *notice*
-    # the pattern; they decide whether it deserves a name.
+    # with ≥3 occurrences.
+    #
+    # 0.1.45 — apply `worth_saving_as_skill` filter so "你好"×3
+    # never triggers the suggestion. Mining detects the *pattern*;
+    # judgment decides whether it's a *skill*. Same filter used by
+    # auto-save below, so the two never disagree (no more "we
+    # suggest you save 你好 but silently refuse to auto-save it").
     try:
+        from anthill.core.skill_match import worth_saving_as_skill
         from anthill.core.skill_mining import looks_like_new_match, mine_skills
         history_now = load_history(nation_dir(config.home, nation.name))
         for skill in mine_skills(history_now):
@@ -1720,12 +1726,23 @@ async def _handle_ask(
                 continue
             if not looks_like_new_match(skill, request):
                 continue
+            verdict, _reason = worth_saving_as_skill(
+                skill.representative,
+                plan_subtasks=result.plan.subtasks,
+            )
+            if not verdict:
+                # Pattern repeats but isn't skill-worthy. Mark it
+                # suggested so we don't re-evaluate every turn —
+                # the filter result for "你好" doesn't change with
+                # repetition count.
+                stats.suggested_skill_ids.add(cluster_key)
+                continue
             stats.suggested_skill_ids.add(cluster_key)
             snippet = skill.representative.replace("\n", " ")[:60]
             console.print(
                 f"  [dim]💡 you've asked things like '{snippet}…' "
                 f"{skill.occurrences} times. Run "
-                f"[cyan]anthill recipe save[/cyan] to bake a skill.[/dim]"
+                f"[cyan]/skill save <name>[/cyan] to bake a skill.[/dim]"
             )
             break  # one hint per ask is enough
     except Exception:  # noqa: BLE001 — mining is best-effort, never break the REPL
@@ -1749,6 +1766,7 @@ async def _handle_ask(
         from anthill.core.skill_match import (
             distill_request_to_recipe_fields,
             find_matching_skill,
+            worth_saving_as_skill,
         )
         ndir = nation_dir(config.home, nation.name)
         had_refusal_retry = any(
@@ -1756,11 +1774,18 @@ async def _handle_ask(
             for o in result.outcomes
             for a in o.attempts
         )
-        plan_size = len(result.plan.subtasks)
         already_skill = find_matching_skill(request, ndir) is not None
+        # 0.1.45 — single filter for "is this a skill?". Was implicit
+        # before via inline conditions; now explicit + shared with the
+        # mining hint above so the two paths can't disagree.
+        verdict, _reason = worth_saving_as_skill(
+            request,
+            plan_subtasks=result.plan.subtasks,
+            had_refusal_retry=had_refusal_retry,
+        )
+        plan_size = len(result.plan.subtasks)
         if (
-            had_refusal_retry
-            and plan_size >= 2
+            verdict
             and not already_skill
             and result.final_output
         ):

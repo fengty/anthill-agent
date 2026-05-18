@@ -26,8 +26,10 @@ from anthill.core.skill_match import (
     SkillMatch,
     distill_request_to_recipe_fields,
     find_matching_skill,
+    is_trivial_request,
     suggest_distillation,
     unique_slug,
+    worth_saving_as_skill,
 )
 
 
@@ -377,3 +379,134 @@ def test_distill_request_to_recipe_fields_empty_plan() -> None:
     assert slug
     assert subs == []
     assert "{id}" in template
+
+
+# --- is_trivial_request (0.1.45 — judgment for what's NOT a skill) ---------
+
+
+class _FakeSubtask:
+    """Minimal stand-in for scout.Subtask in worth_saving_as_skill tests."""
+
+    def __init__(self, task_type: str) -> None:
+        self.task_type = task_type
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "你好",
+        "您好",
+        "你好！",      # punctuation stripped
+        "你好 ",        # trailing space stripped
+        "hi",
+        "Hi",          # case-insensitive
+        "hello",
+        "thanks",
+        "thank you",
+        "ok",
+        "好的",
+        "再见",
+        "test",
+        "ping",
+        "",             # empty == most trivial
+    ],
+)
+def test_is_trivial_request_matches_pleasantries(request_text: str) -> None:
+    assert is_trivial_request(request_text), (
+        f"{request_text!r} should be flagged as trivial — it's a pleasantry, "
+        f"not a skill candidate"
+    )
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "analyze zentao bug 56128 root cause",
+        "你好 can you analyze this bug",  # leading hi but real ask underneath
+        "translate this document to French",
+        "summarize the standup notes from last week",
+        "帮我分析下这个 bug",
+        "write a tutorial about decorators",
+    ],
+)
+def test_is_trivial_request_lets_real_asks_through(request_text: str) -> None:
+    assert not is_trivial_request(request_text), (
+        f"{request_text!r} should NOT be flagged as trivial — it's a real ask"
+    )
+
+
+# --- worth_saving_as_skill (the unified gate) ------------------------------
+
+
+def test_worth_saving_rejects_trivial_pattern() -> None:
+    # The 0.1.45 motivating case: "你好"×3 fires mining but must NOT
+    # be saved. This is the test that watches over the user's
+    # complaint "你好不值得".
+    ok, reason = worth_saving_as_skill(
+        "你好",
+        plan_subtasks=[_FakeSubtask("general")] * 3,
+        had_refusal_retry=False,
+    )
+    assert ok is False
+    assert "trivial" in reason.lower()
+
+
+def test_worth_saving_rejects_single_subtask_plan() -> None:
+    # Even a real-looking question is not a "skill" if it ran as a
+    # single subtask — there's no workflow to recall.
+    ok, reason = worth_saving_as_skill(
+        "what's the capital of France",
+        plan_subtasks=[_FakeSubtask("general")],
+    )
+    assert ok is False
+    assert "single-subtask" in reason.lower() or "workflow" in reason.lower()
+
+
+def test_worth_saving_accepts_refusal_retry_multi_subtask() -> None:
+    # Strongest positive signal: citizens had to push past a refusal
+    # AND the work was multi-step. This is the 0.1.43 auto-save case.
+    ok, _ = worth_saving_as_skill(
+        "analyze the failing build and report the root cause",
+        plan_subtasks=[_FakeSubtask("research"), _FakeSubtask("analyze")],
+        had_refusal_retry=True,
+    )
+    assert ok is True
+
+
+def test_worth_saving_accepts_variable_content() -> None:
+    # Multi-subtask + a URL in the request → reusable template (next
+    # zentao URL will also match). Save it.
+    ok, reason = worth_saving_as_skill(
+        "analyze https://example.com/zentao/bug-56128.html",
+        plan_subtasks=[_FakeSubtask("research"), _FakeSubtask("analyze")],
+    )
+    assert ok is True
+    assert "url" in reason.lower() or "variable" in reason.lower()
+
+
+def test_worth_saving_accepts_diverse_task_types() -> None:
+    # Multi-subtask + different task_types → real decomposition.
+    ok, reason = worth_saving_as_skill(
+        "review this proposal and write feedback",
+        plan_subtasks=[_FakeSubtask("research"), _FakeSubtask("analyze")],
+    )
+    assert ok is True
+    assert "decomposition" in reason.lower() or "task" in reason.lower()
+
+
+def test_worth_saving_rejects_homogeneous_general_plan() -> None:
+    # Multi-subtask but every subtask is "general" + no variable
+    # content + no refusal — the plan didn't really specialize, no
+    # reuse signal to save.
+    ok, reason = worth_saving_as_skill(
+        "tell me something interesting",
+        plan_subtasks=[_FakeSubtask("general"), _FakeSubtask("general")],
+    )
+    assert ok is False
+    assert "signal" in reason.lower() or "reuse" in reason.lower()
+
+
+def test_worth_saving_handles_none_plan() -> None:
+    # Defensive: None plan_subtasks shouldn't crash, just rejects.
+    ok, _ = worth_saving_as_skill("your usual ask")
+    assert ok is False
