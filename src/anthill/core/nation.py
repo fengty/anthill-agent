@@ -148,6 +148,12 @@ class Nation:
     scout_model: str = "deepseek-chat"
     plan_cache: dict[str, CachedPlan] = field(default_factory=dict)
     last_ask_cache_hit: bool = field(default=False, repr=False)
+    # 0.1.42 — skill-first plan lookup. When the most recent ask
+    # was served by a saved recipe (instead of Scout planning),
+    # this holds the SkillMatch so the REPL can render "📚 using
+    # skill X" and the post-ask hook can skip the distillation
+    # prompt (we already had a skill for this).
+    last_matched_skill: object = field(default=None, repr=False)
     # 0.1.29 — persistent memory injection. Composed by the REPL / CLI
     # at session start from USER.md (global) + MEMORY.md (per-nation),
     # then appended to every Scout + worker system prompt by
@@ -443,8 +449,38 @@ class Nation:
             self.last_ask_cache_hit = False
             inflight = InflightAsk.new(request=request, plan=plan) if nation_dir else None
         else:
+            # 0.1.42 — skill-first plan lookup. Before letting Scout
+            # regenerate the same plan shape for a recurring request,
+            # search the nation's saved recipes for a match. Matches
+            # the "用户是国王，子民先查家底" philosophy: ask comes in,
+            # citizens FIRST check what's already known how to do.
+            skill_match = None
+            if nation_dir is not None:
+                try:
+                    from anthill.core.skill_match import find_matching_skill
+                    skill_match = find_matching_skill(request, nation_dir)
+                except Exception:  # noqa: BLE001 — skill lookup must never block
+                    skill_match = None
             cached = cache_lookup(request, self.plan_cache)
-            if cached is not None:
+            if skill_match is not None and skill_match.recipe.subtasks:
+                # Found a saved skill — use its subtask list directly,
+                # bypassing Scout. Equivalent to the pre_plan path but
+                # auto-chosen, with the skill recorded for the REPL
+                # to surface via "📚 using skill X".
+                plan = Plan(
+                    subtasks=[
+                        Subtask(
+                            task_type=s.task_type,
+                            prompt=s.prompt_template,
+                            depends_on=list(s.depends_on),
+                        )
+                        for s in skill_match.recipe.subtasks
+                    ],
+                    complexity="normal",
+                )
+                self.last_ask_cache_hit = False
+                self.last_matched_skill = skill_match
+            elif cached is not None:
                 plan = cached.plan
                 self.last_ask_cache_hit = True
             else:

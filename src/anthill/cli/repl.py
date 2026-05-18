@@ -663,6 +663,9 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /history      recent asks
     /project      project context Scout sees (cwd, git branch, files)
     /skills       recurring patterns the nation has noticed in history
+    /skill save X distill the last complex ask into a named skill
+                  (next similar ask uses it automatically)
+    /skill list   show all saved skills
     /memory       this nation's persistent MEMORY.md
     /memory consolidate
                   dedup near-duplicates, archive overflow
@@ -1508,6 +1511,22 @@ async def _handle_ask(
         )
     save_nation(nation, config.home)
 
+    # 0.1.42 — surface skill match if Nation.ask used a saved recipe
+    # instead of letting Scout regenerate the plan. Shown AFTER
+    # execution so the user sees both the match line and the
+    # finished output without ordering confusion. The match check
+    # uses last_matched_skill which gets set in nation.ask only when
+    # a skill bypassed Scout.
+    matched = getattr(nation, "last_matched_skill", None)
+    if matched is not None:
+        console.print(
+            f"  [dim]📚 used skill [cyan]{matched.recipe.name}[/cyan] "
+            f"({int(matched.confidence * 100)}% match via "
+            f"{matched.matched_via})[/dim]"
+        )
+        # Clear the marker so the next ask doesn't re-print.
+        nation.last_matched_skill = None
+
     # v0.1.13 — plan review cancelled the ask. No outcomes to record;
     # don't dirty history / last-ask / usage logs.
     if getattr(result, "cancelled_by_user", False):
@@ -1673,6 +1692,48 @@ async def _handle_ask(
             break  # one hint per ask is enough
     except Exception:  # noqa: BLE001 — mining is best-effort, never break the REPL
         pass
+
+    # 0.1.42 — post-success distillation prompt. When a complex ask
+    # completes successfully WITHOUT a saved skill matching it
+    # (last_matched_skill is None at the start of this ask), AND
+    # the citizens had to retry-after-refusal (meaning we learned a
+    # NEW resourceful approach), surface a one-line "💾 save as
+    # skill?" hint. Cheap nudge; user runs `/skill save <name>` to
+    # commit. This closes the user's correction loop: 接到任务 →
+    # 没有现成 skill → 子民想办法做出来 → 沉淀成 skill 下次直接用.
+    try:
+        from anthill.core.skill_match import (
+            find_matching_skill,
+            suggest_distillation,
+        )
+        ndir = nation_dir(config.home, nation.name)
+        # Did the citizens have to retry past a refusal in this ask?
+        # That's our signal "this was a non-trivial path worth saving."
+        had_refusal_retry = any(
+            (a.failure_reason == "user_serving_refusal")
+            for o in result.outcomes
+            for a in o.attempts
+        )
+        plan_size = len(result.plan.subtasks)
+        already_skill = find_matching_skill(request, ndir) is not None
+        if (
+            had_refusal_retry
+            and plan_size >= 2
+            and not already_skill
+            and result.final_output
+        ):
+            sug = suggest_distillation(
+                request,
+                [s.task_type for s in result.plan.subtasks],
+            )
+            console.print(
+                f"  [dim]💾 the citizens just figured this out from "
+                f"scratch. Save as skill [cyan]{sug.suggested_name}[/cyan]?"
+                f"  → [cyan]/skill save {sug.suggested_name}[/cyan][/dim]"
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
     for outcome in result.outcomes:
         for attempt in outcome.attempts:
             agent = next((a for a in nation.agents if a.id == attempt.agent_id), None)
@@ -2766,7 +2827,87 @@ def run_repl(
                         console.print(
                             "  [dim]/citizens migrate-all  reset ALL to default[/dim]"
                         )
-            elif cmd in ("skills", "skill"):
+            elif cmd == "skill":
+                # 0.1.42 — `/skill save <name>` distills the most-recent
+                # complex ask into a saved recipe. The recipe is keyed
+                # off the last_ask record so it picks up the actual
+                # plan + request shape Anthill just ran.
+                arg = rest.strip()
+                sub = arg.split(" ", 1)[0].lower() if arg else ""
+                tail = arg.split(" ", 1)[1].strip() if " " in arg else ""
+                ndir = nation_dir(config.home, nation.name)
+                if sub == "save":
+                    if not tail:
+                        console.print(
+                            "[yellow]Usage: /skill save <skill-name>[/yellow]"
+                        )
+                    else:
+                        try:
+                            from anthill.core.feedback import load_last_ask
+                            from anthill.core.recipes import (
+                                Recipe,
+                                RecipeSubtask,
+                                save_recipe,
+                            )
+                            from anthill.core.skill_match import suggest_distillation
+                            last = load_last_ask(ndir)
+                            if last is None:
+                                console.print(
+                                    "  [yellow]No recent ask to distill yet.[/yellow]"
+                                )
+                            else:
+                                # Pull the plan from the last ask. last_ask
+                                # stores task_types; pair them with a
+                                # generic template like the original request.
+                                sug = suggest_distillation(
+                                    last.request,
+                                    [tt for _, tt in last.pairs],
+                                )
+                                recipe = Recipe(
+                                    name=tail,
+                                    template=sug.template_seed,
+                                    description=last.request[:120],
+                                    subtasks=[
+                                        RecipeSubtask(
+                                            task_type=tt,
+                                            prompt_template=sug.template_seed,
+                                            depends_on=[],
+                                        )
+                                        for _, tt in last.pairs
+                                    ],
+                                )
+                                save_recipe(recipe, ndir)
+                                console.print(
+                                    f"  [green]✓[/green] saved skill "
+                                    f"[cyan]{tail}[/cyan] "
+                                    f"[dim]({len(recipe.subtasks)} subtask(s)) — "
+                                    f"will auto-match similar future asks[/dim]"
+                                )
+                        except Exception as e:  # noqa: BLE001
+                            console.print(f"  [red]save failed: {e}[/red]")
+                elif sub == "list" or sub == "":
+                    try:
+                        from anthill.core.recipes import list_recipes
+                        names = list_recipes(ndir)
+                        if not names:
+                            console.print(
+                                "  [dim]No saved skills yet. After a complex ask "
+                                "succeeds, run [cyan]/skill save <name>[/cyan].[/dim]"
+                            )
+                        else:
+                            console.print(
+                                f"  [bold]{len(names)} saved skill(s):[/bold]"
+                            )
+                            for name in names:
+                                console.print(f"    [cyan]{name}[/cyan]")
+                    except Exception as e:  # noqa: BLE001
+                        console.print(f"  [red]{e}[/red]")
+                else:
+                    console.print(
+                        "[yellow]Usage: /skill save <name> | "
+                        "/skill list[/yellow]"
+                    )
+            elif cmd in ("skills",):
                 # 0.1.17 — show what skill_mining sees in this nation's
                 # history. Useful for "what does the system think I do
                 # a lot?" without waiting for a nudge.
