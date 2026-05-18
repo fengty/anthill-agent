@@ -1102,6 +1102,38 @@ async def _handle_ask(
         )
     effective_request = attachment_block.render() + request
 
+    # 0.1.38 — URL auto-attachment. When the user pastes a http(s)
+    # URL in their request, fetch it BEFORE Scout sees the prompt
+    # and inline the readable text. Mirrors @file (0.1.11) but for
+    # URLs. Closes the real-user gap "贴了 URL，Anthill 说我不会
+    # 浏览网页." Login-walled pages are detected and skipped with
+    # a friendly hint instead of feeding HTML into the prompt.
+    try:
+        from anthill.core.url_attachments import expand_urls
+        url_block = expand_urls(request)
+        if url_block.fetched:
+            hosts = ", ".join(f.display_host for f in url_block.fetched[:3])
+            if len(url_block.fetched) > 3:
+                hosts += f" (+{len(url_block.fetched) - 3} more)"
+            total_kb = sum(f.char_count for f in url_block.fetched) / 1024
+            console.print(
+                f"  [dim]🔗 fetched {len(url_block.fetched)} URL(s): "
+                f"{hosts} · {total_kb:.1f} KB[/dim]"
+            )
+        for err in url_block.errors:
+            console.print(
+                f"  [yellow]⚠ skipped {err.url}[/yellow] "
+                f"[dim]({err.reason})[/dim]"
+            )
+        # Block rendered text goes IN FRONT of any @file block and
+        # in front of the user request, so Scout sees the fetched
+        # context before the question.
+        rendered = url_block.render()
+        if rendered:
+            effective_request = rendered + effective_request
+    except Exception:  # noqa: BLE001 — URL fetch must never break the REPL
+        pass
+
     # 0.1.28 — conversation memory injection. When the current ask
     # looks like a follow-up ("我说的是 2026 年的", "tell me more",
     # short ambiguous fragment after a real ask), prepend the recent
