@@ -564,6 +564,17 @@ class Nation:
                 self.last_ask_cache_hit = False
                 self.last_matched_skill = skill_match
                 timings.plan_source = "skill"
+                # 0.1.49 — close the data loop. Bump run_count and
+                # last_run_at so /skill list shows which skills earn
+                # their keep. Best-effort: a TOML write failure must
+                # not break the ask, the skill still runs.
+                try:
+                    from anthill.core.recipes import save_recipe
+                    skill_match.recipe.run_count += 1
+                    skill_match.recipe.last_run_at = time.time()
+                    save_recipe(skill_match.recipe, nation_dir)
+                except Exception:  # noqa: BLE001
+                    pass
             elif cached is not None:
                 plan = cached.plan
                 self.last_ask_cache_hit = True
