@@ -41,6 +41,7 @@ class FailureReason(str, Enum):
 
     EMPTY_RESPONSE = "empty_response"          # provider returned "" or whitespace
     POLICY_REFUSAL = "policy_refusal"          # content policy / "I cannot help"
+    USER_SERVING_REFUSAL = "user_serving_refusal"  # 0.1.40: punted work back to king
     TIMEOUT = "timeout"                        # network or provider timeout
     NETWORK = "network"                        # connection error, DNS, 5xx
     RATE_LIMIT = "rate_limit"                  # 429 / "rate limit exceeded"
@@ -63,6 +64,18 @@ _POLICY_REFUSAL_PATTERNS = (
     "violates our content policy", "against my guidelines",
     "i won't be able to", "i must decline",
     "无法帮助", "不能回答", "无法回答", "拒绝", "违反", "政策",
+)
+
+# 0.1.40 — tiebreaker keywords for policy-refusal vs user-serving-
+# refusal disambiguation. When both pattern families match the same
+# text, presence of any of these settles it as a real policy refusal
+# (the model is invoking safety reasoning, not just deferring work).
+_CONTENT_SAFETY_KEYWORDS = (
+    "violate", "violates", "policy", "policies",
+    "harmful", "harm", "unsafe", "safety",
+    "abuse", "abusive", "illegal", "unethical",
+    "guideline", "guidelines",
+    "违反", "违规", "有害", "危害", "不安全", "不道德",
 )
 
 _TIMEOUT_PATTERNS = (
@@ -171,7 +184,33 @@ def classify_attempt(
         return FailureReason.AUTH
     if _any_match(haystack, _RATE_LIMIT_PATTERNS):
         return FailureReason.RATE_LIMIT
-    if _any_match(haystack, _POLICY_REFUSAL_PATTERNS):
+    # 0.1.40 — user-serving refusal vs policy refusal disambiguation.
+    # Both patterns share phrases like "I cannot" — but the intent
+    # is different and so is the remedy:
+    #   - USER_SERVING_REFUSAL: model bounced work back ("please
+    #     paste", "I can't access that link"). RETRY with a "be
+    #     resourceful" addendum.
+    #   - POLICY_REFUSAL: model refused on content-safety grounds.
+    #     DON'T retry; the refusal IS the correct answer.
+    # When the text matches BOTH, we tiebreak on content-safety
+    # keywords ("violate", "policy", "harm", "违反", "政策", ...).
+    # If any such keyword is present, it's a policy refusal.
+    # Otherwise it's user-serving (the more common case for
+    # "I cannot access" without any safety reasoning).
+    policy_marker_hit = _any_match(haystack, _POLICY_REFUSAL_PATTERNS)
+    try:
+        from anthill.core.refusal import is_user_serving_refusal
+        user_serving_hit = is_user_serving_refusal(text)
+    except Exception:  # noqa: BLE001 — classifier must never crash
+        user_serving_hit = False
+    if user_serving_hit and policy_marker_hit:
+        # Tiebreak via content-safety vocabulary.
+        if _any_match(haystack, _CONTENT_SAFETY_KEYWORDS):
+            return FailureReason.POLICY_REFUSAL
+        return FailureReason.USER_SERVING_REFUSAL
+    if user_serving_hit:
+        return FailureReason.USER_SERVING_REFUSAL
+    if policy_marker_hit:
         return FailureReason.POLICY_REFUSAL
     if _any_match(haystack, _TIMEOUT_PATTERNS):
         return FailureReason.TIMEOUT
@@ -204,6 +243,10 @@ def explain(reason: FailureReason) -> str:
         FailureReason.RATE_LIMIT: "provider rate limit hit",
         FailureReason.AUTH: "API key missing or invalid for this citizen's model",
         FailureReason.TRUNCATED: "output stopped on max_tokens (mid-sentence)",
+        FailureReason.USER_SERVING_REFUSAL: (
+            "citizen punted the work back to the king "
+            "(\"please paste / I can't access ...\")"
+        ),
         FailureReason.FORMAT_ERROR: "output did not match expected format",
         FailureReason.MODEL_ERROR: "provider returned an API error",
         FailureReason.JUDGE_LOW: "output passed but judge scored it low",

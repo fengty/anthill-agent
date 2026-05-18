@@ -195,6 +195,16 @@ class Agent:
             # NETWORK / MODEL_ERROR / AUTH / POLICY case.
             if truncated:
                 reason = FailureReason.TRUNCATED
+            # 0.1.40 — if the citizen punted the work back to the
+            # king ("please paste the content"), treat it as a
+            # zero-score failure so the executor's retry path kicks
+            # in. The next attempt picks a different citizen AND
+            # (via core/refusal.RESOURCEFUL_RETRY_ADDENDUM, applied
+            # at the executor layer) gets a "be more resourceful"
+            # nudge. Anthill's core narrative: citizens serve the
+            # king, they don't bounce work back.
+            if reason == FailureReason.USER_SERVING_REFUSAL:
+                success_score = 0.0
             return TaskResult(
                 task_id=task_id,
                 agent_id=self.id,

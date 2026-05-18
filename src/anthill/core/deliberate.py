@@ -113,6 +113,11 @@ def _quality_of(result: "AskResult") -> tuple[float, dict[str, float]]:
     # deliberation loop to go another round instead of declaring
     # "first_round_fine" on a half-answer.
     truncated_any = False
+    # 0.1.40 — refusal override. If a winning attempt asked the
+    # king to do the work (USER_SERVING_REFUSAL), cap quality at
+    # 0.4. Even tighter than truncation: a refusal is structurally
+    # worse than a truncation because it didn't try.
+    refusal_any = False
 
     per_dim_max: dict[str, float] = {}
     success_scores: list[float] = []
@@ -125,6 +130,8 @@ def _quality_of(result: "AskResult") -> tuple[float, dict[str, float]]:
         winner = getattr(outcome, "final", None)
         if winner is not None and getattr(winner, "truncated", False):
             truncated_any = True
+        if winner is not None and getattr(winner, "failure_reason", None) == "user_serving_refusal":
+            refusal_any = True
         for attempt in outcome.attempts:
             success_scores.append(float(attempt.success_score))
             scores = getattr(attempt, "scores", None) or {}
@@ -150,6 +157,9 @@ def _quality_of(result: "AskResult") -> tuple[float, dict[str, float]]:
     # Truncation cap, see comment at top of function.
     if truncated_any and overall > 0.6:
         overall = 0.6
+    # 0.1.40 — refusal cap is tighter than truncation.
+    if refusal_any and overall > 0.4:
+        overall = 0.4
 
     return max(0.0, min(1.0, overall)), per_dim_max
 

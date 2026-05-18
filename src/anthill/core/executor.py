@@ -323,6 +323,17 @@ async def _run_one_subtask(
         # Legacy serial retry path — unchanged behavior for fanout=1.
         forbid: set[str] = set()
         for attempt_idx in range(policy.max_attempts):
+            # 0.1.40 — if the PRIOR attempt punted the work back to
+            # the king (FailureReason.USER_SERVING_REFUSAL), augment
+            # this attempt's prompt with the "be resourceful" nudge.
+            # Anthill's core narrative: citizens serve the king;
+            # they don't bounce work back.
+            this_prompt = augmented_prompt
+            if attempt_idx > 0 and outcome.attempts:
+                prev = outcome.attempts[-1]
+                if getattr(prev, "failure_reason", None) == "user_serving_refusal":
+                    from anthill.core.refusal import RESOURCEFUL_RETRY_ADDENDUM
+                    this_prompt = augmented_prompt + RESOURCEFUL_RETRY_ADDENDUM
             # Bridge: convert provider-level token deltas into
             # ProgressEvent(kind='token') so the REPL can render live.
             # Captured in a closure so each attempt's tokens carry the
@@ -350,13 +361,13 @@ async def _run_one_subtask(
                 if on_token is not None:
                     result = await nation.run(
                         subtask.task_type,
-                        augmented_prompt,
+                        this_prompt,
                         forbid=forbid,
                         on_token=on_token,
                     )
                 else:
                     result = await nation.run(
-                        subtask.task_type, augmented_prompt, forbid=forbid
+                        subtask.task_type, this_prompt, forbid=forbid
                     )
             except RuntimeError:
                 break
