@@ -28,71 +28,78 @@ from session events.
 **Anthill ships none of this today.** Fixing it is the entire focus
 of 0.1.29 → 0.1.34 (Arc M — Memory).
 
-## Next: 0.1.35 — Pheromone delta card (Arc V, amplifies §1.1)
+## Next: 0.1.35 — Session as persisted JSONL (experience.md §6 #1)
 
-After each ask, a one-line card shows which citizens just gained or
-lost expertise on which task_types:
+The first patch of the **connective-tissue arc**. Today Anthill has
+all the *parts* of a unified experience (memory, streaming, IM,
+recall) but they aren't tied together. A user can't say `anthill
+--resume` and continue a thread from yesterday. The conversation
+window (0.1.28) only lives in Python memory; it dies when the REPL
+exits.
 
-```
-🐜 pheromone update:
-  +0.18  ant-3a4b  research      (now your strongest researcher, was #3)
-  +0.05  ant-9c2d  review
-  -0.02  ant-7g23  translate     (failed retry)
-```
+What 0.1.35 does:
+- Every turn (request + plan + outcomes + costs + clarification
+  answers) appends to `~/.anthill/sessions/<session-id>.jsonl`.
+- New session = new id at REPL start; idle reset policy mirrors
+  Hermes (default 24h).
+- `anthill --resume` lists recent sessions with date / first request
+  / turn count; picker reopens the chosen session.
+- `--fork-session <id>` branches.
+- 0.1.28's `ConversationContext` hydrates from the session file at
+  REPL start instead of starting empty.
 
-Plus `/trails diff` for "since last week".
-
-Strengths.md justification: amplifies §1.1 (pheromone-based
-emergent specialization). The mechanism exists; this makes it
-visible to the user per ask, which closes the reported "感受不到
-进化" complaint.
+Justification: see [`docs/experience.md`](docs/experience.md) §4
+row "Resume across days" — currently ⚠️.
 
 Status: **planned, no code yet.**
 
-## Disciplined arc: 0.1.35 → 0.1.40 (six patches)
+## Connective-tissue arc: 0.1.35 → 0.1.42 (eight patches)
 
-Each one mapped against [`docs/strengths.md`](docs/strengths.md). No
-patch enters this list unless it amplifies a §1 mechanism OR is one
-of the three remaining §2 borrowings.
+**Rewritten 2026-05-18 based on the unified-experience audit in
+[`docs/experience.md`](docs/experience.md).** Previous arc (pheromone
+delta + `@tool` + HookRegistry + MemoryBackend + `/iterate` +
+self-correction) was correct as features but wrong as priorities.
+Those 6 are still planned; they now serve the experience arc instead
+of defining it.
 
-| Version | What | strengths.md ref |
+The eight patches below close the ❌/⚠️ rows in `experience.md` §4
+in order of leverage. Each patch is **traceable to a specific gap**
+in the unified-experience model that Hermes + Claude Code converged
+on.
+
+| Version | What | experience.md gap closed |
 |---|---|---|
-| **0.1.35** | Pheromone delta card + `/trails diff` + specialist emergence callouts | §1.1 — make emergent specialization visible |
-| **0.1.36** | `@tool def f(): ...` decorator (Plugin subclass kept for back-compat). Pydantic auto-infers the schema | §2.3 — borrowed from OpenAI Agents SDK |
-| **0.1.37** | Unified `HookRegistry` consolidating `on_progress` / `on_clarify` / `on_plan` / `on_phase` / `on_token` / `on_critique_token` / `on_round` into one bus | §2.4 — borrowed from Anthropic Agent SDK |
-| **0.1.38** | `MemoryBackend` interface + `BuiltinFTS5Backend` default. Community can plug mem0 / chromadb without forking | §2.2 — borrowed from Hermes |
-| **0.1.39** | `/iterate <ask>` forces multi-round depth with rotating critic perspectives (completeness → originality → counter-arguments → user-bias) | §1.2 + §1.4 — multi-model collab + complexity classification |
-| **0.1.40** | Mid-execution self-correction: post-subtask "did I actually answer the question?" gates declaring done, using USER.md as the rubric | §1.3 + §2.1 — failure attribution + persistent memory |
+| **0.1.35** | Session JSONL + `anthill --resume` + session picker. Hydrates 0.1.28 context window from disk | ⚠️ Resume across days |
+| **0.1.36** | Interrupt-and-steer: Ctrl+C in mid-ask becomes "redirect or cancel?" prompt. Typed text during streaming queues as a follow-up correction | ❌ No interrupt-and-steer |
+| **0.1.37** | Tool transparency: `🔍 plugin-name(args) → ✓ 0.3s` line per plugin invocation. `/verbosity off / brief / verbose` controls | ⚠️ Plugins run silently |
+| **0.1.38** | Background → delivery loop: `start_background` writes completion back to the originating surface (REPL prints when user returns; IM bot DMs the result) | ❌ Background doesn't deliver |
+| **0.1.39** | Permission gradient: 3 modes (`/permissions full-ask / auto-safe / full-auto`). Plugins declare a safety class; mode controls approval | ❌ No permission gradient |
+| **0.1.40** | Three-phase loop: post-execute `verify` step using USER.md / MEMORY.md as rubric. Concrete gap → auto-issue follow-up subtask | ❌ No gather/act/verify loop |
+| **0.1.41** | IM ↔ REPL shared session: daemon-routed asks write to the same session JSONL the REPL uses. Same user → same context across surfaces | ⚠️ IM is a separate world |
+| **0.1.42** | Context compaction: when ask exceeds N% of context budget, summarize older episodes. `/compact focus on X` lets user steer | ❌ No context compaction |
 
-### Explicitly dropped from earlier roadmap drafts
+### What about the 4 patches from the earlier "disciplined arc"?
 
-The "10-patch Arc V+D" version of this plan had: tracing/Span,
-image input, custom slash commands, declarative YAML agents,
-per-node checkpoints. Per `strengths.md` §3:
+Pheromone delta visualization, `@tool` decorator, unified
+HookRegistry, MemoryBackend interface — **still planned, just not
+as the next arc**. They're refactor-grade improvements that don't
+move the experience needle. After 0.1.42 closes the integrative
+gaps, those four come back as 0.1.43–0.1.46 (the "internals
+polish" arc). Then 0.2.0 with package split.
 
-- **Tracing/Span** (§3.1): revisit at 0.2.x when there's a real
-  customer needing Sentry / Langfuse integration.
-- **Image input** (was 0.1.37): orthogonal to §1.* mechanisms.
-  Pushed to "Explorations." A user pulling Anthill into a vision
-  task would convince us; today nobody is.
-- **Custom slash commands** (was 0.1.38): we're at ~25 slashes
-  already — §3.8 caps that.
-- **Per-node checkpoints**: `inflight.py` already covers crash
-  resume; §2.5 — marginal upgrade.
-- **Declarative YAML agents**: §3.10 — anti-pattern for §1.1.
+### Explicit drops (per `strengths.md` §3 + `experience.md` §7)
 
-### After 0.1.40 — candidate 0.2.0
+- **Tracing/Span observability** (§3.1) — revisit at 0.2.x
+- **Image input** — orthogonal to experience model; Explorations
+- **Custom slash commands** (§3.8) — capped at 25
+- **Per-node checkpoints** — `inflight.py` already covers it
+- **Declarative YAML agents** (§3.10) — anti-pattern for §1.1
+- **IDE plugin** (§3.2) — Anthill is CLI-first
 
-Natural trigger: 0.1.34 introduced new on-disk formats (USER.md /
-MEMORY.md / MEMORY-ARCHIVE.md / FTS5 session search index); 0.1.38
-introduces the MemoryBackend interface. After 0.1.40, the
-strengths-driven arc closes — the §1 mechanisms are all visible
-or surfaced, the §2 borrowings are all landed. That's the
-candidate moment for the package-split (anthill-core /
-anthill-memory / anthill-cli / anthill-channels) plus an
-import-path migration.
+### After 0.1.46 — candidate 0.2.0
 
-**Not a commitment** — maintainer decides at the moment.
+By then the experience is coherent + the internals are clean. That's
+the package-split moment. **Not a commitment.**
 
 ### Recently shipped (most-recent first)
 

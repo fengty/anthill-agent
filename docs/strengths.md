@@ -76,6 +76,17 @@ The rule: **one strength per framework, picked because it directly
 amplifies one of section 1's mechanisms**. Not "they have X and
 we don't" — that's how `大而全` happens.
 
+> **0.1.34 finding (see [`docs/experience.md`](experience.md)):**
+> the entries below are correct as "things to borrow" but they
+> miss the integrative pattern that ties them together. Both
+> Hermes and Claude Code converged on a **unified experience
+> model** — one ongoing relationship that spans turns, sessions,
+> surfaces, time scales, and interruption points. The borrowings
+> below serve THAT model, not the other way around. The next arc
+> (see ROADMAP "connective-tissue arc") is built around closing
+> the unified-experience gaps in [`docs/experience.md`](experience.md)
+> §4.
+
 ### 2.1 From Claude Code: persistent file-based memory (CLAUDE.md)
 **Shipped 0.1.29-34.** USER.md + MEMORY.md as the two-file memory
 plane. Auto-memory captures explicit signals. Hygiene consolidates.
