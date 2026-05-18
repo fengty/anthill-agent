@@ -50,6 +50,61 @@ from anthill.core.scout import Plan, Scout, Subtask
 
 
 @dataclass
+class AskTimings:
+    """0.1.44 — per-ask wall-clock breakdown for diagnostics.
+
+    Why this exists: until 0.1.44 we only logged a single `duration`
+    per turn, so when an ask ran 45-103s we had no way to tell which
+    phase ate the time — Scout planning, a slow subtask, refusal-
+    retry, or something else. This dataclass captures each phase so
+    the REPL can print `[14.8s — Scout 3.1s, research 6.4s, analyze
+    5.3s]` and the session JSONL preserves the breakdown for later
+    analysis without re-running the ask.
+
+    Wall-clock semantics: `total_seconds` is the full `ask()` span.
+    `scout_seconds` is just the Scout LLM call (None when Scout was
+    bypassed — cache hit, trivial fast-path, skill match, pre-plan,
+    or resume). Per-subtask times come from each outcome's
+    started_at / ended_at and reflect wall-clock per subtask
+    (parallel subtasks within a wave will overlap, so summing them
+    overshoots `total_seconds` by design — that's how the user can
+    SEE parallelism happened).
+    """
+
+    total_seconds: float = 0.0
+    scout_seconds: float | None = None
+    # (task_type, wall_clock_seconds) per subtask, in plan order.
+    subtask_seconds: list[tuple[str, float]] = field(default_factory=list)
+    # Count of attempts whose failure_reason was user_serving_refusal —
+    # the 0.1.40 retry-with-resourceful-nudge path. Useful for
+    # debugging "why did this ask take so long" — refusal-retries
+    # always add latency.
+    refusal_retry_count: int = 0
+    # Bypass marker: which fast path was taken, if any. One of
+    # "scout", "cache", "trivial", "skill", "pre_plan", "resume".
+    # Lets the timing line show "📋 (skill)" so you know WHY it was
+    # fast without having to remember the matching rules.
+    plan_source: str = "scout"
+
+    def to_dict(self) -> dict:
+        """Serialize for session JSONL. Forward-compatible: older
+        readers that don't know about this key will just ignore it."""
+        return {
+            "total_seconds": round(self.total_seconds, 3),
+            "scout_seconds": (
+                round(self.scout_seconds, 3)
+                if self.scout_seconds is not None
+                else None
+            ),
+            "subtask_seconds": [
+                [tt, round(s, 3)] for tt, s in self.subtask_seconds
+            ],
+            "refusal_retry_count": self.refusal_retry_count,
+            "plan_source": self.plan_source,
+        }
+
+
+@dataclass
 class AskResult:
     """The aggregated outcome of a natural-language request.
 
@@ -66,6 +121,10 @@ class AskResult:
     ask_id: str | None = None  # filled when checkpoint was active
     budget: BudgetSnapshot | None = None  # filled when a Budget was set
     replans: int = 0  # number of self-correction passes that ran
+    # 0.1.44 — wall-clock breakdown for "[14.8s — Scout 3.1s …]".
+    # Filled by Nation.ask() before return. Older callers that
+    # never read this still work; new REPL displays it.
+    timings: AskTimings = field(default_factory=AskTimings)
     # 0.1.4+ — history entries Scout actually borrowed from when planning.
     # Surfaced by the REPL as "📚 borrowed from: id1, id2" so the user can
     # SEE the nation's memory working, not just trust the readme. Empty
@@ -417,6 +476,12 @@ class Nation:
         user's answer (or None to skip). Skipped for resume / pre_plan
         paths since those already carry a fixed plan.
         """
+        # 0.1.44 — capture wall-clock from the moment we accept the
+        # ask. `perf_counter` is monotonic so it survives clock jumps;
+        # we only need DELTAS, not absolute times.
+        ask_started_perf = time.perf_counter()
+        timings = AskTimings()
+
         # v0.9.0 — clarification turn. Only fires when:
         #   1. Caller registered an on_clarify handler
         #   2. Not on resume / pre_plan paths (plan is already locked)
@@ -441,6 +506,7 @@ class Nation:
             plan = resume.plan
             self.last_ask_cache_hit = False
             inflight = resume
+            timings.plan_source = "resume"
         elif pre_plan is not None:
             # Recipe path: skip Scout entirely, use the user-supplied plan
             # as-is. The cache is bypassed too — a recipe-run is the user
@@ -448,6 +514,7 @@ class Nation:
             plan = pre_plan
             self.last_ask_cache_hit = False
             inflight = InflightAsk.new(request=request, plan=plan) if nation_dir else None
+            timings.plan_source = "pre_plan"
         else:
             # 0.1.42 — skill-first plan lookup. Before letting Scout
             # regenerate the same plan shape for a recurring request,
@@ -480,9 +547,11 @@ class Nation:
                 )
                 self.last_ask_cache_hit = False
                 self.last_matched_skill = skill_match
+                timings.plan_source = "skill"
             elif cached is not None:
                 plan = cached.plan
                 self.last_ask_cache_hit = True
+                timings.plan_source = "cache"
             else:
                 # v0.8.1 fast path — pre-Scout trivial classifier.
                 # If the heuristic confidently labels this request as
@@ -503,6 +572,7 @@ class Nation:
                         ],
                         complexity="trivial",
                     )
+                    timings.plan_source = "trivial"
                 else:
                     similar_block, episodic_sources = (
                         self._similar_past_block_with_sources(request)
@@ -541,12 +611,17 @@ class Nation:
                         b for b in (project_block, workflow_block, plugin_block, similar_block) if b
                     )
                     scout = Scout(model=self.scout_model)
+                    # 0.1.44 — capture Scout wall-clock so timing line
+                    # can show "Scout: 3.1s" separately from subtasks.
+                    _scout_t0 = time.perf_counter()
                     plan = await scout.plan(
                         request,
                         known_task_types=self.culture.known_task_types(),
                         episodic_context=episodic_context,
                         memory_context=self.memory_context,
                     )
+                    timings.scout_seconds = time.perf_counter() - _scout_t0
+                    timings.plan_source = "scout"
                     # If fast_classify was confident the request is
                     # complex (regex caught a 'research' / 'analyze'
                     # marker), honor that over whatever Scout claimed —
@@ -678,6 +753,27 @@ class Nation:
         if nation_dir is not None and inflight is not None:
             clear_inflight(inflight.ask_id, nation_dir)
 
+        # 0.1.44 — fold per-subtask wall-clock into timings. Each
+        # outcome's started_at/ended_at is time.time() set by the
+        # executor; the delta is the subtask's real time-on-the-clock
+        # including retries. Refusal-retry count comes from scanning
+        # attempts for failure_reason == "user_serving_refusal" (the
+        # 0.1.40 marker). Total wall-clock is from ask() entry.
+        timings.subtask_seconds = [
+            (
+                o.subtask.task_type,
+                max(0.0, (o.ended_at or 0.0) - (o.started_at or 0.0)),
+            )
+            for o in outcomes
+        ]
+        timings.refusal_retry_count = sum(
+            1
+            for o in outcomes
+            for a in o.attempts
+            if getattr(a, "failure_reason", None) == "user_serving_refusal"
+        )
+        timings.total_seconds = time.perf_counter() - ask_started_perf
+
         return AskResult(
             request=request,
             plan=plan,
@@ -686,6 +782,7 @@ class Nation:
             budget=snapshot(tracker) if tracker is not None else None,
             replans=replans_done,
             episodic_sources=episodic_sources,
+            timings=timings,
         )
 
     async def _try_replan(

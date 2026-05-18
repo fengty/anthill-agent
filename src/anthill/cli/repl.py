@@ -1527,6 +1527,36 @@ async def _handle_ask(
         # Clear the marker so the next ask doesn't re-print.
         nation.last_matched_skill = None
 
+    # 0.1.44 — per-ask timing breakdown. Always print: this is the
+    # only way for the user to tell WHY an ask took N seconds —
+    # Scout, a slow subtask, refusal-retry, or wall-clock dominated
+    # by something else. Compact one-liner; defers cluttering output
+    # to the session JSONL for post-hoc analysis. Format examples:
+    #   [2.3s (trivial)]
+    #   [14.8s — Scout 3.1s · research 6.4s · analyze 5.3s]
+    #   [103s — Scout 4.2s · research 41.0s · analyze 58.4s · 1 refusal-retry]
+    #   [9.0s (skill) — research 4.1s · analyze 4.9s]
+    timings = getattr(result, "timings", None)
+    if timings is not None and timings.total_seconds > 0:
+        parts: list[str] = []
+        if timings.scout_seconds is not None:
+            parts.append(f"Scout {timings.scout_seconds:.1f}s")
+        for tt, secs in timings.subtask_seconds:
+            parts.append(f"{tt} {secs:.1f}s")
+        if timings.refusal_retry_count > 0:
+            parts.append(
+                f"{timings.refusal_retry_count} refusal-retry"
+            )
+        source_tag = (
+            f" ({timings.plan_source})"
+            if timings.plan_source != "scout"
+            else ""
+        )
+        body = (" — " + " · ".join(parts)) if parts else ""
+        console.print(
+            f"  [dim]\\[{timings.total_seconds:.1f}s{source_tag}{body}][/dim]"
+        )
+
     # v0.1.13 — plan review cancelled the ask. No outcomes to record;
     # don't dirty history / last-ask / usage logs.
     if getattr(result, "cancelled_by_user", False):
@@ -1572,11 +1602,18 @@ async def _handle_ask(
         from anthill.core.sessions import SessionTurn
         session = getattr(stats, "session", None)
         if session is not None and final_output:
+            # Keep `duration` as before (sum of attempt durations) so
+            # older session readers/tests still see a meaningful value.
             duration = sum(
                 a.duration_seconds
                 for o in result.outcomes
                 for a in o.attempts
             )
+            # 0.1.44 — attach the per-phase breakdown as a separate
+            # optional field. Forward-compatible: a v0.1.43 reader
+            # ignores it.
+            t = getattr(result, "timings", None)
+            timings_dict = t.to_dict() if t is not None else {}
             session.append_turn(
                 SessionTurn(
                     ts=time.time(),
@@ -1591,6 +1628,7 @@ async def _handle_ask(
                         for o in result.outcomes
                     ],
                     duration_seconds=duration,
+                    timings=timings_dict,
                 )
             )
     except Exception:  # noqa: BLE001 — session persistence is best-effort

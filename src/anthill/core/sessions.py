@@ -56,9 +56,13 @@ class SessionTurn:
     plan: list[dict] = field(default_factory=list)        # [{task_type, depends_on}]
     outcomes_summary: list[dict] = field(default_factory=list)  # [{status, task_type}]
     duration_seconds: float = 0.0
+    # 0.1.44 — per-phase wall-clock breakdown so post-hoc analysis can
+    # tell whether an outlier ask was Scout-bound or subtask-bound.
+    # Optional / default empty so older logs still load.
+    timings: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "kind": "turn",
             "ts": self.ts,
             "request": self.request,
@@ -67,6 +71,9 @@ class SessionTurn:
             "outcomes_summary": self.outcomes_summary,
             "duration": self.duration_seconds,
         }
+        if self.timings:
+            d["timings"] = self.timings
+        return d
 
     @classmethod
     def from_dict(cls, data: dict) -> "SessionTurn":
@@ -77,6 +84,7 @@ class SessionTurn:
             plan=list(data.get("plan") or []),
             outcomes_summary=list(data.get("outcomes_summary") or []),
             duration_seconds=float(data.get("duration") or 0.0),
+            timings=dict(data.get("timings") or {}),
         )
 
 
