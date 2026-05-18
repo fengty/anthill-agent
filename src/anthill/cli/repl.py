@@ -268,6 +268,50 @@ def _citizen_model_preflight(nation: Nation) -> None:
     console.print()
 
 
+def _prompt_steer_choice(original_request: str) -> "str | None":
+    """0.1.36 — interrupt-and-steer menu after Ctrl+C during an ask.
+
+    Returns:
+      - ``None``  to mean "user just wants to cancel"
+      - non-empty string for a redirect — the new instruction the
+        user wants to swap in. Caller frames it as a follow-up
+        with the original ask quoted so the model treats it as a
+        correction, not a fresh question.
+
+    UX rule (mirrors Hermes + Claude Code): cancellation should be
+    the cheap default. Empty input / Ctrl+C / unrecognized choice
+    all mean cancel. Redirect requires explicit "r" + a non-empty
+    follow-up. Don't trap the user in the menu.
+    """
+    console.print()
+    console.print(
+        "  [yellow]⏸  paused.[/yellow] "
+        "[dim]Press Enter or [c] to cancel · [r] to redirect with "
+        "a new instruction.[/dim]"
+    )
+    try:
+        choice = input("  > ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if choice not in ("r", "redirect"):
+        return None
+    try:
+        redirect = input("  redirect: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if not redirect:
+        return None
+    # Surface a confirming line so the user sees we accepted the redirect.
+    short = original_request.replace("\n", " ")[:60]
+    if len(original_request) > 60:
+        short += "…"
+    console.print(
+        f"  [dim]↪ redirecting from [italic]{short}[/italic] → "
+        f"running new instruction…[/dim]"
+    )
+    return redirect
+
+
 def _pick_session(metas, config, nation_name):  # noqa: ANN001
     """0.1.35 — interactive picker over recent sessions for THIS nation.
 
@@ -572,6 +616,10 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /recall X     full-text search every past ask in this nation
     /session      info about current + recent saved sessions
                   (resume from outside with: anthill --resume <id>)
+
+  [bold]Mid-ask controls (0.1.36+)[/bold]
+    Ctrl+C        pause the current ask → [c]ancel · [r]edirect with new instruction
+                  Picks up the agent's work without killing the REPL.
     /citizens          list alive citizens + which models they use
     /citizens migrate  point all unresolvable citizens at the default
     /citizens migrate X
@@ -2604,14 +2652,38 @@ def run_repl(
             )
             continue
 
-        # Ask path. Ctrl+C during an ask cancels just the ask.
+        # Ask path. Ctrl+C during an ask used to just print
+        # "(cancelled)" and return to the prompt. 0.1.36 turns it
+        # into a steerable interrupt: cancel cleanly OR redirect
+        # the agent with a new instruction without retyping the
+        # whole question. Mirrors Hermes "send any message while
+        # the agent is working to interrupt it" and Claude Code's
+        # "type your correction and press Enter."
         stats.increment_ask()
-        try:
-            asyncio.run(_handle_ask(line, nation, config, stats))
-        except KeyboardInterrupt:
-            console.print("[yellow](cancelled)[/yellow]")
-        except Exception as e:  # noqa: BLE001
-            console.print(f"[red]Error: {e}[/red]")
+        current_request = line
+        while True:
+            try:
+                asyncio.run(_handle_ask(current_request, nation, config, stats))
+                break  # ask finished normally → exit redirect loop
+            except KeyboardInterrupt:
+                redirect = _prompt_steer_choice(current_request)
+                if redirect is None:
+                    # Plain cancel.
+                    console.print("  [dim]cancelled[/dim]")
+                    break
+                # Fire the redirected ask: frame it so the model
+                # knows the previous attempt was interrupted and
+                # this is the user's correction.
+                current_request = (
+                    f"[The previous attempt at: {current_request!r} was "
+                    f"interrupted by the user. Their correction:]\n"
+                    f"{redirect}"
+                )
+                stats.increment_ask()
+                # Loop back into asyncio.run with the new request.
+            except Exception as e:  # noqa: BLE001
+                console.print(f"[red]Error: {e}[/red]")
+                break
 
         # Reload nation after each ask so persisted state stays in sync.
         refreshed = load_nation(nation.name, config.home)
