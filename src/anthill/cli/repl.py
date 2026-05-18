@@ -507,7 +507,11 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /project      project context Scout sees (cwd, git branch, files)
     /skills       recurring patterns the nation has noticed in history
     /memory       this nation's persistent MEMORY.md
+    /memory consolidate
+                  dedup near-duplicates, archive overflow
     /profile      your global USER.md (alias: /preferences)
+    /profile consolidate
+                  same hygiene pass for USER.md
     /profile accept [kind]
                   commit inferences the nation has noticed about you
     /profile skip [kind]
@@ -1847,6 +1851,35 @@ def run_repl(nation_name: str = "default") -> int:
     # alongside) — we never silent-write inferred lines.
     _user_model_preflight(nation, config)
 
+    # 0.1.34 — memory hygiene hint. When either USER.md or MEMORY.md
+    # is bloated (near file cap, or any section overflowing), surface
+    # a one-line nudge. Same shape as the proxy preflight: detect,
+    # show the remedy, don't block.
+    try:
+        from anthill.core.memory_files import (
+            read_nation_memory,
+            read_user_md,
+        )
+        from anthill.core.memory_hygiene import needs_hygiene
+
+        user_bloated = needs_hygiene(read_user_md(config.home))
+        nation_bloated = needs_hygiene(
+            read_nation_memory(nation_dir(config.home, nation.name))
+        )
+        if user_bloated or nation_bloated:
+            which = []
+            if user_bloated:
+                which.append("[cyan]USER.md[/cyan]")
+            if nation_bloated:
+                which.append("[cyan]MEMORY.md[/cyan]")
+            console.print(
+                f"  [dim]🧹 memory looks bloated ({' + '.join(which)}). "
+                f"Run [cyan]/profile consolidate[/cyan] / "
+                f"[cyan]/memory consolidate[/cyan] to dedup + archive.[/dim]"
+            )
+    except Exception:  # noqa: BLE001 — preflight must never block
+        pass
+
     # 0.1.21 — citizen-model preflight. Same shape as proxy_preflight:
     # the actual bug is a citizen pointing at a model name the user no
     # longer has configured ("minimax" left over after the user
@@ -1998,6 +2031,34 @@ def run_repl(nation_name: str = "default") -> int:
                                     f"    [dim]↳ {h.output_snippet[:120]}…[/dim]"
                                 )
             elif cmd in ("memory", "mem"):
+                # 0.1.34 — `/memory consolidate` runs the hygiene pass
+                # (dedup near-duplicates, archive overflow to
+                # MEMORY-ARCHIVE.md). Routed before the original
+                # 0.1.29 view/edit handler so the new subcommand
+                # takes precedence; falls through otherwise.
+                if rest.strip().lower() in ("consolidate", "hygiene", "clean"):
+                    from anthill.core.memory_hygiene import (
+                        consolidate_nation_memory,
+                    )
+                    report = consolidate_nation_memory(
+                        nation_dir(config.home, nation.name)
+                    )
+                    if report.changed:
+                        console.print(
+                            f"  [green]✓[/green] [bold]MEMORY.md[/bold] "
+                            f"consolidated: "
+                            f"[cyan]{report.deduped}[/cyan] dup(s) removed, "
+                            f"[cyan]{report.archived}[/cyan] archived "
+                            f"[dim]({report.bytes_before} → "
+                            f"{report.bytes_after} bytes)[/dim]"
+                        )
+                        _load_memory_into_nation(nation, config)
+                    else:
+                        console.print(
+                            "  [dim]MEMORY.md is already clean.[/dim]"
+                        )
+                    continue
+                # Otherwise fall through to the existing handler below.
                 # 0.1.29 — view / edit the per-nation MEMORY.md.
                 from anthill.core.memory_files import (
                     ensure_nation_memory,
@@ -2046,6 +2107,24 @@ def run_repl(nation_name: str = "default") -> int:
                     _accept_inferences(nation, config, tail or None)
                 elif head in ("skip", "no", "n", "dismiss"):
                     _skip_inferences(tail or None)
+                elif head in ("consolidate", "hygiene", "clean"):
+                    # 0.1.34 — same shape as /memory consolidate.
+                    from anthill.core.memory_hygiene import (
+                        consolidate_user_md,
+                    )
+                    report = consolidate_user_md(config.home)
+                    if report.changed:
+                        console.print(
+                            f"  [green]✓[/green] [bold]USER.md[/bold] "
+                            f"consolidated: "
+                            f"[cyan]{report.deduped}[/cyan] dup(s) removed, "
+                            f"[cyan]{report.archived}[/cyan] archived "
+                            f"[dim]({report.bytes_before} → "
+                            f"{report.bytes_after} bytes)[/dim]"
+                        )
+                        _load_memory_into_nation(nation, config)
+                    else:
+                        console.print("  [dim]USER.md is already clean.[/dim]")
                 elif head in ("pending", "noticed"):
                     if not _PENDING_INFERENCES:
                         console.print("  [dim]No pending inferences.[/dim]")
