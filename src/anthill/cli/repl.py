@@ -384,6 +384,7 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /remember X   add a one-line lesson to MEMORY.md
     /remember-me X
                   add a one-line fact about yourself to USER.md
+    /recall X     full-text search every past ask in this nation
     /citizens          list alive citizens + which models they use
     /citizens migrate  point all unresolvable citizens at the default
     /citizens migrate X
@@ -1186,6 +1187,36 @@ async def _handle_ask(
     if final_output:
         stats.conversation.record(request, final_output, timestamp=time.time())
 
+    # 0.1.31 — incremental recall index update. Adds the just-finished
+    # ask to the FTS5 index so it's immediately searchable next turn
+    # AND across future sessions. Wrapped in try/except — recall is
+    # best-effort, must not break the post-ask path.
+    try:
+        from anthill.core.history import HistoryEntry
+        from anthill.core.recall import ensure_index
+        # Re-derive the entry we just appended so the row's id /
+        # timestamp / chain hash line up with what's on disk.
+        entry = HistoryEntry(
+            id=HistoryEntry.make_id(request, time.time()),
+            timestamp=time.time(),
+            request=request,
+            plan=[{"task_type": s.task_type, "depends_on": s.depends_on}
+                  for s in result.plan.subtasks],
+            outcomes=[
+                {
+                    "status": o.status,
+                    "output": str(o.final.output) if o.final is not None else "",
+                }
+                for o in result.outcomes
+            ],
+        )
+        idx = ensure_index(nation_dir(config.home, nation.name))
+        if idx is not None:
+            idx.index_entry(entry)
+            idx.close()
+    except Exception:  # noqa: BLE001 — recall is best-effort
+        pass
+
     # 0.1.30 — auto-memory: scan the user's REQUEST for explicit
     # "remember this" / "I prefer X" / "我是 Y" / "我们用 Z" signals.
     # When one fires, append to USER.md or MEMORY.md immediately so
@@ -1775,6 +1806,51 @@ def run_repl(nation_name: str = "default") -> int:
                 refreshed = load_nation(nation.name, config.home)
                 if refreshed is not None:
                     nation = refreshed
+            elif cmd == "recall":
+                # 0.1.31 — full-text search over THIS nation's history.
+                # Fills the gap between in-session window (0.1.28) and
+                # distilled long-term memory (0.1.29). Hermes calls
+                # this `session_search`; we wrap the SQLite FTS5
+                # query directly.
+                query = rest.strip()
+                if not query:
+                    console.print(
+                        "[yellow]Usage: /recall <text to search for>[/yellow]"
+                    )
+                else:
+                    import time as _time
+                    from anthill.core.recall import search_history
+                    hits = search_history(
+                        nation_dir(config.home, nation.name), query, k=5,
+                    )
+                    if not hits:
+                        console.print(
+                            f"  [dim]No matches for [cyan]{query}[/cyan].[/dim]"
+                        )
+                    else:
+                        console.print(
+                            f"  [bold]{len(hits)} match(es)[/bold] "
+                            f"[dim]for [cyan]{query}[/cyan]:[/dim]"
+                        )
+                        for h in hits:
+                            ago = _time.time() - h.timestamp
+                            days = max(0, int(ago // 86400))
+                            when = (
+                                "today" if days == 0
+                                else "1 day ago" if days == 1
+                                else f"{days} days ago"
+                            )
+                            req_short = h.request.replace("\n", " ")[:80]
+                            if len(h.request) > 80:
+                                req_short += "…"
+                            console.print(
+                                f"  [dim]·[/dim] [cyan]{h.entry_id}[/cyan] "
+                                f"[dim]{when}[/dim]  {req_short}"
+                            )
+                            if h.output_snippet:
+                                console.print(
+                                    f"    [dim]↳ {h.output_snippet[:120]}…[/dim]"
+                                )
             elif cmd in ("memory", "mem"):
                 # 0.1.29 — view / edit the per-nation MEMORY.md.
                 from anthill.core.memory_files import (
