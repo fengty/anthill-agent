@@ -91,15 +91,42 @@ def _load_or_create(name: str, config: AnthillConfig) -> Nation:
 
 @click.group(invoke_without_command=True)
 @click.version_option(__version__, prog_name="anthill")
+@click.option(
+    "--resume",
+    "resume_id",
+    default=None,
+    is_flag=False,
+    flag_value="__pick__",
+    help="Resume a saved session (no value = picker; pass an id to jump directly).",
+)
+@click.option(
+    "--new-session", "new_session",
+    is_flag=True,
+    default=False,
+    help="Start a fresh session even if a recent one exists.",
+)
 @click.pass_context
-def cli(ctx: click.Context) -> None:
+def cli(
+    ctx: click.Context,
+    resume_id: str | None,
+    new_session: bool,
+) -> None:
     """Anthill — every user grows their own AI nation.
 
     Run `anthill` with no subcommand to drop into the interactive REPL.
+    `--resume` reopens a saved session; `--new-session` forces a fresh
+    one. With neither flag, the REPL continues the most recent session
+    if its last turn is within 24h, otherwise starts fresh.
     """
     if ctx.invoked_subcommand is None:
         from anthill.cli.repl import run_repl
-        raise SystemExit(run_repl("default"))
+        raise SystemExit(
+            run_repl(
+                "default",
+                resume_session_id=resume_id,
+                force_new_session=new_session,
+            )
+        )
 
 
 @cli.command()

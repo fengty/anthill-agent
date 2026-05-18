@@ -268,6 +268,56 @@ def _citizen_model_preflight(nation: Nation) -> None:
     console.print()
 
 
+def _pick_session(metas, config, nation_name):  # noqa: ANN001
+    """0.1.35 — interactive picker over recent sessions for THIS nation.
+
+    Shows up to 10 sessions; user types a number to resume one, or
+    Enter / 'n' to start a fresh session.
+    """
+    import time as _time
+    from anthill.core.sessions import start_session
+    from anthill import __version__ as _av
+
+    console.print()
+    console.print("  [bold]Recent sessions[/bold]")
+    for i, meta in enumerate(metas, start=1):
+        when_ago = _time.time() - meta.last_turn_at
+        if when_ago < 3600:
+            when = f"{int(when_ago // 60)}m ago"
+        elif when_ago < 86400:
+            when = f"{int(when_ago // 3600)}h ago"
+        else:
+            when = f"{int(when_ago // 86400)}d ago"
+        head = meta.first_request.replace("\n", " ")[:55]
+        if len(meta.first_request) > 55:
+            head += "…"
+        console.print(
+            f"    [cyan]{i}[/cyan]) "
+            f"[dim]{meta.session_id[:14]}[/dim]  "
+            f"[dim]{when}[/dim]  "
+            f"[dim]{meta.turn_count} turn(s)[/dim]  "
+            f"{head}"
+        )
+    console.print(
+        "    [dim]Enter to start fresh · 1-N to resume[/dim]"
+    )
+    try:
+        choice = input("  resume? ").strip()
+    except (EOFError, KeyboardInterrupt):
+        choice = ""
+    if not choice or choice.lower() in ("n", "no", "new"):
+        return start_session(config.home, nation_name, version=_av)
+    if choice.isdigit():
+        idx = int(choice) - 1
+        if 0 <= idx < len(metas):
+            from anthill.core.sessions import load_session
+            sess = load_session(metas[idx].session_id, config.home)
+            if sess is not None:
+                return sess
+    console.print("  [yellow]didn't recognize that — starting fresh.[/yellow]")
+    return start_session(config.home, nation_name, version=_av)
+
+
 def _load_memory_into_nation(nation: Nation, config: AnthillConfig) -> None:
     """0.1.29 — composes USER.md + MEMORY.md into nation.memory_context.
 
@@ -520,6 +570,8 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /remember-me X
                   add a one-line fact about yourself to USER.md
     /recall X     full-text search every past ask in this nation
+    /session      info about current + recent saved sessions
+                  (resume from outside with: anthill --resume <id>)
     /citizens          list alive citizens + which models they use
     /citizens migrate  point all unresolvable citizens at the default
     /citizens migrate X
@@ -1331,6 +1383,39 @@ async def _handle_ask(
     if final_output:
         stats.conversation.record(request, final_output, timestamp=time.time())
 
+    # 0.1.35 — persist this turn to the session JSONL so the next
+    # `anthill --resume` can pick up the thread. In-memory window
+    # above is for THIS process; the JSONL is for cross-session
+    # continuity. Wrapped in try/except: persistence must never
+    # break the post-ask path.
+    try:
+        from anthill.core.sessions import SessionTurn
+        session = getattr(stats, "session", None)
+        if session is not None and final_output:
+            duration = sum(
+                a.duration_seconds
+                for o in result.outcomes
+                for a in o.attempts
+            )
+            session.append_turn(
+                SessionTurn(
+                    ts=time.time(),
+                    request=request,
+                    final_output=final_output,
+                    plan=[
+                        {"task_type": s.task_type, "depends_on": list(s.depends_on)}
+                        for s in result.plan.subtasks
+                    ],
+                    outcomes_summary=[
+                        {"status": o.status, "task_type": o.subtask.task_type}
+                        for o in result.outcomes
+                    ],
+                    duration_seconds=duration,
+                )
+            )
+    except Exception:  # noqa: BLE001 — session persistence is best-effort
+        pass
+
     # 0.1.31 — incremental recall index update. Adds the just-finished
     # ask to the FTS5 index so it's immediately searchable next turn
     # AND across future sessions. Wrapped in try/except — recall is
@@ -1815,12 +1900,86 @@ def _handle_nation_switch(
     return refreshed
 
 
-def run_repl(nation_name: str = "default") -> int:
-    """Drop into the REPL loop. Returns process exit code."""
+def run_repl(
+    nation_name: str = "default",
+    *,
+    resume_session_id: str | None = None,
+    force_new_session: bool = False,
+) -> int:
+    """Drop into the REPL loop. Returns process exit code.
+
+    0.1.35 — session lifecycle:
+      - ``resume_session_id="__pick__"`` shows the session picker
+      - ``resume_session_id="sess-abc12345"`` (or unique prefix)
+        reopens that session directly
+      - ``force_new_session=True`` ALWAYS starts a fresh session
+      - neither flag = continue most-recent session if its last turn
+        is within 24h, else fresh.
+    """
     config = AnthillConfig.load()
     config.ensure_home()
     nation = _ensure_nation(config, nation_name)
     stats = SessionStats()
+
+    # 0.1.35 — resolve which session to use (resume vs new). The
+    # rolling-window 0.1.28 ConversationContext gets hydrated from
+    # the resumed file so the user picks up the thread instead of
+    # starting empty.
+    from anthill import __version__ as _av
+    from anthill.core.sessions import (
+        Session,
+        list_sessions,
+        load_session,
+        most_recent_session,
+        start_session,
+    )
+
+    session: Session | None = None
+    if force_new_session:
+        session = start_session(config.home, nation_name, version=_av)
+    elif resume_session_id == "__pick__":
+        # Picker UI — show recent sessions for THIS nation.
+        metas = list_sessions(config.home, limit=10, nation_name=nation_name)
+        if not metas:
+            console.print("[dim]No saved sessions yet — starting fresh.[/dim]")
+            session = start_session(config.home, nation_name, version=_av)
+        else:
+            session = _pick_session(metas, config, nation_name)
+    elif resume_session_id is not None:
+        session = load_session(resume_session_id, config.home)
+        if session is None:
+            console.print(
+                f"[yellow]No session matches '{resume_session_id}'. "
+                f"Starting fresh.[/yellow]"
+            )
+            session = start_session(config.home, nation_name, version=_av)
+    else:
+        # No flag: continue if warm (< 24h), else fresh. Mirrors
+        # Hermes's default 1440-minute idle policy.
+        warm = most_recent_session(config.home, nation_name)
+        if warm is not None:
+            session = warm
+        else:
+            session = start_session(config.home, nation_name, version=_av)
+
+    stats.session = session  # stash on stats for the post-ask append point
+
+    # Hydrate the in-memory conversation window from the persisted
+    # turns. The window cap (DEFAULT_MAXLEN=4) means we only inject
+    # the LAST 4 turns into prompts — older ones stay in the file
+    # for /recall to find via FTS5 (0.1.31).
+    if session.turns:
+        for turn in session.turns:
+            if turn.request and turn.final_output:
+                stats.conversation.record(
+                    turn.request, turn.final_output, timestamp=turn.ts,
+                )
+        n = min(len(session.turns), 4)
+        console.print(
+            f"  [dim]↻ resumed session [cyan]{session.session_id}[/cyan]"
+            f" — {len(session.turns)} turn(s) total, "
+            f"last {n} loaded as context[/dim]"
+        )
 
     # 0.1.5+ — wire up arrow-key history + line editing + persistent
     # history file before the user types anything. Done BEFORE the
@@ -1932,6 +2091,15 @@ def run_repl(nation_name: str = "default") -> int:
         except (KeyboardInterrupt, EOFError):
             console.print()
             console.print("[dim]bye.[/dim]")
+            # 0.1.35 — graceful close marker on the session file so
+            # the picker can distinguish clean exits from crashes
+            # later if needed. Best-effort; missing file is fine.
+            try:
+                from anthill.core.sessions import end_session
+                if getattr(stats, "session", None) is not None:
+                    end_session(stats.session, reason="user_quit")
+            except Exception:  # noqa: BLE001
+                pass
             return 0
 
         if not line:
@@ -1985,6 +2153,43 @@ def run_repl(nation_name: str = "default") -> int:
                 refreshed = load_nation(nation.name, config.home)
                 if refreshed is not None:
                     nation = refreshed
+            elif cmd in ("session", "sessions"):
+                # 0.1.35 — inspect / list saved sessions. Mostly a
+                # debugging aid; main entry is `anthill --resume`.
+                from anthill.core.sessions import list_sessions
+                metas = list_sessions(
+                    config.home, limit=10, nation_name=nation.name,
+                )
+                current = getattr(stats, "session", None)
+                console.print(
+                    f"  [dim]current: [cyan]"
+                    f"{current.session_id if current else '(none)'}"
+                    f"[/cyan]  "
+                    f"({current.turn_count if current else 0} turn(s))"
+                    f"[/dim]"
+                )
+                if not metas:
+                    console.print("  [dim]No saved sessions yet.[/dim]")
+                else:
+                    import time as _time
+                    console.print("  [bold]Recent sessions:[/bold]")
+                    for m in metas:
+                        ago = _time.time() - m.last_turn_at
+                        when = (
+                            f"{int(ago // 60)}m" if ago < 3600
+                            else f"{int(ago // 3600)}h" if ago < 86400
+                            else f"{int(ago // 86400)}d"
+                        )
+                        head = m.first_request.replace("\n", " ")[:60]
+                        active = "★" if current and current.session_id == m.session_id else " "
+                        console.print(
+                            f"    {active} [cyan]{m.session_id[:14]}[/cyan] "
+                            f"[dim]{when} ago · {m.turn_count} turn(s)[/dim]  "
+                            f"{head}"
+                        )
+                    console.print(
+                        "  [dim]Reopen any with [cyan]anthill --resume <id>[/cyan][/dim]"
+                    )
             elif cmd == "recall":
                 # 0.1.31 — full-text search over THIS nation's history.
                 # Fills the gap between in-session window (0.1.28) and
