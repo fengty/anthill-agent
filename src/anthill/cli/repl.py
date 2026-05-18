@@ -2982,6 +2982,10 @@ def run_repl(
                 elif sub == "list" or sub == "":
                     try:
                         from anthill.core.recipes import list_recipes
+                        from anthill.core.skill_stats import (
+                            format_skill_stats,
+                            sort_recipes_by_usage,
+                        )
                         recipes = list_recipes(ndir)
                         if not recipes:
                             console.print(
@@ -2991,15 +2995,26 @@ def run_repl(
                                 "[/dim]"
                             )
                         else:
+                            # 0.1.50 — order by usage so the workhorses
+                            # surface first, and unused skills sink to
+                            # the bottom where they're easy to spot.
+                            ordered = sort_recipes_by_usage(recipes)
+                            used = sum(1 for r in ordered if r.run_count > 0)
                             console.print(
-                                f"  [bold]{len(recipes)} saved skill(s):[/bold]"
+                                f"  [bold]{len(recipes)} saved skill(s)[/bold] "
+                                f"[dim]({used} actually used)[/dim]"
                             )
-                            for r in recipes:
-                                desc = (r.description[:60] + "…") if len(r.description) > 60 else r.description
+                            for r in ordered:
+                                desc = (
+                                    r.description[:60] + "…"
+                                    if len(r.description) > 60
+                                    else r.description
+                                )
+                                stats = format_skill_stats(r)
                                 console.print(
                                     f"    [cyan]{r.name}[/cyan] "
                                     f"[dim]({len(r.subtasks)} subtask(s)) "
-                                    f"{desc}[/dim]"
+                                    f"{stats} {desc}[/dim]"
                                 )
                     except Exception as e:  # noqa: BLE001
                         console.print(f"  [red]{e}[/red]")
