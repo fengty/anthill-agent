@@ -661,6 +661,7 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /power        national strength + ages
     /status       compact status card (model, citizens, cost so far)
     /history      recent asks
+    /timing       per-task_type + per-phase latency over this session
     /project      project context Scout sees (cwd, git branch, files)
     /skills       recurring patterns the nation has noticed in history
     /skill save X distill the last complex ask into a named skill
@@ -1970,6 +1971,55 @@ def _show_history(config: AnthillConfig, nation: Nation, limit: int = 10) -> Non
         console.print(f"  [cyan]{e.id}[/cyan]  {marker}  {request}")
 
 
+def _show_timing(
+    config: AnthillConfig, nation: Nation, stats: SessionStats
+) -> None:
+    """0.1.52 — `/timing` aggregates from the current session's JSONL.
+
+    Walks the session file (if any) and renders per-task_type +
+    per-phase median latencies. Surfaces slow task_types so the user
+    can decide whether to /model assign a faster model to that role.
+    """
+    from anthill.core.timing_stats import format_summary, summarize_timings
+
+    session = getattr(stats, "session", None)
+    if session is None or not session.path.exists():
+        console.print(
+            "[dim]No session log yet — start asking and timing will accumulate."
+            "[/dim]"
+        )
+        return
+    # Pull raw turn dicts straight from the JSONL so we read the
+    # exact same shape that was written (no SessionTurn coercion
+    # losing fields we don't model).
+    import json as _json
+    turn_dicts: list[dict] = []
+    try:
+        with session.path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                if isinstance(rec, dict) and rec.get("kind") == "turn":
+                    turn_dicts.append(rec)
+    except OSError as e:
+        console.print(f"[red]could not read session log: {e}[/red]")
+        return
+
+    summary = summarize_timings(turn_dicts)
+    for line in format_summary(summary):
+        console.print(line)
+    if summary.by_task_type and any(s.is_slow for s in summary.by_task_type):
+        console.print(
+            "  [dim]💡 slow task_type? try [cyan]/model[/cyan] to "
+            "assign a faster model for that role.[/dim]"
+        )
+
+
 def _handle_rate(verdict: str, nation: Nation, config: AnthillConfig) -> None:
     import time
 
@@ -2449,6 +2499,12 @@ def run_repl(
                 _show_status(nation, stats)
             elif cmd == "history":
                 _show_history(config, nation)
+            elif cmd == "timing" or cmd == "timings":
+                # 0.1.52 — per-task_type + per-phase latency aggregates
+                # from the current session JSONL. Lets the user see
+                # where seconds go ("research subtasks have median 18s,
+                # scout 1.5s") without grepping logs.
+                _show_timing(config, nation, stats)
             elif cmd == "clear":
                 console.clear()
                 # 0.1.28 — also reset the rolling conversation window
