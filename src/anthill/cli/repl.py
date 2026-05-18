@@ -574,6 +574,11 @@ class SessionStats:
         # provider's internal model id).
         self.auth_failures_by_model: dict[str, int] = {}
         self.auth_fix_hinted: set[str] = set()
+        # 0.1.33 — project-context injection mode. "auto" (default)
+        # lets is_project_relevant_request decide per-ask. "on" forces
+        # injection. "off" disables it for the session. Toggle via
+        # /project on / off / auto.
+        self.project_inject_mode: str = "auto"
         # 0.1.28 — in-session conversation memory. Real user hit:
         # "» 最近热门电影 → answer / » 我说的是 2026 年的 → 'what 2026
         # topic?'" — citizens had no idea what the user just said
@@ -898,6 +903,10 @@ async def _handle_ask(
     from anthill.core.attachments import expand_attachments
     from anthill.core.costs import UsageRecord, append_usage, price_for
     from anthill.core.executor import ProgressEvent
+
+    # 0.1.33 — sync the session-level project-injection mode into the
+    # nation so Nation.ask sees the user's current toggle preference.
+    nation.project_inject_mode = getattr(stats, "project_inject_mode", "auto")
 
     # v0.1.11 — @file / @glob expansion. Read referenced files BEFORE
     # the request reaches Scout so the planner can see them as part of
@@ -2242,17 +2251,41 @@ def run_repl(nation_name: str = "default") -> int:
                         )
             elif cmd == "project":
                 # 0.1.15 — inspect the project context Scout sees.
+                # 0.1.33 — `/project on/off/auto` toggles whether
+                # the block gets injected. Was implicit-always-on;
+                # a real user reported confabulation when running
+                # from inside anthill-agent's repo and asking
+                # general questions.
                 from anthill.core.project import (
                     find_project_root,
                     project_context_block,
                 )
-                _proj = find_project_root()
-                if _proj is None:
+                arg = rest.strip().lower()
+                if arg in ("on", "off", "auto"):
+                    stats.project_inject_mode = arg
+                    nation.project_inject_mode = arg
+                    state_color = {
+                        "on": "green", "off": "dim", "auto": "cyan",
+                    }[arg]
                     console.print(
-                        "  [dim]No project detected at cwd or any parent.[/dim]"
+                        f"  project context injection: "
+                        f"[{state_color}]{arg}[/{state_color}]"
                     )
                 else:
-                    console.print(f"  [dim]{project_context_block(_proj)}[/dim]")
+                    _proj = find_project_root()
+                    mode = stats.project_inject_mode
+                    console.print(
+                        f"  [dim]injection: {mode} "
+                        f"(toggle with /project on|off|auto)[/dim]"
+                    )
+                    if _proj is None:
+                        console.print(
+                            "  [dim]No project detected at cwd or any parent.[/dim]"
+                        )
+                    else:
+                        console.print(
+                            f"  [dim]{project_context_block(_proj)}[/dim]"
+                        )
             elif cmd == "plan":
                 # 0.1.13 — toggle plan review. When on, every non-trivial
                 # ask gives the user a chance to skip/keep subtasks before

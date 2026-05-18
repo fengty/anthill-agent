@@ -170,3 +170,71 @@ def project_context_block(info: ProjectInfo | None) -> str:
         else:
             lines.append(f"Git: branch {info.git_branch} · clean")
     return "\n".join(lines)
+
+
+# 0.1.33 — heuristic: does the request actually mention the project?
+#
+# Background: 0.1.15 made Anthill always inject project context when
+# launched from a detected project root. That helps for "fix this
+# bug" / "refactor @file.py" but actively POISONS general queries.
+# Real example a user hit:
+#
+#   $ cd anthill-agent
+#   $ anthill
+#   » 我希望找个 AI 项目研究下
+#
+# Scout saw "[project: anthill-agent — Python]" in its system prompt
+# and answered with five fictional AI subprojects "for the agent's
+# scaling API" — confabulated entirely. The user's question was
+# external, the context was internal, and Scout fused them.
+#
+# This function gates the injection: only when the request looks
+# like it's about THIS project does the block go in. Otherwise the
+# nation operates project-unaware for that ask. Users can override
+# with `/project on` (force) or `/project off` (disable for session).
+
+_PROJECT_RELEVANCE_MARKERS = (
+    # English direct references
+    "this project", "this repo", "this codebase", "this code",
+    "the project", "the repo", "the codebase",
+    "my project", "my code", "my repo",
+    "in this", "in here", "in our",
+    # Action verbs that strongly imply the local project
+    "refactor", "review my", "review the", "review this",
+    "fix the bug", "the bug in", "the file",
+    "add a test", "add a feature", "implement in",
+    # File / path / structure references
+    "src/", "tests/", "package.json", "pyproject.toml",
+    ".py", ".ts", ".tsx", ".js", ".go", ".rs",
+    "/file", "/dir",
+    # Chinese direct references
+    "这个项目", "这个代码", "这个仓库", "这份代码",
+    "我的项目", "我的代码", "我的仓库",
+    "本项目", "本代码",
+    "项目里", "项目中", "项目下",
+    "代码里", "代码中", "代码库",
+    "这里的", "这边的",
+    "改一下", "修一下", "看下我的", "审阅",
+)
+
+
+def is_project_relevant_request(request: str) -> bool:
+    """Should the project context block be injected for THIS ask?
+
+    True for requests that name the local project / refer to "this
+    code" / mention file paths / use the local-action verbs. False
+    for purely external questions like "recommend an AI project" or
+    "what's the weather."
+
+    The `@file` syntax is handled separately at the REPL layer — if
+    the user attached files explicitly, the attachment block speaks
+    for itself; project metadata still helps Scout understand the
+    surrounding shape, so `@`-tokens force-enable the injection.
+    """
+    if not request:
+        return False
+    lower = request.lower()
+    if "@" in request:
+        # Attachment syntax — almost certainly project-relevant.
+        return True
+    return any(marker in lower for marker in _PROJECT_RELEVANCE_MARKERS)

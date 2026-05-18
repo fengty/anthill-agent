@@ -154,6 +154,11 @@ class Nation:
     # _compose_system. Empty string means "no memory yet" — perfectly
     # fine for headless tests / first-run.
     memory_context: str = field(default="", repr=False)
+    # 0.1.33 — project-context injection mode. "auto" (default) uses
+    # is_project_relevant_request per ask. "on" forces injection.
+    # "off" disables it. REPL writes this from SessionStats before
+    # each ask via /project on/off/auto.
+    project_inject_mode: str = field(default="auto", repr=False)
     # Path to history.jsonl so ask() can pull similar past examples.
     history_path: Path | None = field(default=None, repr=False)
     # Judge config (LLM-based quality scoring).
@@ -472,11 +477,30 @@ class Nation:
                     # a git repo / pyproject / etc, Scout sees the
                     # project name + kind + top-level listing so its
                     # plan can reference real filenames.
+                    # 0.1.33 — but only when the REQUEST actually
+                    # references the local project. A general query
+                    # like "find me an AI project to research" would
+                    # otherwise get the local project's name fused
+                    # into the answer (real-user-reported bug).
                     from anthill.core.project import (
                         find_project_root,
+                        is_project_relevant_request,
                         project_context_block,
                     )
-                    project_block = project_context_block(find_project_root())
+                    mode = self.project_inject_mode
+                    if mode == "off":
+                        project_block = ""
+                    elif mode == "on":
+                        project_block = project_context_block(
+                            find_project_root()
+                        )
+                    else:  # "auto"
+                        if is_project_relevant_request(request):
+                            project_block = project_context_block(
+                                find_project_root()
+                            )
+                        else:
+                            project_block = ""
                     episodic_context = "\n\n".join(
                         b for b in (project_block, workflow_block, plugin_block, similar_block) if b
                     )
