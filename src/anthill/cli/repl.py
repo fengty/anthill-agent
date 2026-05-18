@@ -1693,22 +1693,26 @@ async def _handle_ask(
     except Exception:  # noqa: BLE001 — mining is best-effort, never break the REPL
         pass
 
-    # 0.1.42 — post-success distillation prompt. When a complex ask
-    # completes successfully WITHOUT a saved skill matching it
-    # (last_matched_skill is None at the start of this ask), AND
-    # the citizens had to retry-after-refusal (meaning we learned a
-    # NEW resourceful approach), surface a one-line "💾 save as
-    # skill?" hint. Cheap nudge; user runs `/skill save <name>` to
-    # commit. This closes the user's correction loop: 接到任务 →
-    # 没有现成 skill → 子民想办法做出来 → 沉淀成 skill 下次直接用.
+    # 0.1.43 — post-success AUTO-distillation. When a complex ask
+    # completes successfully WITHOUT a saved skill matching it AND
+    # the citizens had to retry-after-refusal (meaning they figured
+    # out a NEW resourceful approach), automatically save the recipe.
+    # No "/skill save X" prompt — the king shouldn't have to file
+    # paperwork. The slug is auto-generated; user can rename via
+    # /skill rename later. Closes the user's correction loop end-to-
+    # end: 接到任务 → 没现成 skill → 子民做出来 → 自动沉淀 → 下次直接用.
     try:
+        from anthill.core.recipes import (
+            Recipe,
+            RecipeSubtask,
+            list_recipes,
+            save_recipe,
+        )
         from anthill.core.skill_match import (
+            distill_request_to_recipe_fields,
             find_matching_skill,
-            suggest_distillation,
         )
         ndir = nation_dir(config.home, nation.name)
-        # Did the citizens have to retry past a refusal in this ask?
-        # That's our signal "this was a non-trivial path worth saving."
         had_refusal_retry = any(
             (a.failure_reason == "user_serving_refusal")
             for o in result.outcomes
@@ -1722,15 +1726,33 @@ async def _handle_ask(
             and not already_skill
             and result.final_output
         ):
-            sug = suggest_distillation(
-                request,
-                [s.task_type for s in result.plan.subtasks],
+            existing = [r.name for r in list_recipes(ndir)]
+            slug, template, description, sub_tuples = (
+                distill_request_to_recipe_fields(
+                    request,
+                    [(s.task_type, s.prompt, s.depends_on) for s in result.plan.subtasks],
+                    existing,
+                )
             )
-            console.print(
-                f"  [dim]💾 the citizens just figured this out from "
-                f"scratch. Save as skill [cyan]{sug.suggested_name}[/cyan]?"
-                f"  → [cyan]/skill save {sug.suggested_name}[/cyan][/dim]"
+            recipe = Recipe(
+                name=slug,
+                template=template,
+                description=description,
+                subtasks=[
+                    RecipeSubtask(task_type=tt, prompt_template=pt, depends_on=deps)
+                    for tt, pt, deps in sub_tuples
+                ],
             )
+            try:
+                save_recipe(recipe, ndir)
+                console.print(
+                    f"  [dim]💾 saved skill [cyan]{slug}[/cyan] "
+                    f"({plan_size} subtask(s)) — next time a similar "
+                    f"ask shows up, the citizens will use this directly."
+                    f"[/dim]"
+                )
+            except Exception:  # noqa: BLE001 — auto-save must not break the REPL
+                pass
     except Exception:  # noqa: BLE001
         pass
 
@@ -2888,18 +2910,25 @@ def run_repl(
                 elif sub == "list" or sub == "":
                     try:
                         from anthill.core.recipes import list_recipes
-                        names = list_recipes(ndir)
-                        if not names:
+                        recipes = list_recipes(ndir)
+                        if not recipes:
                             console.print(
-                                "  [dim]No saved skills yet. After a complex ask "
-                                "succeeds, run [cyan]/skill save <name>[/cyan].[/dim]"
+                                "  [dim]No saved skills yet. They auto-save "
+                                "after a complex ask succeeds with refusal-retry, "
+                                "or run [cyan]/skill save <name>[/cyan] manually."
+                                "[/dim]"
                             )
                         else:
                             console.print(
-                                f"  [bold]{len(names)} saved skill(s):[/bold]"
+                                f"  [bold]{len(recipes)} saved skill(s):[/bold]"
                             )
-                            for name in names:
-                                console.print(f"    [cyan]{name}[/cyan]")
+                            for r in recipes:
+                                desc = (r.description[:60] + "…") if len(r.description) > 60 else r.description
+                                console.print(
+                                    f"    [cyan]{r.name}[/cyan] "
+                                    f"[dim]({len(r.subtasks)} subtask(s)) "
+                                    f"{desc}[/dim]"
+                                )
                     except Exception as e:  # noqa: BLE001
                         console.print(f"  [red]{e}[/red]")
                 else:

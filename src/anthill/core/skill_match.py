@@ -196,3 +196,44 @@ def suggest_distillation(
         description=short_description or request[:120],
         subtask_signature=list(plan_task_types),
     )
+
+
+def unique_slug(base: str, existing: Iterable[str]) -> str:
+    """Pick a non-colliding slug. Returns ``base`` if free, else
+    ``base-2``, ``base-3``, … until we find a fresh one.
+
+    Pulled out so the REPL auto-save path and any future callers
+    (e.g. `/skill rename`) share one collision policy.
+    """
+    seen = set(existing)
+    if base not in seen:
+        return base
+    i = 2
+    while f"{base}-{i}" in seen:
+        i += 1
+    return f"{base}-{i}"
+
+
+def distill_request_to_recipe_fields(
+    request: str,
+    plan_subtasks: Iterable[tuple[str, str, Iterable[str]]],
+    existing_names: Iterable[str],
+) -> tuple[str, str, str, list[tuple[str, str, list[str]]]]:
+    """Build the (name, template, description, subtasks) tuple for an
+    auto-saved recipe — caller wraps it in ``Recipe`` / ``RecipeSubtask``.
+
+    ``plan_subtasks`` is iter of (task_type, prompt, depends_on). We
+    templatize each prompt with ``_template_seed`` so per-subtask
+    URLs/IDs/dates don't lock the skill to one case.
+
+    Decoupled from recipes.py so this module stays free of save/IO.
+    Caller does the actual ``save_recipe()`` call.
+    """
+    # Materialize once — caller may pass an iterator.
+    subs = list(plan_subtasks)
+    sug = suggest_distillation(request, [tt for tt, _, _ in subs])
+    slug = unique_slug(sug.suggested_name, existing_names)
+    subtasks = [
+        (tt, _template_seed(prompt), list(deps)) for tt, prompt, deps in subs
+    ]
+    return slug, sug.template_seed, request[:120], subtasks

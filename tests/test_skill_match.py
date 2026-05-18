@@ -24,8 +24,10 @@ from anthill.core.skill_match import (
     MIN_REQUEST_TOKENS,
     DistillationSuggestion,
     SkillMatch,
+    distill_request_to_recipe_fields,
     find_matching_skill,
     suggest_distillation,
+    unique_slug,
 )
 
 
@@ -278,3 +280,100 @@ def test_find_matching_skill_short_inputs_all_return_none(
         tmp_path,
     )
     assert find_matching_skill(request_text, tmp_path) is None
+
+
+# --- unique_slug ------------------------------------------------------------
+
+
+def test_unique_slug_returns_base_when_free() -> None:
+    assert unique_slug("analyze-bug", []) == "analyze-bug"
+    assert unique_slug("analyze-bug", ["other"]) == "analyze-bug"
+
+
+def test_unique_slug_suffixes_when_taken() -> None:
+    # First collision -> -2, two collisions -> -3, etc. Matches the
+    # auto-save loop's expectations in repl.py.
+    assert unique_slug("analyze-bug", ["analyze-bug"]) == "analyze-bug-2"
+    assert (
+        unique_slug("analyze-bug", ["analyze-bug", "analyze-bug-2"])
+        == "analyze-bug-3"
+    )
+    # Sparse holes: if -2 and -3 are taken but -4 is free, we should
+    # land on -4 (we never reuse a hole; the suffix is monotonic).
+    assert (
+        unique_slug(
+            "analyze-bug",
+            ["analyze-bug", "analyze-bug-2", "analyze-bug-3"],
+        )
+        == "analyze-bug-4"
+    )
+
+
+# --- distill_request_to_recipe_fields ---------------------------------------
+
+
+def test_distill_request_to_recipe_fields_basic_shape() -> None:
+    slug, template, description, subs = distill_request_to_recipe_fields(
+        "analyze zentao bug 56128 root cause please",
+        [
+            ("research", "fetch zentao bug 56128 details", []),
+            ("analyze", "explain the root cause of bug 56128", ["research"]),
+        ],
+        existing_names=[],
+    )
+    # Slug is the auto-generated name.
+    assert slug
+    # Top-level template has {id} where 56128 used to be.
+    assert "{id}" in template
+    assert "56128" not in template
+    # Description is the request truncated.
+    assert description.startswith("analyze zentao bug")
+    # Subtask prompts also templatized.
+    assert len(subs) == 2
+    assert all("{id}" in prompt for _, prompt, _ in subs)
+    assert all("56128" not in prompt for _, prompt, _ in subs)
+    # Task types and deps preserved.
+    assert subs[0][0] == "research"
+    assert subs[1][0] == "analyze"
+    assert subs[1][2] == ["research"]
+
+
+def test_distill_request_to_recipe_fields_de_duplicates_slug() -> None:
+    # When the auto-generated slug already exists, we must get a
+    # suffixed one — otherwise back-to-back hard asks overwrite each
+    # other and the king loses skills he just earned.
+    slug, _, _, _ = distill_request_to_recipe_fields(
+        "analyze zentao bug",
+        [("research", "do it", [])],
+        existing_names=["analyze-zentao-bug"],
+    )
+    assert slug == "analyze-zentao-bug-2"
+
+
+def test_distill_request_to_recipe_fields_accepts_iterator() -> None:
+    # The function materializes its plan_subtasks input — passing
+    # an iterator (single-pass) must still work, not silently produce
+    # empty subtasks on the second pass.
+    def gen():
+        yield ("research", "do thing 1", [])
+        yield ("analyze", "do thing 2", ["research"])
+
+    _, _, _, subs = distill_request_to_recipe_fields(
+        "test request long enough",
+        gen(),
+        existing_names=[],
+    )
+    assert len(subs) == 2
+
+
+def test_distill_request_to_recipe_fields_empty_plan() -> None:
+    # No subtasks (shouldn't fire from REPL, but the helper must not
+    # crash). Slug and template still come back.
+    slug, template, _, subs = distill_request_to_recipe_fields(
+        "analyze bug 56128",
+        [],
+        existing_names=[],
+    )
+    assert slug
+    assert subs == []
+    assert "{id}" in template

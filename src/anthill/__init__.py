@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__version__ = "0.1.42"
+__version__ = "0.1.43"
 
 __all__ = ["Agent", "Nation", "PheromoneTrail", "Router"]
 
