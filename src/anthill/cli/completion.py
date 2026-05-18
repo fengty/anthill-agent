@@ -152,8 +152,10 @@ class ReplCompleter:
             candidates = ("on", "off")
         elif slash in ("/citizens", "/citizen"):
             candidates = ("migrate", "migrate-all", "fix", "fix-all")
-        elif slash in ("/memory", "/mem", "/profile", "/preferences", "/prefs"):
+        elif slash in ("/memory", "/mem"):
             candidates = ("edit", "path")
+        elif slash in ("/profile", "/preferences", "/prefs"):
+            candidates = ("edit", "path", "accept", "skip", "pending")
         return sorted(c for c in candidates if c.startswith(partial))
 
     def _complete_attachment(self, token: str) -> list[str]:

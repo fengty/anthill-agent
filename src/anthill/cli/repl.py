@@ -324,6 +324,133 @@ def _edit_in_external_editor(path: Path) -> bool:
         return False
 
 
+# 0.1.32 — module-level cache for the most recent batch of pending
+# user-model inferences. Stays in memory across slash invocations
+# in the same REPL session; cleared once the user accepts or skips.
+_PENDING_INFERENCES: list = []
+
+
+def _user_model_preflight(nation: Nation, config: AnthillConfig) -> None:
+    """Run user_model.infer_user_model() at session start.
+
+    Quiet when no high-confidence inferences exist OR when every
+    inference is already noted in USER.md. Otherwise prints a short
+    "🔍 noticed about you" block and stores the pending inferences
+    so `/profile accept` (or `/profile accept <kind>`) can write
+    them.
+
+    Best-effort: any exception is swallowed. Memory must never
+    block the REPL.
+    """
+    global _PENDING_INFERENCES
+    try:
+        from anthill.core.feedback import load_exemplars
+        from anthill.core.history import load_history
+        from anthill.core.memory_files import read_user_md
+        from anthill.core.user_model import already_recorded, infer_user_model
+
+        ndir = nation_dir(config.home, nation.name)
+        history = load_history(ndir, limit=DEFAULT_INFER_WINDOW)
+        exemplars = load_exemplars(ndir)
+        user_md = read_user_md(config.home)
+
+        inferences = infer_user_model(history, exemplars)
+        # Drop any already in USER.md so we don't pester the user
+        # every session about the same finding.
+        inferences = [i for i in inferences if not already_recorded(i, user_md)]
+    except Exception:  # noqa: BLE001
+        return
+
+    _PENDING_INFERENCES = list(inferences)
+    if not inferences:
+        return
+    console.print(
+        "[bold]🔍 noticed about you[/bold] "
+        "[dim](review with [cyan]/profile accept[/cyan])[/dim]"
+    )
+    for inf in inferences:
+        pct = int(inf.confidence * 100)
+        console.print(
+            f"  [dim]·[/dim] [cyan]{inf.kind}[/cyan] "
+            f"[dim]({pct}% confidence)[/dim]  {inf.summary}"
+        )
+    console.print()
+
+
+# How much history user_model.infer_user_model uses by default. Mirrored
+# from core/user_model.DEFAULT_WINDOW; kept here so the preflight import
+# stays cheap (no module-level import of user_model needed).
+DEFAULT_INFER_WINDOW = 30
+
+
+def _accept_inferences(
+    nation: Nation,
+    config: AnthillConfig,
+    target_kind: str | None = None,
+) -> None:
+    """Write pending inferences to USER.md. ``target_kind`` lets the
+    user accept a subset; default is "all pending."
+
+    Each accepted line ends with an HTML comment marker
+    ``<!-- auto:<kind> -->`` so the next session's preflight can dedup
+    by kind. Lines stay plain-text editable; the comment doesn't
+    render visibly when the file is read by humans.
+    """
+    global _PENDING_INFERENCES
+    if not _PENDING_INFERENCES:
+        console.print("  [dim]No pending inferences.[/dim]")
+        return
+
+    from anthill.core.memory_files import append_user_md
+
+    written = 0
+    skipped = 0
+    new_pending = []
+    for inf in _PENDING_INFERENCES:
+        if target_kind is not None and inf.kind != target_kind:
+            new_pending.append(inf)
+            skipped += 1
+            continue
+        # Marker pairs with already_recorded() dedup.
+        line = f"{inf.summary}  <!-- auto:{inf.kind} -->"
+        ok = append_user_md(
+            config.home, line, section=inf.suggested_section,
+        )
+        if ok:
+            written += 1
+        else:
+            new_pending.append(inf)
+    _PENDING_INFERENCES = new_pending
+    if written:
+        console.print(
+            f"  [green]✓[/green] accepted {written} inference(s) "
+            f"into [cyan]USER.md[/cyan]"
+        )
+        _load_memory_into_nation(nation, config)
+    if skipped and target_kind is not None:
+        console.print(
+            f"  [dim]({skipped} other pending — accept with "
+            f"/profile accept or /profile accept <kind>)[/dim]"
+        )
+
+
+def _skip_inferences(target_kind: str | None = None) -> None:
+    """Forget the current pending inferences without writing them."""
+    global _PENDING_INFERENCES
+    if not _PENDING_INFERENCES:
+        console.print("  [dim]Nothing to skip.[/dim]")
+        return
+    if target_kind is None:
+        n = len(_PENDING_INFERENCES)
+        _PENDING_INFERENCES = []
+        console.print(f"  [dim]skipped {n} inference(s) for this session[/dim]")
+    else:
+        before = len(_PENDING_INFERENCES)
+        _PENDING_INFERENCES = [i for i in _PENDING_INFERENCES if i.kind != target_kind]
+        diff = before - len(_PENDING_INFERENCES)
+        console.print(f"  [dim]skipped {diff} inference(s) for kind={target_kind}[/dim]")
+
+
 def _proxy_preflight() -> None:
     """Warn early when a proxy env var is set but the transport can't use it.
 
@@ -381,6 +508,10 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /skills       recurring patterns the nation has noticed in history
     /memory       this nation's persistent MEMORY.md
     /profile      your global USER.md (alias: /preferences)
+    /profile accept [kind]
+                  commit inferences the nation has noticed about you
+    /profile skip [kind]
+                  dismiss pending inferences for this session
     /remember X   add a one-line lesson to MEMORY.md
     /remember-me X
                   add a one-line fact about yourself to USER.md
@@ -1701,6 +1832,12 @@ def run_repl(nation_name: str = "default") -> int:
     # this BEFORE the first ask burns three retries.
     _proxy_preflight()
 
+    # 0.1.32 — user-model inference. Look at recent history + rated
+    # exemplars and surface any high-confidence preferences the
+    # nation noticed. The user accepts with `/profile accept` (added
+    # alongside) — we never silent-write inferred lines.
+    _user_model_preflight(nation, config)
+
     # 0.1.21 — citizen-model preflight. Same shape as proxy_preflight:
     # the actual bug is a citizen pointing at a model name the user no
     # longer has configured ("minimax" left over after the user
@@ -1879,19 +2016,37 @@ def run_repl(nation_name: str = "default") -> int:
                         console.print(text)
             elif cmd in ("profile", "preferences", "prefs"):
                 # 0.1.29 — view / edit the global USER.md.
+                # 0.1.32 — `/profile accept [kind]` / `/profile skip [kind]`
+                # commit or drop the inferences surfaced at session start.
                 from anthill.core.memory_files import (
                     ensure_user_md,
                     read_user_md,
                     user_md_path,
                 )
-                action = rest.strip().lower()
-                if action in ("edit", "e"):
+                action = rest.strip()
+                head = action.split()[0].lower() if action else ""
+                tail = action.split(maxsplit=1)[1].strip() if " " in action else ""
+                if head in ("edit", "e"):
                     path = ensure_user_md(config.home)
                     _edit_in_external_editor(path)
                     _load_memory_into_nation(nation, config)
                     console.print("  [green]✓[/green] profile reloaded")
-                elif action in ("path", "where"):
+                elif head in ("path", "where"):
                     console.print(f"  [cyan]{user_md_path(config.home)}[/cyan]")
+                elif head in ("accept", "confirm", "yes", "y"):
+                    _accept_inferences(nation, config, tail or None)
+                elif head in ("skip", "no", "n", "dismiss"):
+                    _skip_inferences(tail or None)
+                elif head in ("pending", "noticed"):
+                    if not _PENDING_INFERENCES:
+                        console.print("  [dim]No pending inferences.[/dim]")
+                    else:
+                        for inf in _PENDING_INFERENCES:
+                            pct = int(inf.confidence * 100)
+                            console.print(
+                                f"  [cyan]{inf.kind}[/cyan] "
+                                f"[dim]({pct}%)[/dim]  {inf.summary}"
+                            )
                 else:
                     text = read_user_md(config.home)
                     if not text.strip():
