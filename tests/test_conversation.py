@@ -150,6 +150,54 @@ def test_is_follow_up_empty_input_is_false() -> None:
     assert is_follow_up("   ", c.last_turn()) is False
 
 
+# --- 0.1.48 — trivial pleasantries are conversation resets, not follow-ups
+
+
+def test_is_follow_up_chinese_greeting_after_bug_analysis_is_reset() -> None:
+    """The original bug: 你好 after a bug-analysis turn was being
+    wrapped as a follow-up because it's short, then Scout saw the
+    bug-analysis context and planned research+analyze for a greeting
+    — 45s wasted on a "hi". A greeting MUST be its own conversation
+    starting point."""
+    from anthill.core.conversation import ConversationContext, is_follow_up
+
+    c = ConversationContext()
+    c.record("分析下：http://example.com/zentao/bug-56128.html", "(long bug analysis)")
+    assert is_follow_up("你好", c.last_turn()) is False
+    assert is_follow_up("您好", c.last_turn()) is False
+
+
+def test_is_follow_up_english_greeting_after_real_ask_is_reset() -> None:
+    from anthill.core.conversation import ConversationContext, is_follow_up
+
+    c = ConversationContext()
+    c.record("write a report on Q3 revenue", "(long report)")
+    assert is_follow_up("hi", c.last_turn()) is False
+    assert is_follow_up("hello", c.last_turn()) is False
+    assert is_follow_up("thanks", c.last_turn()) is False
+
+
+def test_is_follow_up_pleasantry_with_punctuation_still_reset() -> None:
+    from anthill.core.conversation import ConversationContext, is_follow_up
+
+    c = ConversationContext()
+    c.record("分析bug", "(answer)")
+    assert is_follow_up("你好！", c.last_turn()) is False
+    assert is_follow_up("Hi.", c.last_turn()) is False
+
+
+def test_is_follow_up_greeting_with_real_content_is_NOT_reset() -> None:
+    """If user says "你好 can you also analyze this", we still want
+    the prior context. The trivial-reset only fires when the message
+    IS the pleasantry, not when it starts with one."""
+    from anthill.core.conversation import ConversationContext, is_follow_up
+
+    c = ConversationContext()
+    c.record("分析bug 1234", "(answer)")
+    # Short + non-trivial → follow-up wrap fires (correct behavior).
+    assert is_follow_up("你好 还有什么发现", c.last_turn()) is True
+
+
 # --- wrap_with_context ---------------------------------------------------
 
 

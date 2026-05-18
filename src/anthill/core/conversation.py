@@ -108,11 +108,24 @@ def is_follow_up(current: str, prior: Turn | None) -> bool:
     False positives here are OK: at worst Scout sees a context block
     it doesn't strictly need and writes a slightly heavier prompt.
     False negatives are the real cost: that's the bug we're closing.
+
+    0.1.48 exception: trivial pleasantries ("你好", "hi", "thanks")
+    are NEVER follow-ups. A greeting after a bug-analysis turn means
+    "let me start fresh", not "continue analyzing the bug". The
+    pre-0.1.48 short-text rule incorrectly wrapped these with bug-
+    analysis context, which made Scout treat "你好" as complex and
+    blew 45s on a real session. is_trivial_request lives in
+    skill_match; we re-import locally to avoid a circular dep.
     """
     if prior is None:
         return False
     text = current.strip()
     if not text:
+        return False
+    # 0.1.48 — trivial-reset guard. Cheap import here so module load
+    # doesn't depend on the skill subsystem.
+    from anthill.core.skill_match import is_trivial_request
+    if is_trivial_request(text):
         return False
     lower = text.lower()
 
