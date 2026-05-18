@@ -1328,21 +1328,36 @@ async def _handle_ask(
                 if latest is not None
                 else None
             )
-            err_blurb = ""
-            if latest is not None:
-                # Trim long error strings; show just enough to diagnose.
-                output_text = str(latest.output or "").strip()
-                if output_text:
-                    # Snip to one line, 100 chars.
-                    snippet = output_text.replace("\n", " ")[:100]
-                    err_blurb = f"  [dim]│[/dim] [red]{snippet}[/red]"
-            label = f" ({reason})" if reason else ""
-            console.print(
-                f"    [yellow]retry[/yellow] attempt {event.attempt_number} "
-                f"failed{label}, trying another citizen..."
-            )
-            if err_blurb:
-                console.print(err_blurb)
+            # 0.1.41 — user-serving refusals get a friendlier UI than
+            # the generic "retry attempt N failed ([red]<error>[/red])"
+            # treatment. The refusal body was just streamed in full
+            # via on_token; the 100-char snippet would be redundant
+            # noise. Show a clear "the citizen deferred — retrying
+            # with a resourceful nudge" line instead, and skip the
+            # err_blurb entirely for this failure class.
+            if reason == "user_serving_refusal":
+                console.print(
+                    f"    [yellow]🛠 attempt {event.attempt_number} "
+                    f"deferred[/yellow] [dim]— citizen punted "
+                    f"the work back; retrying with a "
+                    f"resourceful nudge…[/dim]"
+                )
+            else:
+                err_blurb = ""
+                if latest is not None:
+                    # Trim long error strings; show just enough to diagnose.
+                    output_text = str(latest.output or "").strip()
+                    if output_text:
+                        # Snip to one line, 100 chars.
+                        snippet = output_text.replace("\n", " ")[:100]
+                        err_blurb = f"  [dim]│[/dim] [red]{snippet}[/red]"
+                label = f" ({reason})" if reason else ""
+                console.print(
+                    f"    [yellow]retry[/yellow] attempt {event.attempt_number} "
+                    f"failed{label}, trying another citizen..."
+                )
+                if err_blurb:
+                    console.print(err_blurb)
         elif event.kind == "finished":
             _close_stream_line()
             outcome = event.outcome

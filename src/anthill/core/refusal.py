@@ -119,19 +119,11 @@ def is_user_serving_refusal(text: str) -> bool:
 # without overriding the worker's safety guardrails — we don't want
 # to bypass POLICY_REFUSAL territory by mistake.
 RESOURCEFUL_RETRY_ADDENDUM = (
-    "\n\n[The previous attempt at this task asked the user to do the "
-    "work themselves (e.g. \"please paste the content\" / \"I can't "
-    "access that URL\"). That's a failure — you serve the king and "
-    "should try harder. Concretely:\n"
-    "  - If a URL can't be fetched directly, infer what you can from "
-    "the URL pattern, search the web for the resource by name, or "
-    "reason about likely content from context.\n"
-    "  - If a file or system isn't accessible, describe what you "
-    "would check given the constraints; never just bounce back.\n"
-    "  - If a real piece of input is genuinely required, say so in "
-    "ONE short sentence at the end, AFTER doing as much work as the "
-    "available context supports.\n"
-    "Never use phrases like \"please paste\", \"could you provide\", "
-    "\"I cannot access\" — go as far as the available context lets you "
-    "and frame remaining gaps as one concrete follow-up question.]"
+    "\n\n[Note: a previous attempt at this task bounced the work back "
+    "to the user (\"please paste\" / \"I can't access\"). Don't do that. "
+    "Produce the best substantive answer the available context supports — "
+    "infer from URL patterns / domain knowledge / general reasoning. If "
+    "a specific piece of input is truly needed, ask for it in ONE short "
+    "sentence at the END, after delivering whatever analysis you can. "
+    "Lead with the analysis, not the disclaimer.]"
 )
