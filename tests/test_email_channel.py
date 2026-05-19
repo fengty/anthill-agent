@@ -296,3 +296,220 @@ def test_parse_event_thread_id_falls_back_to_in_reply_to() -> None:
     msg = EmailChannel.parse_event(payload)
     assert msg is not None
     assert msg.thread_id == "<root@example.com>"
+
+
+# --- 0.1.66 — IMAP receive ----------------------------------------------
+
+
+def test_parse_rfc822_text_plain() -> None:
+    raw = (
+        b"From: alice@example.com\r\n"
+        b"To: bot@example.com\r\n"
+        b"Subject: please analyze\r\n"
+        b"Message-ID: <abc@example.com>\r\n"
+        b"In-Reply-To: <root@example.com>\r\n"
+        b"References: <root@example.com> <middle@example.com>\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"\r\n"
+        b"Please summarize my standups\r\n"
+    )
+    msg = EmailChannel._parse_rfc822(raw)
+    assert msg is not None
+    assert msg.sender == "alice@example.com"
+    assert "summarize" in msg.text
+    assert msg.message_id == "<abc@example.com>"
+    assert msg.thread_id == "<root@example.com>"
+    assert msg.reply_to_id == "<root@example.com>"
+
+
+def test_parse_rfc822_html_fallback() -> None:
+    """Pure HTML mail → tags stripped, text usable."""
+    raw = (
+        b"From: alice@example.com\r\n"
+        b"Subject: t\r\n"
+        b"Message-ID: <x>\r\n"
+        b"Content-Type: text/html; charset=utf-8\r\n"
+        b"\r\n"
+        b"<html><body><p>Hello <b>world</b></p>"
+        b"<script>alert(1)</script>"
+        b"<p>second paragraph</p></body></html>\r\n"
+    )
+    msg = EmailChannel._parse_rfc822(raw)
+    assert msg is not None
+    assert "Hello" in msg.text
+    assert "world" in msg.text
+    assert "alert" not in msg.text  # script stripped
+    assert "<p>" not in msg.text
+
+
+def test_parse_rfc822_multipart_prefers_text_plain() -> None:
+    raw = (
+        b"From: alice@example.com\r\n"
+        b"Subject: t\r\n"
+        b"Message-ID: <x>\r\n"
+        b"Content-Type: multipart/alternative; boundary=BOUNDARY\r\n"
+        b"\r\n"
+        b"--BOUNDARY\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"\r\n"
+        b"PLAIN VERSION\r\n"
+        b"--BOUNDARY\r\n"
+        b"Content-Type: text/html; charset=utf-8\r\n"
+        b"\r\n"
+        b"<p>HTML VERSION</p>\r\n"
+        b"--BOUNDARY--\r\n"
+    )
+    msg = EmailChannel._parse_rfc822(raw)
+    assert msg is not None
+    assert msg.text == "PLAIN VERSION"
+
+
+def test_parse_rfc822_no_sender_returns_none() -> None:
+    raw = b"Subject: anon\r\n\r\nhello\r\n"
+    assert EmailChannel._parse_rfc822(raw) is None
+
+
+def test_parse_rfc822_no_body_returns_none() -> None:
+    raw = (
+        b"From: alice@example.com\r\n"
+        b"Subject: t\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"   \r\n"
+    )
+    assert EmailChannel._parse_rfc822(raw) is None
+
+
+def test_parse_rfc822_invalid_bytes_returns_none() -> None:
+    """Garbage in → None out, no exception."""
+    # `message_from_bytes` is very permissive — it accepts almost
+    # anything. We pass deliberately empty bytes to force None.
+    assert EmailChannel._parse_rfc822(b"") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_unseen_returns_empty_when_no_imap_host() -> None:
+    """Send-only channel → fetch_unseen no-ops."""
+    ch = EmailChannel(
+        smtp_host="x", smtp_port=587, username="u", password="p"
+    )
+    assert ch.imap_host is None
+    assert await ch.fetch_unseen() == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_unseen_swallows_imap_errors(monkeypatch) -> None:
+    """Network error / bad creds → return [], never raise."""
+    import imaplib
+
+    def boom(*a, **kw):
+        raise OSError("imap down")
+
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", boom)
+    ch = EmailChannel(
+        smtp_host="x", smtp_port=587, username="u", password="p",
+        imap_host="imap.example.com",
+    )
+    assert await ch.fetch_unseen() == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_unseen_parses_and_marks_seen(monkeypatch) -> None:
+    """Successful poll: returns parsed messages and marks each Seen."""
+    import imaplib
+
+    raw_msg = (
+        b"From: alice@example.com\r\n"
+        b"Message-ID: <abc@example.com>\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"\r\n"
+        b"hello from inbox\r\n"
+    )
+
+    stored: list[tuple] = []
+
+    class _ImapStub:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+        def login(self, *a, **kw):
+            pass
+
+        def select(self, *a, **kw):
+            pass
+
+        def search(self, _, criterion):
+            return ("OK", [b"42 43"])
+
+        def fetch(self, uid, _query):
+            return ("OK", [(b"42 (BODY[])", raw_msg)])
+
+        def store(self, uid, op, flags):
+            stored.append((uid, op, flags))
+
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", _ImapStub)
+    ch = EmailChannel(
+        smtp_host="x", smtp_port=587, username="u", password="p",
+        imap_host="imap.example.com",
+    )
+    msgs = await ch.fetch_unseen()
+    # 2 unseen UIDs returned by search; each fetch returns the same
+    # body (stub) → 2 parsed messages, 2 Seen marks.
+    assert len(msgs) == 2
+    assert all(m.sender == "alice@example.com" for m in msgs)
+    assert len(stored) == 2
+    assert all(op == "+FLAGS" and flags == "\\Seen" for _, op, flags in stored)
+
+
+@pytest.mark.asyncio
+async def test_fetch_unseen_respects_mark_seen_false(monkeypatch) -> None:
+    """When mark_seen=False, the IMAP store call is skipped — useful
+    for dry-run / preview modes."""
+    import imaplib
+
+    raw_msg = (
+        b"From: alice@example.com\r\nMessage-ID: <x>\r\n"
+        b"Content-Type: text/plain\r\n\r\nbody\r\n"
+    )
+
+    stored: list = []
+
+    class _ImapStub:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+        def login(self, *a, **kw):
+            pass
+
+        def select(self, *a, **kw):
+            pass
+
+        def search(self, *a, **kw):
+            return ("OK", [b"1"])
+
+        def fetch(self, uid, _q):
+            return ("OK", [(b"1 (BODY[])", raw_msg)])
+
+        def store(self, *a, **kw):
+            stored.append(a)
+
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", _ImapStub)
+    ch = EmailChannel(
+        smtp_host="x", smtp_port=587, username="u", password="p",
+        imap_host="imap.example.com",
+    )
+    msgs = await ch.fetch_unseen(mark_seen=False)
+    assert len(msgs) == 1
+    assert stored == []  # store never called

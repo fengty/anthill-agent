@@ -60,15 +60,18 @@ CHANNEL_SPECS: dict[str, list[dict[str, Any]]] = {
     "discord": [
         {"key": "bot_token", "prompt": "Bot token (from Discord dev portal)", "kind": "secret"},
     ],
-    # 0.1.61 — Email send (SMTP). MVP receive piggybacks on
-    # webhook-bridge services; not in scope here. smtp_port defaults
-    # to 587 (STARTTLS); use 465 for implicit SSL.
+    # 0.1.61 — Email send (SMTP) + 0.1.66 — IMAP receive (optional).
+    # smtp_port defaults to 587 (STARTTLS); use 465 for implicit SSL.
+    # imap_host blank = send-only channel.
     "email": [
         {"key": "smtp_host", "prompt": "SMTP host (e.g. smtp.gmail.com)", "kind": "field"},
         {"key": "smtp_port", "prompt": "SMTP port (587 STARTTLS / 465 SSL)", "kind": "field"},
         {"key": "username", "prompt": "SMTP username (usually your email)", "kind": "field"},
         {"key": "password", "prompt": "SMTP password / app password", "kind": "secret"},
         {"key": "from_addr", "prompt": "From: address (blank = same as username)", "kind": "field", "optional": True},
+        {"key": "imap_host", "prompt": "IMAP host for receive (blank = send-only)", "kind": "field", "optional": True},
+        {"key": "imap_port", "prompt": "IMAP port (993 = SSL default)", "kind": "field", "optional": True},
+        {"key": "imap_folder", "prompt": "IMAP folder (default INBOX)", "kind": "field", "optional": True},
     ],
 }
 
@@ -177,6 +180,9 @@ def channel_list() -> None:
 @click.option("--username", help="Email: SMTP username")
 @click.option("--password", help="Email: SMTP password / app password")
 @click.option("--from-addr", help="Email: From address (defaults to username)")
+@click.option("--imap-host", help="Email: IMAP host for receive (e.g. imap.gmail.com)")
+@click.option("--imap-port", help="Email: IMAP port (993 = SSL default)")
+@click.option("--imap-folder", help="Email: IMAP folder to poll (default INBOX)")
 def channel_add(
     name: str | None,
     kind: str | None,
@@ -191,6 +197,9 @@ def channel_add(
     username: str | None,
     password: str | None,
     from_addr: str | None,
+    imap_host: str | None,
+    imap_port: str | None,
+    imap_folder: str | None,
 ) -> None:
     """Add a channel. With no flags, runs interactively."""
     cfg = load_config()
@@ -235,6 +244,9 @@ def channel_add(
                 "username": username,
                 "password": password,
                 "from_addr": from_addr,
+                "imap_host": imap_host,
+                "imap_port": imap_port or "993",
+                "imap_folder": imap_folder or "INBOX",
             },
         }
         extras = {}
@@ -415,11 +427,22 @@ def build_channel(entry: ChannelEntry):  # noqa: ANN201
             smtp_port = int(port_raw)
         except (TypeError, ValueError):
             smtp_port = 587
+        # 0.1.66 — IMAP receive is opt-in. None imap_host = send-only.
+        imap_host = entry.extra.get("imap_host") or None
+        imap_port_raw = entry.extra.get("imap_port") or "993"
+        try:
+            imap_port = int(imap_port_raw)
+        except (TypeError, ValueError):
+            imap_port = 993
+        imap_folder = entry.extra.get("imap_folder") or "INBOX"
         return EmailChannel(
             smtp_host=smtp_host,
             smtp_port=smtp_port,
             username=username,
             password=password,
             from_addr=entry.extra.get("from_addr") or None,
+            imap_host=imap_host,
+            imap_port=imap_port,
+            imap_folder=imap_folder,
         )
     return None

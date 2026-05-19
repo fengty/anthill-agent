@@ -1,4 +1,4 @@
-"""Email channel — SMTP send (MVP).
+"""Email channel — SMTP send + IMAP receive.
 
 0.1.61 — the second biggest "anyone" gap after Discord. Email is
 asynchronous by nature, which makes it the right channel for:
@@ -6,17 +6,17 @@ asynchronous by nature, which makes it the right channel for:
   - cron / scheduled summaries
   - notifications to non-developers who don't use Slack/Telegram
 
-This MVP is **send-only**. Receive (IMAP polling or webhook) is a
-follow-up because:
-  - SMTP send works with any mail provider out of the box (Gmail
-    app passwords, AWS SES, Mailgun, Postmark, corporate Exchange)
-  - IMAP receive needs either a polling loop or a webhook bridge
-    service, which doubles the integration surface
+0.1.66 — added IMAP receive: poll for UNSEEN messages, parse them
+into PlatformMessage, mark as seen. Two delivery modes both work:
+  - polling loop (this module's `fetch_unseen()`) — simplest, works
+    with any IMAP server (Gmail, Outlook, Exchange, generic)
+  - webhook bridge (existing parse_event hook) — for users on
+    Mailgun / Postmark / SES SNS who prefer push delivery
 
 Implementation:
-- stdlib smtplib in `asyncio.to_thread` — zero extra deps
+- stdlib smtplib + imaplib in `asyncio.to_thread` — zero extra deps
 - TLS via STARTTLS by default (port 587). port 465 = implicit SSL.
-  port 25 = open relay (rarely available outside dev).
+- IMAP uses SSL by default (port 993) since most servers require it.
 
 For ping(): connect + login + QUIT without sending. Catches the
 most common config bugs (bad creds, wrong host, firewall) without
@@ -26,11 +26,60 @@ spamming a test recipient.
 from __future__ import annotations
 
 import asyncio
+import email as _email
+import imaplib
 import smtplib
 import ssl
 from email.message import EmailMessage
 
 from anthill.channels.base import Channel, ChannelMessage
+
+
+def _decode_part(part) -> str:  # noqa: ANN001 — email.Message has loose typing
+    """Decode an email MIME part to str, defensively.
+
+    Email transfer-encoding can be quoted-printable / base64 / 7bit;
+    get_payload(decode=True) returns bytes once decoded. Charset
+    falls back to utf-8 with errors='replace' so weird encodings
+    don't crash the poller.
+    """
+    try:
+        raw = part.get_payload(decode=True)
+    except Exception:  # noqa: BLE001
+        return ""
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    charset = part.get_content_charset() or "utf-8"
+    try:
+        return raw.decode(charset, errors="replace")
+    except (LookupError, AttributeError):
+        return raw.decode("utf-8", errors="replace")
+
+
+def _strip_html(html: str) -> str:
+    """Cheap HTML → text. Not a parser; we just unwrap tags so the
+    LLM downstream sees readable content. Most well-formed mail
+    clients send a text/plain alternative; this is the fallback for
+    the rare HTML-only senders.
+    """
+    import re as _re
+
+    # Drop <script>/<style> blocks entirely.
+    cleaned = _re.sub(
+        r"<(script|style)[^>]*>.*?</\1>", " ", html,
+        flags=_re.DOTALL | _re.IGNORECASE,
+    )
+    # Replace block tags with newlines for readability.
+    cleaned = _re.sub(
+        r"</?(p|br|div|li|tr|h\d)[^>]*>", "\n", cleaned, flags=_re.IGNORECASE
+    )
+    # Strip remaining tags.
+    cleaned = _re.sub(r"<[^>]+>", "", cleaned)
+    # Collapse whitespace.
+    cleaned = _re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
 
 
 class EmailChannel(Channel):
@@ -44,6 +93,9 @@ class EmailChannel(Channel):
         username: str,
         password: str,
         from_addr: str | None = None,
+        imap_host: str | None = None,
+        imap_port: int = 993,
+        imap_folder: str = "INBOX",
     ) -> None:
         self.smtp_host = smtp_host
         self.smtp_port = smtp_port
@@ -52,6 +104,13 @@ class EmailChannel(Channel):
         # If from_addr is omitted, use username — works for most
         # providers where the SMTP user IS the sender mailbox.
         self.from_addr = from_addr or username
+        # 0.1.66 — IMAP receive config. When imap_host is None, the
+        # receive path is opt-out (channel is send-only). Most users
+        # who turn on receive use the same provider as send, often
+        # with `imap.gmail.com` / `outlook.office365.com` etc.
+        self.imap_host = imap_host
+        self.imap_port = imap_port
+        self.imap_folder = imap_folder
 
     async def send(
         self,
@@ -141,6 +200,152 @@ class EmailChannel(Channel):
                     server.starttls(context=context)
                     server.ehlo()
                 server.login(self.username, self.password)
+
+    # ─── 0.1.66 — IMAP receive ─────────────────────────────────────────
+
+    async def fetch_unseen(
+        self,
+        *,
+        limit: int = 20,
+        mark_seen: bool = True,
+    ) -> list[ChannelMessage]:
+        """Poll the IMAP folder for UNSEEN messages, return parsed
+        ChannelMessages. Marks each as Seen by default so the next
+        poll doesn't re-deliver them.
+
+        Returns [] when imap_host is not configured (channel is
+        send-only by design) or on any IMAP error (network down,
+        bad creds). Errors are swallowed because polling is meant
+        to be run on a timer — a single failed poll shouldn't kill
+        the loop.
+
+        `limit` caps per-poll deliveries. Useful when a long-idle
+        folder suddenly has 500 unseen messages — better to drain
+        in chunks than block the daemon for minutes.
+        """
+        if not self.imap_host:
+            return []
+        try:
+            return await asyncio.to_thread(
+                self._fetch_unseen_sync,
+                limit=limit,
+                mark_seen=mark_seen,
+            )
+        except Exception:  # noqa: BLE001 — polling must not crash daemon
+            return []
+
+    def _fetch_unseen_sync(
+        self, *, limit: int, mark_seen: bool
+    ) -> list[ChannelMessage]:
+        context = ssl.create_default_context()
+        out: list[ChannelMessage] = []
+        with imaplib.IMAP4_SSL(
+            self.imap_host, self.imap_port, ssl_context=context, timeout=20
+        ) as conn:
+            conn.login(self.username, self.password)
+            conn.select(self.imap_folder)
+            # UNSEEN search returns space-separated message UIDs.
+            typ, data = conn.search(None, "UNSEEN")
+            if typ != "OK" or not data or not data[0]:
+                return []
+            uids = data[0].split()[:limit]
+            for uid in uids:
+                # PEEK so reading doesn't mark as Seen (we set the
+                # flag ourselves only when we successfully parsed).
+                typ, fetched = conn.fetch(uid, "(BODY.PEEK[])")
+                if typ != "OK" or not fetched:
+                    continue
+                # imaplib returns nested tuples / bytes; the payload
+                # is the second element of the first item.
+                raw_msg = None
+                for item in fetched:
+                    if isinstance(item, tuple) and len(item) >= 2:
+                        raw_msg = item[1]
+                        break
+                if raw_msg is None:
+                    continue
+                msg = self._parse_rfc822(raw_msg)
+                if msg is not None:
+                    out.append(msg)
+                    if mark_seen:
+                        try:
+                            conn.store(uid, "+FLAGS", "\\Seen")
+                        except Exception:  # noqa: BLE001
+                            # Marking failed — the next poll will
+                            # redeliver. Annoying but not fatal.
+                            pass
+        return out
+
+    @staticmethod
+    def _parse_rfc822(raw: bytes) -> ChannelMessage | None:
+        """Parse a raw RFC 822 message into a ChannelMessage.
+
+        Extracts: From, In-Reply-To, References, Message-ID, body
+        (text/plain part preferred; falls back to text/html with
+        HTML stripped naively).
+
+        Returns None when the message has no body content (rare
+        in practice — most bounces still have a text body).
+        """
+        try:
+            mime = _email.message_from_bytes(raw)
+        except Exception:  # noqa: BLE001
+            return None
+
+        from_addr = (mime.get("From") or "").strip()
+        if not from_addr:
+            return None
+
+        # Walk multipart to find a text/plain body. Fall back to
+        # text/html with tags stripped.
+        body = ""
+        if mime.is_multipart():
+            for part in mime.walk():
+                ctype = part.get_content_type()
+                if ctype == "text/plain":
+                    body = _decode_part(part)
+                    if body:
+                        break
+            if not body:
+                for part in mime.walk():
+                    if part.get_content_type() == "text/html":
+                        html = _decode_part(part)
+                        if html:
+                            body = _strip_html(html)
+                            break
+        else:
+            body = _decode_part(mime)
+            if mime.get_content_type() == "text/html":
+                body = _strip_html(body)
+
+        body = (body or "").strip()
+        if not body:
+            return None
+
+        message_id = mime.get("Message-ID")
+        in_reply_to = mime.get("In-Reply-To")
+        references = mime.get("References") or ""
+        thread_id = (
+            references.split()[0]
+            if references
+            else in_reply_to
+        )
+
+        return ChannelMessage(
+            channel="email",
+            sender=from_addr,
+            text=body,
+            raw={
+                "from": from_addr,
+                "body": body,
+                "message_id": message_id,
+                "in_reply_to": in_reply_to,
+                "references": references,
+            },
+            message_id=message_id,
+            thread_id=thread_id,
+            reply_to_id=in_reply_to,
+        )
 
     @staticmethod
     def parse_event(payload: dict) -> ChannelMessage | None:
