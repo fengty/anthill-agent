@@ -662,6 +662,7 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /status       compact status card (model, citizens, cost so far)
     /history      recent asks
     /timing       per-task_type + per-phase latency over this session
+    /compress     collapse middle of conversation window (head+tail preserved)
     /project      project context Scout sees (cwd, git branch, files)
     /skills       recurring patterns the nation has noticed in history
     /skill save X distill the last complex ask into a named skill
@@ -2564,6 +2565,27 @@ def run_repl(
                 # where seconds go ("research subtasks have median 18s,
                 # scout 1.5s") without grepping logs.
                 _show_timing(config, nation, stats)
+            elif cmd == "compress":
+                # 0.1.62 — head-tail conversation compression.
+                # Collapses the middle of the rolling window when it
+                # gets long, preserving head (anchoring context) +
+                # tail (recent exchange). Lossy without a summarizer
+                # — for now uses the simple "[N earlier turns
+                # omitted]" placeholder. The user runs this when
+                # follow-up context starts to dominate Scout prompts.
+                collapsed = stats.conversation.compress_in_place(
+                    keep_head=2, keep_tail=4
+                )
+                if collapsed == 0:
+                    console.print(
+                        "  [dim]Nothing to compress yet — "
+                        "fewer than 7 turns in the window.[/dim]"
+                    )
+                else:
+                    console.print(
+                        f"  [dim]📦 collapsed {collapsed} middle "
+                        f"turn(s); kept 2 anchor + 4 recent.[/dim]"
+                    )
             elif cmd == "clear":
                 console.clear()
                 # 0.1.28 — also reset the rolling conversation window

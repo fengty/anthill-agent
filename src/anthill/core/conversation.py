@@ -90,6 +90,100 @@ class ConversationContext:
     def __len__(self) -> int:
         return len(self._turns)
 
+    def compressed_view(
+        self,
+        *,
+        keep_head: int = 2,
+        keep_tail: int = 4,
+        summarize_fn=None,
+    ) -> list["Turn"]:
+        """0.1.62 — head-tail preservation with optional middle compression.
+
+        Inspired by hermes ``agent/context_compressor.py``. When the
+        rolling window holds more turns than (head + tail), the middle
+        turns are replaced by a single synthetic Turn carrying either:
+
+          - a real summary from ``summarize_fn(middle_turns) -> str``
+            (caller-supplied; typically an LLM call), or
+          - a lossy placeholder ``[N earlier turns omitted]`` when
+            ``summarize_fn`` is None.
+
+        Why preserve HEAD: the first few turns anchor the conversation
+        ("what we're working on", style preferences, project context).
+        Dropping them loses identity.
+
+        Why preserve TAIL: the most recent turns are what the user is
+        immediately continuing from. Dropping them breaks follow-ups.
+
+        ``keep_head + keep_tail`` defaults to 6 because that's the
+        smallest window where the strategy actually helps — below
+        that, just return the deque verbatim.
+
+        Returns a new list; does NOT mutate the stored deque. Caller
+        decides whether to use the compressed view for one ask
+        (e.g. wrap_with_context) or commit it back.
+        """
+        turns = list(self._turns)
+        if len(turns) <= keep_head + keep_tail:
+            return turns
+
+        head = turns[:keep_head]
+        tail = turns[-keep_tail:]
+        middle = turns[keep_head:-keep_tail]
+        if not middle:
+            return turns  # nothing to compress
+
+        if summarize_fn is not None:
+            try:
+                summary_text = summarize_fn(middle)
+            except Exception:  # noqa: BLE001
+                # If user-supplied summarizer fails, fall back to the
+                # lossy marker — never break the conversation context.
+                summary_text = None
+        else:
+            summary_text = None
+
+        if not summary_text:
+            summary_text = f"[{len(middle)} earlier turn(s) omitted]"
+
+        # The synthetic turn carries an empty request (so follow-up
+        # detection doesn't mistake it for a user message) and the
+        # summary in the response slot. timestamp = midpoint of the
+        # compressed range so chronology stays coherent.
+        midpoint_ts = (middle[0].timestamp + middle[-1].timestamp) / 2.0
+        synthetic = Turn(
+            request="",
+            response=summary_text,
+            timestamp=midpoint_ts,
+        )
+        return head + [synthetic] + tail
+
+    def compress_in_place(
+        self,
+        *,
+        keep_head: int = 2,
+        keep_tail: int = 4,
+        summarize_fn=None,
+    ) -> int:
+        """Replace the stored deque with the compressed view.
+
+        Returns the number of middle turns that were collapsed (0
+        means no compression happened — useful for the REPL's
+        ``/compress`` command output).
+        """
+        before = len(self._turns)
+        compressed = self.compressed_view(
+            keep_head=keep_head,
+            keep_tail=keep_tail,
+            summarize_fn=summarize_fn,
+        )
+        if len(compressed) >= before:
+            return 0  # nothing happened
+        # Replace contents preserving maxlen.
+        maxlen = self._turns.maxlen
+        self._turns = deque(compressed, maxlen=maxlen)
+        return before - len(compressed)
+
 
 def is_follow_up(current: str, prior: Turn | None) -> bool:
     """Heuristic: does ``current`` reference the prior turn?

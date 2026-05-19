@@ -76,7 +76,7 @@ class CompletionContext:
 # doesn't matter — we sort at completion time so output is stable.
 KNOWN_SLASH_COMMANDS: tuple[str, ...] = (
     "/help", "/?", "/quit", "/q", "/exit",
-    "/clear", "/status",
+    "/clear", "/status", "/compress",
     "/trails", "/identity", "/power", "/history", "/timing", "/project", "/skills",
     "/citizens", "/citizen",
     "/memory", "/mem", "/profile", "/preferences", "/prefs",
