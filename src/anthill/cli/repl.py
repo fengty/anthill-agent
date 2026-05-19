@@ -1130,9 +1130,18 @@ async def _handle_ask(
             if len(url_block.fetched) > 3:
                 hosts += f" (+{len(url_block.fetched) - 3} more)"
             total_kb = sum(f.char_count for f in url_block.fetched) / 1024
+            # 0.1.54 — flag browser-rescued URLs so user knows
+            # the Playwright fallback fired (and why the fetch
+            # took longer than usual).
+            browser_count = sum(
+                1 for f in url_block.fetched if getattr(f, "via_browser", False)
+            )
+            browser_tag = (
+                f" [via 🌐 browser ×{browser_count}]" if browser_count else ""
+            )
             console.print(
                 f"  [dim]🔗 fetched {len(url_block.fetched)} URL(s): "
-                f"{hosts} · {total_kb:.1f} KB[/dim]"
+                f"{hosts} · {total_kb:.1f} KB{browser_tag}[/dim]"
             )
         for err in url_block.errors:
             console.print(

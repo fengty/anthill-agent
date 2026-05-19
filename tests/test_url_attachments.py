@@ -205,6 +205,137 @@ async def test_expand_urls_demotes_thin_content(monkeypatch) -> None:
     assert "paste" in err.reason.lower()
 
 
+# --- 0.1.54 — Playwright fallback when httpx fetch is unusable -----------
+
+
+@pytest.mark.asyncio
+async def test_browser_fallback_rescues_thin_content(monkeypatch) -> None:
+    """Real-user motivating case: httpx returns ~100 bytes for a Zentao
+    bug page, but Playwright executes JS and gets the full bug body.
+    The fallback must inline the rescued content as a regular fetched
+    URL, marked with via_browser=True."""
+    from anthill.core.url_attachments import expand_urls_async
+    from anthill.plugins.base import PluginResult
+
+    async def thin_http(self, *, url, max_chars=4000, **_):
+        # 100 chars — below thin threshold.
+        return PluginResult(output="redirecting..." + "x" * 80, ok=True)
+
+    async def big_browser(self, *, url, **_):
+        # The real bug body Playwright would have gotten.
+        body = "Bug detail: NullPointerException at UserService.java:45. " * 30
+        return PluginResult(
+            output=body,
+            ok=True,
+            metadata={"url": url, "title": "bug #56128"},
+        )
+
+    monkeypatch.setattr("anthill.plugins.web.WebFetchPlugin.call", thin_http)
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call", big_browser
+    )
+
+    block = await expand_urls_async("https://gated.example/bug-56128")
+    # Browser rescue → fetched, not errored.
+    assert len(block.fetched) == 1
+    assert block.errors == []
+    assert block.fetched[0].via_browser is True
+    assert "NullPointerException" in block.fetched[0].content
+
+
+@pytest.mark.asyncio
+async def test_browser_fallback_no_op_when_playwright_missing(
+    monkeypatch,
+) -> None:
+    """When the [browser] extra isn't installed (Playwright import
+    fails), the fallback returns None and we keep the original error
+    behavior. This is the default state for fresh installs."""
+    from anthill.core.url_attachments import expand_urls_async
+    from anthill.plugins.base import PluginResult
+
+    async def thin_http(self, *, url, max_chars=4000, **_):
+        return PluginResult(output="redirecting..." + "x" * 80, ok=True)
+
+    async def playwright_unavailable(self, *, url, **_):
+        # Simulate the _missing() path: ok=False, no output.
+        return PluginResult(
+            output=None,
+            ok=False,
+            error="browser plugins need the [browser] extra",
+        )
+
+    monkeypatch.setattr("anthill.plugins.web.WebFetchPlugin.call", thin_http)
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call",
+        playwright_unavailable,
+    )
+
+    block = await expand_urls_async("https://gated.example/x")
+    assert block.fetched == []
+    assert len(block.errors) == 1
+    # The error hint should point users at the install path.
+    assert "browser" in block.errors[0].reason.lower()
+
+
+@pytest.mark.asyncio
+async def test_browser_fallback_recovers_login_walls_too(monkeypatch) -> None:
+    """The browser fallback fires on login-walls (not just thin),
+    because Playwright sometimes passes the cookie checks that
+    triggered the heuristic in httpx-fetched text."""
+    from anthill.core.url_attachments import expand_urls_async
+    from anthill.plugins.base import PluginResult
+
+    async def wall_http(self, *, url, max_chars=4000, **_):
+        wall = (
+            "Please login. Sign in below to continue. "
+            "authentication is required to view this page. " * 30
+        )
+        return PluginResult(output=wall, ok=True)
+
+    async def big_browser(self, *, url, **_):
+        return PluginResult(
+            output="Real authenticated content. " * 50,
+            ok=True,
+        )
+
+    monkeypatch.setattr("anthill.plugins.web.WebFetchPlugin.call", wall_http)
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call", big_browser
+    )
+
+    block = await expand_urls_async("https://gated.example/secret")
+    assert len(block.fetched) == 1
+    assert block.fetched[0].via_browser is True
+    assert "authenticated content" in block.fetched[0].content
+
+
+@pytest.mark.asyncio
+async def test_browser_fallback_skipped_when_browser_also_returns_thin(
+    monkeypatch,
+) -> None:
+    """If even Playwright can't get real content (truly empty page,
+    aggressive bot detection), the fallback returns None and we
+    keep the original error with the install hint."""
+    from anthill.core.url_attachments import expand_urls_async
+    from anthill.plugins.base import PluginResult
+
+    async def thin_http(self, *, url, max_chars=4000, **_):
+        return PluginResult(output="x" * 100, ok=True)
+
+    async def also_thin_browser(self, *, url, **_):
+        return PluginResult(output="y" * 100, ok=True)
+
+    monkeypatch.setattr("anthill.plugins.web.WebFetchPlugin.call", thin_http)
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call",
+        also_thin_browser,
+    )
+
+    block = await expand_urls_async("https://truly-empty.example/x")
+    assert block.fetched == []
+    assert len(block.errors) == 1
+
+
 @pytest.mark.asyncio
 async def test_expand_urls_zentao_marker_caught(monkeypatch) -> None:
     """A Zentao login page typically mentions 'Zentao' / '禅道' more than once."""

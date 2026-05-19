@@ -88,6 +88,10 @@ class FetchedURL:
     content: str
     char_count: int
     is_login_wall: bool = False
+    # 0.1.54 — True when the content came from Playwright fallback,
+    # not the primary httpx fetch. Lets the REPL show a "via 🌐
+    # browser" tag so the user knows why this URL took longer.
+    via_browser: bool = False
 
 
 @dataclass
@@ -238,13 +242,25 @@ async def expand_urls_async(
             break
         # Login walls get demoted: kept in errors (so the user sees
         # the warning) rather than fed into Scout's prompt.
+        # 0.1.54 — but before giving up, try the browser plugin as
+        # a fallback. Playwright renders JS / sets a real UA / passes
+        # the kinds of trivial cookie gates that httpx tripped over.
+        # `_try_browser_fallback` returns the same FetchedURL shape
+        # if it recovered real content, None otherwise.
         if fetched.is_login_wall:
+            recovered = await _try_browser_fallback(url, per_url_cap=per_url_cap)
+            if recovered is not None:
+                if total_so_far + recovered.char_count <= total_cap:
+                    total_so_far += recovered.char_count
+                    block.fetched.append(recovered)
+                    continue
             block.errors.append(
                 FetchError(
                     url=url,
                     reason=(
                         "fetched but looks like a login wall — "
-                        "paste the content directly if you can"
+                        "paste the content directly if you can "
+                        "(or install 'anthill-agent[browser]' for JS pages)"
                     ),
                 )
             )
@@ -254,14 +270,22 @@ async def expand_urls_async(
         # the same way as a login wall. Avoids the real-user case
         # where Zentao returned ~100 bytes (a redirect stub) and
         # we'd happily inline it as if it were a bug report.
+        # 0.1.54 — same browser fallback as the login-wall branch.
         if fetched.char_count < THIN_CONTENT_THRESHOLD_CHARS:
+            recovered = await _try_browser_fallback(url, per_url_cap=per_url_cap)
+            if recovered is not None:
+                if total_so_far + recovered.char_count <= total_cap:
+                    total_so_far += recovered.char_count
+                    block.fetched.append(recovered)
+                    continue
             block.errors.append(
                 FetchError(
                     url=url,
                     reason=(
                         f"fetched only {fetched.char_count} chars — "
                         f"looks like a redirect / auth gate / empty "
-                        f"response. Paste the content directly."
+                        f"response. Paste the content directly "
+                        f"(or install 'anthill-agent[browser]' for JS pages)"
                     ),
                 )
             )
@@ -269,6 +293,55 @@ async def expand_urls_async(
         total_so_far += fetched.char_count
         block.fetched.append(fetched)
     return block
+
+
+async def _try_browser_fallback(
+    url: str, *, per_url_cap: int
+) -> "FetchedURL | None":
+    """0.1.54 — try Playwright when httpx gave us nothing useful.
+
+    Real-user trigger: Zentao bug pages served ~100 bytes to httpx
+    (redirect stub / cookie gate). A real browser gets the actual
+    bug body because it runs the JS that fills in the page.
+
+    Returns None when:
+      - Playwright isn't installed (the [browser] extra opt-in)
+      - The browser render also produced nothing useful
+      - Any exception during the render (treat as graceful no-op)
+
+    The cost is the price of admission: a Playwright render is
+    multiple seconds. We pay it only on the failure branch, never
+    on a successful httpx fetch. This is the right tradeoff —
+    failing fast on httpx is cheap; succeeding slowly via browser
+    on the OTHERWISE-failed cases is a strict UX improvement.
+    """
+    try:
+        from anthill.plugins.browser import BrowserRenderPlugin
+    except ImportError:
+        return None
+    plugin = BrowserRenderPlugin()
+    try:
+        result = await plugin.call(
+            url=url, timeout=20.0, max_chars=per_url_cap
+        )
+    except Exception:  # noqa: BLE001 — fallback must never crash the fetch path
+        return None
+    if not result.ok or not result.output:
+        return None
+    text = str(result.output)
+    if len(text) < THIN_CONTENT_THRESHOLD_CHARS:
+        # The browser also got nothing real — don't fake it.
+        return None
+    return FetchedURL(
+        url=url,
+        display_host=_display_host(url),
+        content=text,
+        char_count=len(text),
+        is_login_wall=False,
+        # Mark the source so post-hoc analysis can tell httpx fetches
+        # apart from playwright-rescued ones.
+        via_browser=True,
+    )
 
 
 def expand_urls(text: str, **kwargs) -> URLAttachmentBlock:
