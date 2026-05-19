@@ -29,12 +29,22 @@ class TelegramChannel(Channel):
     def _api(self) -> str:
         return f"{TELEGRAM_BASE}/bot{self.bot_token}"
 
-    async def send(self, *, to: str, text: str, reply_to: str | None = None) -> None:
+    async def send(
+        self,
+        *,
+        to: str,
+        text: str,
+        reply_to: str | None = None,
+        thread_id: str | None = None,
+    ) -> None:
         """`to` is the chat_id (numeric string).
-        `reply_to` is a message_id to reply to inline."""
+        `reply_to` is a message_id to reply to inline.
+        `thread_id` (0.1.57) is a forum-topic ID for group topics."""
         payload: dict = {"chat_id": to, "text": text}
         if reply_to:
             payload["reply_parameters"] = {"message_id": int(reply_to)}
+        if thread_id:
+            payload["message_thread_id"] = int(thread_id)
         async with httpx.AsyncClient(timeout=15) as client:
             response = await client.post(f"{self._api}/sendMessage", json=payload)
             response.raise_for_status()
@@ -66,10 +76,24 @@ class TelegramChannel(Channel):
         chat_id = msg.get("chat", {}).get("id")
         if chat_id is None:
             return None
+        # 0.1.57 — populate platform-native thread/reply metadata when
+        # the Update has it. Telegram forum topics surface as
+        # message_thread_id; quote-replies as reply_to_message.
+        reply_target = msg.get("reply_to_message") or {}
         return ChannelMessage(
             channel="telegram",
             sender=str(chat_id),
             text=text.strip(),
             raw=payload,
             message_id=str(msg.get("message_id")) if msg.get("message_id") else None,
+            thread_id=(
+                str(msg["message_thread_id"])
+                if msg.get("message_thread_id") is not None
+                else None
+            ),
+            reply_to_id=(
+                str(reply_target.get("message_id"))
+                if reply_target.get("message_id") is not None
+                else None
+            ),
         )

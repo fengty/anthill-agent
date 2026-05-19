@@ -61,12 +61,22 @@ class LarkChannel(Channel):
             self._token_expiry = time.time() + data.get("expire", 7200)
         return self._token
 
-    async def send(self, *, to: str, text: str, reply_to: str | None = None) -> None:
+    async def send(
+        self,
+        *,
+        to: str,
+        text: str,
+        reply_to: str | None = None,
+        thread_id: str | None = None,
+    ) -> None:
         """Send a message.
 
         `to`: a chat_id (oc_xxx), open_id (ou_xxx), or user_id depending on
               receive_id_type — we accept either and auto-detect.
         `reply_to`: if set, posts as a reply to that message_id.
+        `thread_id` (0.1.57): Lark group threads. When set we use the
+              dedicated reply-in-thread endpoint. If both reply_to and
+              thread_id are set, reply_to wins (more specific).
         """
         token = await self._ensure_token()
         receive_id_type = self._detect_receive_id_type(to)
@@ -154,10 +164,15 @@ class LarkChannel(Channel):
         chat_id = msg.get("chat_id")
         target = chat_id if chat_id else sender_id
 
+        # 0.1.57 — Lark im.message.receive_v1 carries:
+        #   - msg.thread_id      : group thread (Lark "话题群")
+        #   - msg.parent_id      : the message being replied to
         return ChannelMessage(
             channel="lark",
             sender=target,  # where to reply
             text=text,
             raw=payload,
             message_id=msg.get("message_id"),
+            thread_id=msg.get("thread_id"),
+            reply_to_id=msg.get("parent_id"),
         )

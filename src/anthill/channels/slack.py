@@ -22,12 +22,25 @@ class SlackChannel(Channel):
     def __init__(self, *, bot_token: str) -> None:
         self.bot_token = bot_token
 
-    async def send(self, *, to: str, text: str, reply_to: str | None = None) -> None:
+    async def send(
+        self,
+        *,
+        to: str,
+        text: str,
+        reply_to: str | None = None,
+        thread_id: str | None = None,
+    ) -> None:
         """`to` is the channel ID (Cxxx) or user ID (Uxxx — must DM-resolve).
-        `reply_to` is a thread_ts — threads the reply under that message."""
+
+        In Slack, `thread_ts` IS the thread identifier — replying to a
+        message threads under it. Both reply_to and thread_id work; if
+        either is set we set thread_ts. thread_id wins when both given
+        (it's the explicit intent).
+        """
         payload: dict = {"channel": to, "text": text}
-        if reply_to:
-            payload["thread_ts"] = reply_to
+        thread_ts = thread_id or reply_to
+        if thread_ts:
+            payload["thread_ts"] = thread_ts
         async with httpx.AsyncClient(timeout=15) as client:
             response = await client.post(
                 f"{SLACK_BASE}/chat.postMessage",
@@ -72,10 +85,14 @@ class SlackChannel(Channel):
         channel_id = event.get("channel")
         if not channel_id:
             return None
+        # 0.1.57 — Slack's thread_ts is the canonical thread identifier.
+        # When user replied INSIDE a thread we get both ts (this msg)
+        # and thread_ts (the parent that started the thread).
         return ChannelMessage(
             channel="slack",
             sender=channel_id,
             text=text.strip(),
             raw=payload,
             message_id=event.get("ts"),
+            thread_id=event.get("thread_ts"),
         )

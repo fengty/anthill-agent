@@ -59,7 +59,14 @@ class WeComChannel(Channel):
             self._token_expiry = time.time() + data.get("expires_in", 7200)
         return self._token
 
-    async def send(self, *, to: str, text: str, reply_to: str | None = None) -> None:
+    async def send(
+        self,
+        *,
+        to: str,
+        text: str,
+        reply_to: str | None = None,
+        thread_id: str | None = None,
+    ) -> None:
         """Send a text message.
 
         `to` is one of:
@@ -67,7 +74,9 @@ class WeComChannel(Channel):
             - userid|userid|...        multiple users
             - "@all"                   broadcast (use carefully)
 
-        `reply_to` is ignored — WeCom messages do not thread.
+        Both `reply_to` and `thread_id` are ignored — WeCom messages
+        don't thread or quote. The kwargs exist for ABC signature
+        match across channels.
         """
         token = await self._ensure_token()
         payload = {
