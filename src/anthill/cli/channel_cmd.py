@@ -55,6 +55,11 @@ CHANNEL_SPECS: dict[str, list[dict[str, Any]]] = {
         {"key": "corp_secret", "prompt": "Corp secret", "kind": "secret"},
         {"key": "agent_id", "prompt": "Agent ID (numeric)", "kind": "field"},
     ],
+    # 0.1.60 — Discord bot. Token from dev portal Bot tab; just the
+    # token string (no "Bot " prefix — the channel adds that itself).
+    "discord": [
+        {"key": "bot_token", "prompt": "Bot token (from Discord dev portal)", "kind": "secret"},
+    ],
 }
 
 
@@ -150,10 +155,10 @@ def channel_list() -> None:
 
 @channel.command("add")
 @click.argument("name", required=False)
-@click.option("--kind", help="lark / telegram / slack / wecom")
+@click.option("--kind", help="lark / telegram / slack / wecom / discord")
 @click.option("--app-id", help="Lark App ID")
 @click.option("--app-secret", help="Lark App secret")
-@click.option("--bot-token", help="Telegram or Slack bot token")
+@click.option("--bot-token", help="Telegram / Slack / Discord bot token")
 @click.option("--corp-id", help="WeCom corp id")
 @click.option("--corp-secret", help="WeCom corp secret")
 @click.option("--agent-id", help="WeCom agent id")
@@ -203,6 +208,7 @@ def channel_add(
                 "corp_secret": corp_secret,
                 "agent_id": agent_id,
             },
+            "discord": {"bot_token": bot_token},
         }
         extras = {}
         secrets_map = {}
@@ -358,4 +364,13 @@ def build_channel(entry: ChannelEntry):  # noqa: ANN201
             corp_secret=corp_secret,
             agent_id=int(agent_id_raw),
         )
+    if entry.kind == "discord":
+        # 0.1.60 — Discord. Single bot_token from the dev portal Bot
+        # tab; remember to copy the literal string (no "Bot " prefix —
+        # the channel adds that automatically).
+        from anthill.channels.discord import DiscordChannel
+        token = s("bot_token")
+        if not token:
+            return None
+        return DiscordChannel(bot_token=token)
     return None

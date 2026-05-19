@@ -38,6 +38,7 @@ except ImportError:  # pragma: no cover
 from anthill.channels.base import Channel, ChannelMessage
 from anthill.channels.lark import LarkChannel
 from anthill.channels.slack import SlackChannel
+from anthill.channels.discord import DiscordChannel
 from anthill.channels.telegram import TelegramChannel
 from anthill.channels.wecom import WeComChannel
 from anthill.config import AnthillConfig
@@ -165,6 +166,7 @@ def build_app(daemon_config: DaemonConfig | None = None):
     telegram: TelegramChannel | None = None
     slack: SlackChannel | None = None
     wecom: WeComChannel | None = None
+    discord: DiscordChannel | None = None  # 0.1.60
 
     try:
         from anthill.cli.channel_cmd import build_channel
@@ -181,6 +183,8 @@ def build_app(daemon_config: DaemonConfig | None = None):
                 slack = built  # type: ignore[assignment]
             elif entry.kind == "wecom" and wecom is None:
                 wecom = built  # type: ignore[assignment]
+            elif entry.kind == "discord" and discord is None:
+                discord = built  # type: ignore[assignment]
     except Exception:  # noqa: BLE001
         # Config layer is best-effort; env-var fallback below still runs.
         pass
@@ -252,6 +256,27 @@ def build_app(daemon_config: DaemonConfig | None = None):
         if msg is None:
             return {"ignored": True}
         asyncio.create_task(handle_message(msg, nation, slack, config))
+        return {"ok": True}
+
+    @app.post("/discord/webhook")
+    async def discord_webhook(request: _Request) -> dict[str, Any]:
+        """0.1.60 — Discord MESSAGE_CREATE inbound.
+
+        Discord supports either a gateway websocket (long-running) or
+        interaction webhook. The webhook path forwards a raw event
+        envelope that our parse_event accepts in both shapes.
+        """
+        if discord is None:
+            return {"error": "discord not configured"}
+        payload = await request.json()
+        # Discord PING verification — return PONG type=1 so the bot's
+        # interaction endpoint check passes.
+        if payload.get("type") == 1:
+            return {"type": 1}
+        msg = DiscordChannel.parse_event(payload)
+        if msg is None:
+            return {"ignored": True}
+        asyncio.create_task(handle_message(msg, nation, discord, config))
         return {"ok": True}
 
     # Mount the MCP JSON-RPC endpoint at /mcp on the same app.
