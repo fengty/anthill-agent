@@ -715,13 +715,8 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /nation X     switch to a different nation (creates if missing)
     /plan         toggle plan review (skip/keep subtasks before run)
     /setup        relaunch the interactive setup wizard
-    /setup browser  install Playwright + chromium for URL fetch fallback
-                    (one-shot; only needed if you paste SPA / login-walled URLs)
-    /auth add     store login creds for a domain (used by browser fallback)
-    /auth list    show domains with stored creds + 🍪 cookie freshness
-    /auth rm X    remove credentials (also clears cached cookies)
-    /auth clear-cookies X
-                  force re-login on next fetch (creds untouched)
+    (URL behind a login wall? anthill will ask for credentials inline
+     the first time it sees one — no command to remember.)
 
   [bold]Session[/bold]
     /clear        clear screen (nation state preserved)
@@ -1165,6 +1160,19 @@ async def _handle_ask(
     try:
         from anthill.core.url_attachments import expand_urls
         url_block = expand_urls(request)
+
+        # 0.1.73 — conversational recovery. If URL fetch failed in
+        # a way the user can fix in 10 seconds (install browser,
+        # paste credentials), ASK INLINE rather than expecting them
+        # to remember a slash command. The point: user never has to
+        # remember /setup browser or /auth add; the system asks at
+        # the moment of need. Each prompt is bounded to ONE retry.
+        # Order matters: install browser first (auth flow needs it).
+        url_block = _maybe_install_browser_interactively(request, url_block)
+        url_block = _maybe_resolve_login_wall_interactively(
+            request, url_block
+        )
+
         if url_block.fetched:
             hosts = ", ".join(f.display_host for f in url_block.fetched[:3])
             if len(url_block.fetched) > 3:
@@ -2083,6 +2091,145 @@ def _show_status(nation: Nation, stats: SessionStats) -> None:
         f"[bold]Tokens[/bold]    in={stats.tokens_in:,} out={stats.tokens_out:,}"
     )
     console.print(f"[bold]Cost[/bold]      ${stats.cost_usd:.4f} this session")
+
+
+def _maybe_install_browser_interactively(request, url_block):
+    """0.1.73 — when a URL fetch failed because Playwright isn't
+    installed, ask inline "install now?" rather than dropping a
+    /setup browser breadcrumb on the user. Same UX principle as the
+    auth-prompt: meet the user where the problem is, don't make them
+    look up a command.
+    """
+    import sys as _sys
+    from anthill.core.url_attachments import expand_urls
+
+    if not _sys.stdin.isatty():
+        return url_block
+    needs_browser = any(
+        ("Playwright not installed" in err.reason)
+        or ("/setup browser" in err.reason)
+        for err in url_block.errors
+    )
+    if not needs_browser:
+        return url_block
+    console.print(
+        "  [yellow]⚠[/yellow] this URL needs a real browser to render "
+        "(SPA / JS / login). "
+        "[dim]Install Playwright + chromium now? "
+        "~200MB download, one-shot.[/dim]"
+    )
+    try:
+        ans = input("  install? [Y/n]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        console.print()
+        return url_block
+    if ans and ans not in ("y", "yes"):
+        return url_block
+    from anthill.core.browser_setup import ensure_browser
+    result = ensure_browser(on_progress=console.print)
+    if not result.ok:
+        console.print(f"  [red]✗ install failed:[/red] {result.error}")
+        return url_block
+    console.print("  [green]✓[/green] browser ready, retrying fetch…")
+    return expand_urls(request)
+
+
+def _maybe_resolve_login_wall_interactively(request, url_block):
+    """0.1.73 — when a URL fetch hits a login wall AND we have no
+    stored creds for that domain, ask the user inline.
+
+    Why: dropping a /auth command on the user means they need to
+    remember it. Asking at the moment of need is closer to how a
+    person would actually want to interact ("oh, it needs login,
+    I'll just type it"). This is "用户是国王" applied to UX:
+    citizens don't ask the king to look up the manual.
+
+    Bounded: only one retry per ask. If the inline login still
+    fails, drop through to the original error path.
+    """
+    import sys as _sys
+
+    from anthill.core.url_credentials import (
+        DomainCredentials,
+        extract_domain,
+        load_credentials,
+        save_credentials,
+    )
+    from anthill.core.url_attachments import expand_urls
+
+    # Only do this in an interactive shell. Daemon / piped contexts
+    # would hang on input(). Best-effort isatty check.
+    if not _sys.stdin.isatty():
+        return url_block
+
+    # Find the first error that looks like it might be unlocked by
+    # credentials. The /auth-add hint string is what 0.1.71's
+    # `_render_fallback_failure` emits for "login-no-creds".
+    candidate = None
+    for err in url_block.errors:
+        if "/auth add" not in err.reason and "needs login" not in err.reason:
+            continue
+        domain = extract_domain(err.url)
+        if not domain:
+            continue
+        # Skip if creds were ADDED in a parallel path or by another
+        # ask interleaved with this one.
+        if load_credentials(domain) is not None:
+            continue
+        candidate = (err, domain)
+        break
+
+    if candidate is None:
+        return url_block
+
+    err, domain = candidate
+    console.print(
+        f"  [yellow]⚠[/yellow] [bold]{domain}[/bold] needs login. "
+        f"Save credentials and try again?  [dim](enter username to begin, "
+        f"or just press Enter to skip)[/dim]"
+    )
+    try:
+        username = input(f"  username for {domain}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        console.print()  # newline after ^C
+        return url_block
+    if not username:
+        return url_block
+
+    import getpass as _getpass
+    try:
+        password = _getpass.getpass(f"  password for {domain}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        console.print()
+        return url_block
+    if not password:
+        return url_block
+
+    # Optional login URL — some sites need an explicit /login endpoint
+    # rather than letting the server redirect us. Default skip.
+    try:
+        login_url = input(
+            "  login URL [optional, Enter = auto-detect]: "
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        login_url = ""
+
+    save_credentials(
+        DomainCredentials(
+            domain=domain,
+            username=username,
+            password=password,
+            login_url=login_url or None,
+        )
+    )
+    console.print(
+        f"  [green]✓[/green] credentials stored for [cyan]{domain}[/cyan]. "
+        f"Retrying fetch…"
+    )
+
+    # Re-run URL expansion. The fallback chain will now find the
+    # creds and walk the login flow.
+    return expand_urls(request)
 
 
 def _show_history(config: AnthillConfig, nation: Nation, limit: int = 10) -> None:

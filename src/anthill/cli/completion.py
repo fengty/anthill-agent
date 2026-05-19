@@ -164,10 +164,9 @@ class ReplCompleter:
             # 0.1.56 — "/setup browser" subcommand; bare /setup re-runs
             # the wizard.
             candidates = ("browser",)
-        elif slash == "/auth":
-            # 0.1.71/72 — per-domain credentials + cookie cache for
-            # the browser fallback.
-            candidates = ("add", "list", "rm", "remove", "clear-cookies")
+        # 0.1.73 — /auth sub-args dropped from completion. The
+        # inline login-wall prompt covers the common path; power
+        # users who type /auth manually still get the handlers.
         return sorted(c for c in candidates if c.startswith(partial))
 
     def _complete_attachment(self, token: str) -> list[str]:
