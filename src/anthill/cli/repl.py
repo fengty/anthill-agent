@@ -1003,6 +1003,34 @@ def _onboarding_card(nation: Nation) -> None:
             "  [cyan]/history[/cyan]  browse past asks                 "
             "[cyan]/power[/cyan]    national strength"
         )
+        # 0.1.58 — curator-lite: passive stale-skill nudge at REPL start.
+        # If there are 3+ saved skills that have been unused for 14+
+        # days, hint at /skill prune. We never auto-delete (that's the
+        # 0.1.51 explicit command's job) — this is just visibility. The
+        # check is best-effort: a recipe load failure must not crash
+        # the splash, so wrap everything. nation_dir is derived from
+        # nation.history_path.parent so we don't need the AnthillConfig
+        # here.
+        try:
+            from anthill.core.recipes import list_recipes
+            from anthill.core.skill_stats import partition_stale
+            ndir = (
+                nation.history_path.parent
+                if nation.history_path is not None
+                else None
+            )
+            if ndir is not None and ndir.exists():
+                stale, _keep = partition_stale(list_recipes(ndir))
+                if len(stale) >= 3:
+                    names = ", ".join(r.name for r in stale[:3])
+                    if len(stale) > 3:
+                        names += f" (+{len(stale) - 3} more)"
+                    console.print(
+                        f"  [dim]🌫 {len(stale)} skill(s) unused 14d+: "
+                        f"{names} — try [cyan]/skill prune[/cyan][/dim]"
+                    )
+        except Exception:  # noqa: BLE001 — passive nudge must not crash REPL
+            pass
         console.print()
         return
 
