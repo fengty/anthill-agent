@@ -717,6 +717,9 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /setup        relaunch the interactive setup wizard
     /setup browser  install Playwright + chromium for URL fetch fallback
                     (one-shot; only needed if you paste SPA / login-walled URLs)
+    /auth add     store login creds for a domain (used by browser fallback)
+    /auth list    show domains with stored creds
+    /auth rm X    remove credentials for a domain
 
   [bold]Session[/bold]
     /clear        clear screen (nation state preserved)
@@ -2711,6 +2714,98 @@ def run_repl(
                     nation = load_nation(nation.name, config.home) or nation
                 else:
                     console.print("[yellow]Usage: /rate up | /rate down[/yellow]")
+            elif cmd == "auth":
+                # 0.1.71 — `/auth add <domain>` stores creds the
+                # browser fallback uses when it hits a login wall.
+                # `/auth list` shows configured domains (no creds).
+                # `/auth rm <domain>` removes.
+                import getpass as _getpass
+
+                from anthill.core.url_credentials import (
+                    DomainCredentials,
+                    list_domains,
+                    remove_credentials,
+                    save_credentials,
+                )
+
+                def _ask(prompt: str, *, allow_blank: bool = False) -> str:
+                    try:
+                        v = input(f"  {prompt}: ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        return ""
+                    if not v and not allow_blank:
+                        return ""
+                    return v
+
+                def _ask_secret(prompt: str) -> str:
+                    try:
+                        return _getpass.getpass(f"  {prompt}: ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        return ""
+
+                arg = rest.strip()
+                sub = arg.split(" ", 1)[0].lower() if arg else ""
+                tail = arg.split(" ", 1)[1].strip() if " " in arg else ""
+                if sub == "add":
+                    domain = tail or _ask("Domain (e.g. zentao.example.com)")
+                    if not domain:
+                        console.print("[yellow]Domain required.[/yellow]")
+                    else:
+                        username = _ask("Username")
+                        password = _ask_secret("Password")
+                        login_url = _ask(
+                            "Login URL (blank = auto-detect from target URL)",
+                            allow_blank=True,
+                        )
+                        if not (username and password):
+                            console.print(
+                                "[yellow]Username and password required.[/yellow]"
+                            )
+                        else:
+                            save_credentials(
+                                DomainCredentials(
+                                    domain=domain,
+                                    username=username,
+                                    password=password,
+                                    login_url=login_url or None,
+                                )
+                            )
+                            console.print(
+                                f"  [green]✓[/green] credentials stored for "
+                                f"[cyan]{domain}[/cyan]. Next URL fetch on "
+                                f"that domain will use them automatically."
+                            )
+                elif sub == "list" or sub == "":
+                    domains = list_domains()
+                    if not domains:
+                        console.print(
+                            "  [dim]No domain credentials configured. "
+                            "[cyan]/auth add[/cyan] to set one.[/dim]"
+                        )
+                    else:
+                        console.print(
+                            f"  [bold]{len(domains)} domain(s) with stored creds:[/bold]"
+                        )
+                        for d in domains:
+                            console.print(f"    [cyan]{d}[/cyan]")
+                elif sub == "rm" or sub == "remove":
+                    if not tail:
+                        console.print("[yellow]Usage: /auth rm <domain>[/yellow]")
+                    else:
+                        if remove_credentials(tail):
+                            console.print(
+                                f"  [green]✓[/green] removed credentials for "
+                                f"[cyan]{tail}[/cyan]"
+                            )
+                        else:
+                            console.print(
+                                f"  [yellow]no credentials for {tail!r}[/yellow]"
+                            )
+                else:
+                    console.print(
+                        "[yellow]Usage: /auth add | /auth list | "
+                        "/auth rm <domain>[/yellow]"
+                    )
             elif cmd == "setup":
                 # 0.1.5+ — re-enter the wizard on demand. Useful when the
                 # user said "n" at startup but changed their mind, or wants

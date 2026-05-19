@@ -419,6 +419,197 @@ async def test_browser_fallback_detects_login_wall_on_browser_output(
     assert "auth cookies" in block.errors[0].reason
 
 
+# --- 0.1.71 — credentialed login retry ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_browser_login_retry_runs_when_creds_exist(
+    monkeypatch, tmp_path
+) -> None:
+    """Login wall on both httpx AND browser → if creds for domain
+    are stored, escalate to call_with_login. Verify the chain wires
+    end-to-end."""
+    monkeypatch.setenv("ANTHILL_HOME", str(tmp_path))
+    from anthill.core.url_attachments import expand_urls_async
+    from anthill.core.url_credentials import (
+        DomainCredentials,
+        save_credentials,
+    )
+    from anthill.plugins.base import PluginResult
+
+    save_credentials(
+        DomainCredentials(
+            domain="zentao.example.com",
+            username="alice",
+            password="hunter2",
+        )
+    )
+
+    async def login_wall_http(self, *, url, max_chars=4000, **_):
+        # First httpx response is a login wall.
+        return PluginResult(
+            output=(
+                "Please login. Sign in below to continue. "
+                "Authentication required to view this page. " * 30
+            ),
+            ok=True,
+        )
+
+    async def login_wall_browser(self, *, url, **_):
+        # Plain browser render (without creds) ALSO sees login wall.
+        return PluginResult(
+            output=(
+                "Please login. Sign in below to continue. "
+                "Authentication required. " * 20
+            ),
+            ok=True,
+        )
+
+    called_with_login: dict = {}
+
+    async def login_browser(
+        self, *, url, username, password,
+        login_url=None,
+        username_selector=None,
+        password_selector=None,
+        submit_selector=None,
+        timeout=30.0,
+        max_chars=8000,
+        wait_after_login_ms=2000,
+        **_,
+    ):
+        # The credentialed path was called. Record args + return
+        # logged-in content.
+        called_with_login.update(url=url, username=username, password=password)
+        return PluginResult(
+            output="Bug #56128: NullPointerException at UserService.java" * 5,
+            ok=True,
+            metadata={"url": url, "title": "bug", "via_login": True},
+        )
+
+    monkeypatch.setattr(
+        "anthill.plugins.web.WebFetchPlugin.call", login_wall_http
+    )
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call",
+        login_wall_browser,
+    )
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call_with_login",
+        login_browser,
+    )
+
+    block = await expand_urls_async(
+        "https://zentao.example.com/zentao/bug-view-56128.html"
+    )
+    # The credentialed retry succeeded and returned real content.
+    assert len(block.fetched) == 1
+    assert "NullPointerException" in block.fetched[0].content
+    # Credentials reached the login path.
+    assert called_with_login["username"] == "alice"
+    assert called_with_login["password"] == "hunter2"
+
+
+@pytest.mark.asyncio
+async def test_browser_login_failure_surfaces_in_error(
+    monkeypatch, tmp_path
+) -> None:
+    """When stored creds are wrong (post-login page still looks like
+    login), the error message tells the user to update credentials."""
+    monkeypatch.setenv("ANTHILL_HOME", str(tmp_path))
+    from anthill.core.url_attachments import expand_urls_async
+    from anthill.core.url_credentials import (
+        DomainCredentials,
+        save_credentials,
+    )
+    from anthill.plugins.base import PluginResult
+
+    save_credentials(
+        DomainCredentials(
+            domain="zentao.example.com",
+            username="wrong-user",
+            password="wrong-pw",
+        )
+    )
+
+    async def login_wall_http(self, *, url, max_chars=4000, **_):
+        return PluginResult(
+            output=(
+                "Please login. Sign in below to continue. "
+                "Authentication required. " * 30
+            ),
+            ok=True,
+        )
+
+    async def login_wall_browser(self, *, url, **_):
+        return PluginResult(
+            output=(
+                "Please login. Sign in below to continue. "
+                "Authentication required. " * 20
+            ),
+            ok=True,
+        )
+
+    async def login_returns_login_again(self, *, url, **kw):
+        # Even after login, response still has the login-wall shape
+        # → bad creds.
+        return PluginResult(
+            output=(
+                "Please login. Sign in below. " * 30
+            ),
+            ok=True,
+        )
+
+    monkeypatch.setattr(
+        "anthill.plugins.web.WebFetchPlugin.call", login_wall_http
+    )
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call",
+        login_wall_browser,
+    )
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call_with_login",
+        login_returns_login_again,
+    )
+
+    block = await expand_urls_async(
+        "https://zentao.example.com/zentao/bug.html"
+    )
+    assert block.fetched == []
+    assert len(block.errors) == 1
+    # Error should mention failed login and /auth add.
+    assert "/auth add" in block.errors[0].reason
+
+
+@pytest.mark.asyncio
+async def test_browser_login_no_creds_hints_at_auth_add(
+    monkeypatch, tmp_path
+) -> None:
+    """Login wall on both layers, NO stored creds → error explicitly
+    tells the user to run /auth add (not just 'paste content')."""
+    monkeypatch.setenv("ANTHILL_HOME", str(tmp_path))
+    from anthill.core.url_attachments import expand_urls_async
+    from anthill.plugins.base import PluginResult
+
+    async def wall(self, *, url, **kw):
+        return PluginResult(
+            output=(
+                "Please login. Sign in below. Authentication required. "
+                * 20
+            ),
+            ok=True,
+        )
+
+    monkeypatch.setattr("anthill.plugins.web.WebFetchPlugin.call", wall)
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call", wall
+    )
+
+    block = await expand_urls_async("https://no-creds.example.com/page")
+    assert len(block.errors) == 1
+    assert "/auth add" in block.errors[0].reason
+
+
 @pytest.mark.asyncio
 async def test_browser_fallback_error_message_explains_missing_install(
     monkeypatch,

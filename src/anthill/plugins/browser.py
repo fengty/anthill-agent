@@ -96,6 +96,170 @@ class BrowserRenderPlugin(Plugin):
             },
         )
 
+    async def call_with_login(
+        self,
+        *,
+        url: str,
+        username: str,
+        password: str,
+        login_url: str | None = None,
+        username_selector: str | None = None,
+        password_selector: str | None = None,
+        submit_selector: str | None = None,
+        timeout: float = 30.0,
+        max_chars: int = 8000,
+        wait_after_login_ms: int = 2000,
+        **_: Any,
+    ) -> PluginResult:
+        """0.1.71 — perform login then fetch.
+
+        Flow:
+          1. Open a fresh browser context (no shared cookies).
+          2. Navigate to login_url (or url if None, letting the server
+             redirect us to its login page).
+          3. Fill username field + password field. Selectors are
+             explicit when provided, else auto-detected:
+               username → input[name=account|username|email|user|login]
+               password → input[type=password]
+               submit   → input[type=submit] OR button[type=submit] OR
+                          the form's first button
+          4. Submit. Wait `wait_after_login_ms` for the post-login
+             navigation/JS settle.
+          5. Navigate to the original `url` (skipped if it's same as
+             login_url — some sites land you on the dashboard after
+             login and we want THAT content).
+          6. Extract `document.body.innerText`.
+
+        Defensive about every step — any failure returns ok=False
+        with a useful error string. The fallback chain in
+        url_attachments.py catches that.
+        """
+        if not url or not url.startswith(("http://", "https://")):
+            return PluginResult(output=None, ok=False, error=f"invalid url: {url!r}")
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            return _missing()
+
+        # Common username-field name attributes seen across Zentao,
+        # Jira, Confluence, GitLab, generic apps. Pulled from looking
+        # at real login form HTML.
+        _USER_FIELDS = ["account", "username", "email", "user", "login", "loginId"]
+        # Password input: `input[type=password]` is universal.
+        _PASS_SELECTOR = "input[type=password]"
+
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                try:
+                    context = await browser.new_context()
+                    page = await context.new_page()
+                    # Step 1: get to the login form.
+                    target_login = login_url or url
+                    await page.goto(
+                        target_login,
+                        timeout=int(timeout * 1000),
+                        wait_until="networkidle",
+                    )
+
+                    # Step 2: fill username (explicit selector or
+                    # auto-detect via field name list).
+                    if username_selector:
+                        await page.fill(username_selector, username)
+                    else:
+                        filled = False
+                        for name in _USER_FIELDS:
+                            sel = f"input[name='{name}']"
+                            if await page.query_selector(sel) is not None:
+                                await page.fill(sel, username)
+                                filled = True
+                                break
+                        if not filled:
+                            return PluginResult(
+                                output=None, ok=False,
+                                error=(
+                                    "login: couldn't locate username field "
+                                    "(tried name in: account/username/email/user/login). "
+                                    "Pass username_selector explicitly."
+                                ),
+                            )
+
+                    # Step 3: fill password.
+                    pass_sel = password_selector or _PASS_SELECTOR
+                    if await page.query_selector(pass_sel) is None:
+                        return PluginResult(
+                            output=None, ok=False,
+                            error=(
+                                "login: couldn't locate password field. "
+                                "Pass password_selector explicitly."
+                            ),
+                        )
+                    await page.fill(pass_sel, password)
+
+                    # Step 4: submit. Try explicit selector, then
+                    # type=submit, then any button inside the form
+                    # containing the password field.
+                    if submit_selector:
+                        await page.click(submit_selector)
+                    else:
+                        clicked = False
+                        for sel in (
+                            "input[type=submit]",
+                            "button[type=submit]",
+                            "form button",
+                        ):
+                            if await page.query_selector(sel) is not None:
+                                await page.click(sel)
+                                clicked = True
+                                break
+                        if not clicked:
+                            # Last resort: press Enter on the password field.
+                            await page.press(pass_sel, "Enter")
+
+                    # Step 5: wait for login navigation + JS settle.
+                    try:
+                        await page.wait_for_load_state(
+                            "networkidle",
+                            timeout=int(timeout * 1000),
+                        )
+                    except Exception:  # noqa: BLE001
+                        # networkidle can be flaky if the server uses
+                        # long-polling; fall back to a fixed wait.
+                        pass
+                    await page.wait_for_timeout(wait_after_login_ms)
+
+                    # Step 6: if `url` differs from `login_url`,
+                    # navigate to the target now that we have a session.
+                    if login_url and url != login_url:
+                        await page.goto(
+                            url,
+                            timeout=int(timeout * 1000),
+                            wait_until="networkidle",
+                        )
+
+                    text = await page.evaluate("() => document.body.innerText || ''")
+                    title = await page.title()
+                    final_url = page.url
+                finally:
+                    await browser.close()
+        except Exception as e:  # noqa: BLE001
+            return PluginResult(
+                output=None, ok=False,
+                error=f"{type(e).__name__}: {e}" if str(e) else type(e).__name__,
+            )
+
+        truncated = len(text) > max_chars
+        return PluginResult(
+            output=text[:max_chars],
+            metadata={
+                "url": final_url,
+                "title": title,
+                "truncated": truncated,
+                "char_count": len(text),
+                "via_login": True,
+            },
+        )
+
 
 class BrowserScreenshotPlugin(Plugin):
     name = "browser_screenshot"

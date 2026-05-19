@@ -83,7 +83,7 @@ KNOWN_SLASH_COMMANDS: tuple[str, ...] = (
     "/remember", "/remember-me", "/recall",
     "/session", "/sessions", "/bg", "/background",
     "/skill",
-    "/rate", "/model", "/nation", "/plan", "/setup",
+    "/rate", "/model", "/nation", "/plan", "/setup", "/auth",
 )
 
 
@@ -164,6 +164,9 @@ class ReplCompleter:
             # 0.1.56 — "/setup browser" subcommand; bare /setup re-runs
             # the wizard.
             candidates = ("browser",)
+        elif slash == "/auth":
+            # 0.1.71 — per-domain credentials for the browser fallback.
+            candidates = ("add", "list", "rm", "remove")
         return sorted(c for c in candidates if c.startswith(partial))
 
     def _complete_attachment(self, token: str) -> list[str]:

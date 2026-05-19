@@ -249,6 +249,17 @@ async def expand_urls_async(
         # if it recovered real content, None otherwise.
         if fetched.is_login_wall:
             outcome = await _try_browser_fallback(url, per_url_cap=per_url_cap)
+            # 0.1.71 — if browser ALSO hit a login wall, escalate to
+            # the credentialed fallback. Asks the user for nothing here
+            # (REPL handles prompt-then-retry); this path runs when
+            # creds are already stored.
+            if (
+                outcome.result is None
+                and outcome.why_failed == "browser-still-login-wall"
+            ):
+                outcome = await _try_browser_with_login(
+                    url, per_url_cap=per_url_cap
+                )
             if outcome.result is not None:
                 if total_so_far + outcome.result.char_count <= total_cap:
                     total_so_far += outcome.result.char_count
@@ -337,6 +348,30 @@ def _render_fallback_failure(*, primary: str, browser_failure: str | None) -> st
             f"{primary}. Browser fallback errored: {detail}. "
             f"Paste the content directly."
         )
+    # 0.1.71 — login fallback codes.
+    if browser_failure == "login-no-creds":
+        return (
+            f"{primary}. This page needs login — run "
+            f"[cyan]/auth add[/cyan] to store credentials for the "
+            f"domain, then retry."
+        )
+    if browser_failure == "login-bad-url":
+        return (
+            f"{primary}. Couldn't parse the URL's domain to look up "
+            f"stored credentials. Paste the content directly."
+        )
+    if browser_failure.startswith("login-failed"):
+        detail = browser_failure.split(":", 1)[-1].strip()
+        return (
+            f"{primary}. Tried logging in with stored credentials: "
+            f"{detail}. Update with [cyan]/auth add[/cyan] or paste "
+            f"the content directly."
+        )
+    if browser_failure == "login-empty-output":
+        return (
+            f"{primary}. Login succeeded but post-login page rendered "
+            f"with no visible text. Paste the content directly."
+        )
     # Unknown failure mode — surface verbatim.
     return f"{primary}. Browser fallback: {browser_failure}."
 
@@ -360,6 +395,77 @@ class _BrowserFallbackOutcome:
 
     result: "FetchedURL | None"
     why_failed: str | None  # None when result is not None
+
+
+async def _try_browser_with_login(
+    url: str, *, per_url_cap: int
+) -> _BrowserFallbackOutcome:
+    """0.1.71 — second-chance fallback that USES stored credentials.
+
+    Called when `_try_browser_fallback` returned
+    'browser-still-login-wall' AND we have a `DomainCredentials` for
+    the URL's domain in secrets.toml. Performs the login flow via
+    Playwright then fetches the original URL.
+
+    Same outcome shape as `_try_browser_fallback`. Failure surfaced
+    as 'login-failed: <reason>' so the user can act (wrong password
+    → re-add creds; form layout changed → set explicit selectors).
+    """
+    try:
+        from anthill.core.url_credentials import extract_domain, load_credentials
+    except ImportError:
+        return _BrowserFallbackOutcome(None, "login-creds-module-missing")
+    domain = extract_domain(url)
+    if not domain:
+        return _BrowserFallbackOutcome(None, "login-bad-url")
+    creds = load_credentials(domain)
+    if creds is None:
+        return _BrowserFallbackOutcome(None, "login-no-creds")
+    try:
+        from anthill.plugins.browser import BrowserRenderPlugin
+    except ImportError:
+        return _BrowserFallbackOutcome(None, "browser-not-installed")
+    plugin = BrowserRenderPlugin()
+    try:
+        result = await plugin.call_with_login(
+            url=url,
+            username=creds.username,
+            password=creds.password,
+            login_url=creds.login_url,
+            username_selector=creds.username_selector,
+            password_selector=creds.password_selector,
+            submit_selector=creds.submit_selector,
+            timeout=30.0,
+            max_chars=per_url_cap,
+        )
+    except Exception as e:  # noqa: BLE001
+        return _BrowserFallbackOutcome(
+            None, f"login-failed: {type(e).__name__}: {e}"
+        )
+    if not result.ok:
+        return _BrowserFallbackOutcome(
+            None, f"login-failed: {result.error or 'ok=False'}"
+        )
+    text = str(result.output or "")
+    if _looks_like_login_wall(text):
+        # Login completed but still on login page → credentials wrong
+        # OR the form went through but expired immediately (rare).
+        return _BrowserFallbackOutcome(
+            None, "login-failed: post-login page still looks like login wall"
+        )
+    if len(text) < _BROWSER_MIN_USEFUL_CHARS:
+        return _BrowserFallbackOutcome(None, "login-empty-output")
+    return _BrowserFallbackOutcome(
+        FetchedURL(
+            url=url,
+            display_host=_display_host(url),
+            content=text,
+            char_count=len(text),
+            is_login_wall=False,
+            via_browser=True,
+        ),
+        None,
+    )
 
 
 async def _try_browser_fallback(
