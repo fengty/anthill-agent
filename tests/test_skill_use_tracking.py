@@ -149,6 +149,65 @@ async def test_skill_miss_does_not_bump_other_skills(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_skill_match_substitutes_url_into_prompts(tmp_path: Path) -> None:
+    """0.1.69 — the dead-skill bug: when an auto-distilled recipe has
+    `{url}` in its subtask templates, Nation.ask must extract the
+    URL from the NEW request and substitute it before handing
+    prompts to citizens. Before this fix, citizens saw the literal
+    string "{url}" and correctly complained it wasn't a real URL."""
+    # Save a recipe with a placeholder in BOTH the template and the
+    # subtask prompts — mimics what 0.1.43 auto-save produces.
+    save_recipe(
+        Recipe(
+            name="analyze-url-skill",
+            template="analyze {url}",
+            description="url analysis",
+            subtasks=[
+                RecipeSubtask(
+                    task_type="research",
+                    prompt_template="fetch content from {url}",
+                ),
+                RecipeSubtask(
+                    task_type="analyze",
+                    prompt_template="explain the bug at {url}",
+                    depends_on=["research"],
+                ),
+            ],
+        ),
+        tmp_path,
+    )
+
+    n = Nation(name="t")
+    n.agents = [Agent(id="ant-1", model="x")]
+
+    # Record what each subtask actually received as its prompt.
+    received_prompts: list[str] = []
+
+    async def fake_run(task_type, prompt, **kwargs):  # noqa: ANN001, ARG002
+        received_prompts.append(prompt)
+        return TaskResult(
+            task_id="t",
+            agent_id="ant-1",
+            task_type=task_type,
+            output="done",
+            success_score=1.0,
+            duration_seconds=0.0,
+        )
+
+    n.run = fake_run  # type: ignore[assignment]
+
+    new_url = "http://example.com/zentao/bug-99999.html"
+    await n.ask(f"analyze {new_url}", nation_dir=tmp_path)
+
+    # CRITICAL: every prompt fed to a citizen must contain the real
+    # URL, NOT the literal "{url}" placeholder.
+    assert len(received_prompts) == 2
+    for p in received_prompts:
+        assert "{url}" not in p, f"placeholder leaked into citizen: {p!r}"
+        assert new_url in p, f"URL not substituted into: {p!r}"
+
+
+@pytest.mark.asyncio
 async def test_skill_match_persists_to_disk(tmp_path: Path) -> None:
     """The bump must SURVIVE process restart (i.e. it's persisted,
     not just held in memory)."""

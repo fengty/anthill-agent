@@ -97,6 +97,15 @@ def find_matching_skill(
     req_tokens = _tokens(request)
     if len(req_tokens) < MIN_REQUEST_TOKENS:
         return None
+    # 0.1.69 — also compute tokens of the SEEDED request, so a recipe
+    # whose template contains literal placeholders ("{url}") can match
+    # an incoming request that has the corresponding substituted value
+    # ("http://..."). Without this, the cosine-on-raw-tokens approach
+    # gave low scores for the exact case skills are designed to handle:
+    # template "analyze {url}" vs request "analyze http://example.com/...".
+    # Symmetrically the recipe template is already in seed form, so
+    # matching seed-against-seed bridges the gap.
+    seeded_req_tokens = _tokens(_template_seed(request))
     try:
         recipes = list_recipes(nation_dir)
     except Exception:  # noqa: BLE001
@@ -106,10 +115,22 @@ def find_matching_skill(
 
     best: SkillMatch | None = None
     for recipe in recipes:
+        name_tokens = _tokens(recipe.name)
+        desc_tokens = _tokens(recipe.description)
+        template_tokens = _tokens(recipe.template)
         scores = {
-            "name": _cosine(_tokens(recipe.name), req_tokens),
-            "description": _cosine(_tokens(recipe.description), req_tokens),
-            "template": _cosine(_tokens(recipe.template), req_tokens),
+            "name": max(
+                _cosine(name_tokens, req_tokens),
+                _cosine(name_tokens, seeded_req_tokens),
+            ),
+            "description": max(
+                _cosine(desc_tokens, req_tokens),
+                _cosine(desc_tokens, seeded_req_tokens),
+            ),
+            "template": max(
+                _cosine(template_tokens, req_tokens),
+                _cosine(template_tokens, seeded_req_tokens),
+            ),
         }
         best_kind = max(scores, key=lambda k: scores[k])
         best_score = scores[best_kind]
@@ -176,6 +197,47 @@ def _template_seed(request: str) -> str:
     for pattern, placeholder in _VARIABLE_PATTERNS:
         seed = pattern.sub(placeholder, seed)
     return seed.strip()
+
+
+# 0.1.69 — inverse of _template_seed: extract the variable VALUES
+# from a fresh request so they can be substituted into a saved
+# recipe's `{url}` / `{id}` / `{date}` placeholders.
+#
+# Bug it fixes: 0.1.42 auto-distillation saved templates with
+# placeholders, but `nation.ask`'s skill-match path handed the raw
+# prompt_template (literal `{url}`) to citizens. The citizens
+# correctly said "{url} isn't a reachable address" — skills were
+# theatrical, never actually parameterized.
+#
+# Placeholder → match function. Each takes the request and returns
+# the first match's value, or None. Order matches _VARIABLE_PATTERNS.
+def extract_variables(request: str) -> dict[str, str]:
+    """Pull values for {url} / {id} / {date} from a request.
+
+    Returns the dict in the shape Recipe.fill() wants — keys are
+    placeholder names (without braces), values are the matched
+    strings. Missing variables just don't appear in the dict;
+    Recipe.fill raises KeyError on a literal placeholder still
+    in the template, so callers should populate every placeholder
+    a recipe declares.
+
+    Note: the order of substitution mirrors `_template_seed` —
+    URL first, then date, then numeric id. That's the same
+    precedence that produced the template; reversing it would
+    mean (e.g.) `2026-05-19` getting matched as `id=2026` and
+    leaving `-05-19` as orphan text.
+    """
+    out: dict[str, str] = {}
+    for pattern, placeholder_token in _VARIABLE_PATTERNS:
+        # placeholder_token is "{url}" / "{id}" / "{date}" — strip
+        # the braces to get the bare key the recipe expects.
+        key = placeholder_token.strip("{}")
+        if key in out:
+            continue
+        m = pattern.search(request)
+        if m is not None:
+            out[key] = m.group(0)
+    return out
 
 
 def suggest_distillation(

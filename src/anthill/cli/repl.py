@@ -1829,12 +1829,28 @@ async def _handle_ask(
     # auto-save below, so the two never disagree (no more "we
     # suggest you save 你好 but silently refuse to auto-save it").
     try:
-        from anthill.core.skill_match import worth_saving_as_skill
+        from anthill.core.skill_match import (
+            find_matching_skill,
+            worth_saving_as_skill,
+        )
         from anthill.core.skill_mining import looks_like_new_match, mine_skills
-        history_now = load_history(nation_dir(config.home, nation.name))
+
+        # 0.1.69 — don't pester the user to "save this as a skill"
+        # when a saved skill ALREADY matched this ask (we just
+        # printed "📚 used skill X" above). Mining hint was firing
+        # alongside skill-match — contradictory UX.
+        ndir = nation_dir(config.home, nation.name)
+        already_have_skill = find_matching_skill(request, ndir) is not None
+        history_now = load_history(ndir)
         for skill in mine_skills(history_now):
             cluster_key = skill.entry_ids[0]
             if cluster_key in stats.suggested_skill_ids:
+                continue
+            if already_have_skill:
+                # Suppress the suggestion; mark suggested so the
+                # check doesn't keep running every turn for this
+                # cluster.
+                stats.suggested_skill_ids.add(cluster_key)
                 continue
             if not looks_like_new_match(skill, request):
                 continue

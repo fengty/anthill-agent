@@ -550,17 +550,45 @@ class Nation:
                 # bypassing Scout. Equivalent to the pre_plan path but
                 # auto-chosen, with the skill recorded for the REPL
                 # to surface via "📚 using skill X".
-                plan = Plan(
-                    subtasks=[
-                        Subtask(
-                            task_type=s.task_type,
-                            prompt=s.prompt_template,
-                            depends_on=list(s.depends_on),
-                        )
-                        for s in skill_match.recipe.subtasks
-                    ],
-                    complexity="normal",
-                )
+                #
+                # 0.1.69 — extract {url}/{id}/{date} from THIS ask and
+                # substitute into the recipe's templates before
+                # handing to citizens. Before this fix, the literal
+                # placeholder string ("{url}") was passed verbatim,
+                # and citizens correctly complained that "{url}"
+                # isn't a URL. Saved skills were dead.
+                from anthill.core.skill_match import extract_variables
+                args = extract_variables(request)
+                try:
+                    filled = skill_match.recipe.fill(args)
+                except KeyError:
+                    # A placeholder in the template wasn't extractable
+                    # from the new request (e.g. recipe has {date} but
+                    # request has no ISO date). Fall back to using the
+                    # original ask request — at least the citizen gets
+                    # something it can read.
+                    filled = None
+                if filled is not None and filled.plan is not None:
+                    plan = filled.plan
+                    # Preserve complexity hint from the recipe (defaults
+                    # to "normal" the same as before).
+                    plan.complexity = "normal"
+                else:
+                    # Defensive fallback (extraction missed a placeholder
+                    # OR recipe had no subtasks list). Use the raw
+                    # request as a single general subtask. This keeps
+                    # the ask from dying when the recipe schema is
+                    # incomplete.
+                    plan = Plan(
+                        subtasks=[
+                            Subtask(
+                                task_type="general",
+                                prompt=request,
+                                depends_on=[],
+                            )
+                        ],
+                        complexity="normal",
+                    )
                 self.last_ask_cache_hit = False
                 self.last_matched_skill = skill_match
                 timings.plan_source = "skill"
