@@ -393,6 +393,30 @@ async def _run_one_subtask(
                 succeeded = True
                 break
             forbid.add(result.agent_id)
+            # 0.1.59 — provider-aware failover. When the attempt failed
+            # because of a transient API issue (rate_limit / 5xx /
+            # timeout / generic model_error), forbid every other agent
+            # that shares the same MODEL so the retry definitely lands
+            # on a different provider. Only triggers when the nation
+            # has 2+ distinct models — otherwise we'd deadlock the
+            # retry pool.
+            from anthill.core.api_failover import (
+                expand_forbid_for_failover,
+                should_failover_provider,
+            )
+            if should_failover_provider(
+                getattr(result, "failure_reason", None)
+            ):
+                failed_model = nation._model_for_agent(result.agent_id)
+                distinct_models = len(
+                    {a.model for a in nation.agents}
+                )
+                forbid = expand_forbid_for_failover(
+                    forbid,
+                    failed_model,
+                    all_agents=[(a.id, a.model) for a in nation.agents],
+                    nation_models=distinct_models,
+                )
             # Don't burn another retry attempt past the budget cap.
             if budget is not None and budget.may_run_next() is not None:
                 break
