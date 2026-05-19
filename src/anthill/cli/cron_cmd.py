@@ -179,7 +179,7 @@ async def _run_due_jobs(
     """Execute each due job: run the ask, optionally deliver output,
     update last_run_at, save jobs back."""
     from anthill.channels.daemon import _load_or_create_nation
-    from anthill.core.nation import nation_dir
+    from anthill.core.persistence import nation_dir
     from anthill.core.userconfig import load_config as _load_user_cfg
 
     user_cfg = _load_user_cfg()
