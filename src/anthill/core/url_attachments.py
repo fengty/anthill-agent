@@ -260,7 +260,7 @@ async def expand_urls_async(
                     reason=(
                         "fetched but looks like a login wall — "
                         "paste the content directly if you can "
-                        "(or install 'anthill-agent[browser]' for JS pages)"
+                        "(or /setup browser for JS pages)"
                     ),
                 )
             )
@@ -285,7 +285,7 @@ async def expand_urls_async(
                         f"fetched only {fetched.char_count} chars — "
                         f"looks like a redirect / auth gate / empty "
                         f"response. Paste the content directly "
-                        f"(or install 'anthill-agent[browser]' for JS pages)"
+                        f"(or /setup browser for JS pages)"
                     ),
                 )
             )

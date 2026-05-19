@@ -710,6 +710,8 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /nation X     switch to a different nation (creates if missing)
     /plan         toggle plan review (skip/keep subtasks before run)
     /setup        relaunch the interactive setup wizard
+    /setup browser  install Playwright + chromium for URL fetch fallback
+                    (one-shot; only needed if you paste SPA / login-walled URLs)
 
   [bold]Session[/bold]
     /clear        clear screen (nation state preserved)
@@ -2560,11 +2562,39 @@ def run_repl(
                 # 0.1.5+ — re-enter the wizard on demand. Useful when the
                 # user said "n" at startup but changed their mind, or wants
                 # to add a second provider.
-                from anthill.cli.setup_cmd import run_wizard
-                run_wizard(force=False)
-                refreshed = load_nation(nation.name, config.home)
-                if refreshed is not None:
-                    nation = refreshed
+                # 0.1.56 — `/setup browser` is a separate one-shot path
+                # that doesn't touch model config — installs Playwright +
+                # chromium so the 0.1.54 URL-fetch fallback can actually
+                # fire. Idempotent; safe to re-run.
+                arg = rest.strip().lower()
+                if arg in ("browser", "playwright", "chromium"):
+                    from anthill.core.browser_setup import ensure_browser
+                    console.print(
+                        "[bold]Setting up browser fallback for URL fetching[/bold]"
+                    )
+                    result = ensure_browser(on_progress=console.print)
+                    if result.ok:
+                        if result.steps_taken:
+                            console.print(
+                                f"  [green]✓[/green] done. "
+                                f"[dim]ran: {', '.join(result.steps_taken)}[/dim]"
+                            )
+                            console.print(
+                                "  [dim]next URL ask uses Playwright when "
+                                "httpx hits a login wall or thin content."
+                                "[/dim]"
+                            )
+                        # else: already-ready message printed by ensure_browser
+                    else:
+                        console.print(
+                            f"  [red]✗ setup failed:[/red] {result.error}"
+                        )
+                else:
+                    from anthill.cli.setup_cmd import run_wizard
+                    run_wizard(force=False)
+                    refreshed = load_nation(nation.name, config.home)
+                    if refreshed is not None:
+                        nation = refreshed
             elif cmd in ("bg", "background"):
                 # 0.1.37 — `/bg <ask>` fires a background ask AND tags
                 # its origin as this REPL session, so the

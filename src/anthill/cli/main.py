@@ -129,12 +129,35 @@ def cli(
         )
 
 
-@cli.command()
+@cli.group(invoke_without_command=True)
 @click.option("--force", is_flag=True, help="Run even if models are already configured.")
-def setup(force: bool) -> None:
-    """First-run wizard: pick a model, found a nation, optionally add an IM channel."""
-    from anthill.cli.setup_cmd import run_wizard
-    raise SystemExit(run_wizard(force=force))
+@click.pass_context
+def setup(ctx: click.Context, force: bool) -> None:
+    """First-run wizard, or one-shot setup of optional components.
+
+    Without a subcommand: runs the model/nation/channel wizard.
+    `anthill setup browser`: installs Playwright + chromium so URL
+    fetches that hit login walls or SPA pages can fall back to a
+    real browser render.
+    """
+    if ctx.invoked_subcommand is None:
+        from anthill.cli.setup_cmd import run_wizard
+        raise SystemExit(run_wizard(force=force))
+
+
+@setup.command("browser")
+def setup_browser() -> None:
+    """0.1.56 — one-shot install of Playwright + chromium so the URL
+    auto-attachment's browser fallback can actually fire."""
+    from anthill.core.browser_setup import ensure_browser
+    click.echo("Setting up browser fallback for URL fetching")
+    result = ensure_browser(on_progress=click.echo)
+    if result.ok:
+        if result.steps_taken:
+            click.echo(f"✓ done. Ran: {', '.join(result.steps_taken)}")
+        raise SystemExit(0)
+    click.echo(f"✗ setup failed: {result.error}", err=True)
+    raise SystemExit(1)
 
 
 # 'anthill model ...' subcommand group.
