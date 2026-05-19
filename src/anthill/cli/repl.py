@@ -661,6 +661,7 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /power        national strength + ages
     /status       compact status card (model, citizens, cost so far)
     /history      recent asks
+    /search Q     grep across all session JSONL (use /regex/ for regex mode)
     /timing       per-task_type + per-phase latency over this session
     /compress     collapse middle of conversation window (head+tail preserved)
     /project      project context Scout sees (cwd, git branch, files)
@@ -2565,6 +2566,48 @@ def run_repl(
                 # where seconds go ("research subtasks have median 18s,
                 # scout 1.5s") without grepping logs.
                 _show_timing(config, nation, stats)
+            elif cmd == "search":
+                # 0.1.63 — cross-session grep. Substring by default
+                # (case-insensitive); /regex/ form switches to regex.
+                # Hits ranked by recency; we cap at 20 results to
+                # keep the REPL output scannable.
+                query = rest.strip()
+                if not query:
+                    console.print(
+                        "[yellow]Usage: /search <query> | "
+                        "/search /<regex>/[/yellow]"
+                    )
+                else:
+                    from anthill.core.session_search import search_sessions
+                    hits = search_sessions(query, home=config.home, limit=20)
+                    if not hits:
+                        console.print(
+                            f"  [dim]No matches for [cyan]{query}[/cyan].[/dim]"
+                        )
+                    else:
+                        console.print(
+                            f"  [bold]{len(hits)} match(es) for "
+                            f"[cyan]{query}[/cyan]:[/bold]"
+                        )
+                        import time as _time
+                        now = _time.time()
+                        for h in hits:
+                            age_sec = max(0.0, now - h.ts)
+                            if age_sec < 3600:
+                                age = f"{int(age_sec // 60)}m"
+                            elif age_sec < 86400:
+                                age = f"{int(age_sec // 3600)}h"
+                            else:
+                                age = f"{int(age_sec // 86400)}d"
+                            console.print(
+                                f"    [cyan]{h.session_id[:14]}[/cyan] "
+                                f"[dim]{age} ago · {h.match_field}:[/dim] "
+                                f"{h.snippet}"
+                            )
+                        console.print(
+                            "  [dim]→ inspect: [cyan]"
+                            "/session show <session_id>[/cyan][/dim]"
+                        )
             elif cmd == "compress":
                 # 0.1.62 — head-tail conversation compression.
                 # Collapses the middle of the rolling window when it
