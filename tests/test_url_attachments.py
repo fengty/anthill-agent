@@ -199,10 +199,16 @@ async def test_expand_urls_demotes_thin_content(monkeypatch) -> None:
     block = await expand_urls_async("https://gated.example/secret")
     assert block.fetched == []
     assert len(block.errors) == 1
-    # Hint should mention the byte count + the remedy.
+    # Hint should mention the byte count. After 0.1.70 the remedy
+    # text varies by browser-fallback outcome (could be "/setup browser",
+    # "paste content directly", "auth cookies", etc.) so we just check
+    # that SOMETHING actionable is suggested.
     err = block.errors[0]
     assert "chars" in err.reason or "char" in err.reason
-    assert "paste" in err.reason.lower()
+    assert any(
+        hint in err.reason.lower()
+        for hint in ("paste", "/setup browser", "browser fallback")
+    )
 
 
 # --- 0.1.54 — Playwright fallback when httpx fetch is unusable -----------
@@ -313,27 +319,137 @@ async def test_browser_fallback_recovers_login_walls_too(monkeypatch) -> None:
 async def test_browser_fallback_skipped_when_browser_also_returns_thin(
     monkeypatch,
 ) -> None:
-    """If even Playwright can't get real content (truly empty page,
-    aggressive bot detection), the fallback returns None and we
-    keep the original error with the install hint."""
+    """0.1.70: the SHORT-content threshold for browser output is now
+    50 chars (much lower than httpx's 500). A 100-char browser response
+    is now ACCEPTED. To force a 'too short' rejection we need < 50."""
     from anthill.core.url_attachments import expand_urls_async
     from anthill.plugins.base import PluginResult
 
     async def thin_http(self, *, url, max_chars=4000, **_):
         return PluginResult(output="x" * 100, ok=True)
 
-    async def also_thin_browser(self, *, url, **_):
-        return PluginResult(output="y" * 100, ok=True)
+    async def too_short_browser(self, *, url, **_):
+        return PluginResult(output="y" * 30, ok=True)  # below 50
 
     monkeypatch.setattr("anthill.plugins.web.WebFetchPlugin.call", thin_http)
     monkeypatch.setattr(
         "anthill.plugins.browser.BrowserRenderPlugin.call",
-        also_thin_browser,
+        too_short_browser,
     )
 
     block = await expand_urls_async("https://truly-empty.example/x")
     assert block.fetched == []
     assert len(block.errors) == 1
+    assert "<50 chars" in block.errors[0].reason
+
+
+# --- 0.1.70 — browser-rendered legitimate short pages accepted ----------
+
+
+@pytest.mark.asyncio
+async def test_browser_fallback_accepts_short_real_page(monkeypatch) -> None:
+    """0.1.54 had a 500-char floor that REJECTED legitimate browser
+    output (example.com renders to 129 chars). 0.1.70 drops that
+    threshold so the fallback works for minimalist pages too."""
+    from anthill.core.url_attachments import expand_urls_async
+    from anthill.plugins.base import PluginResult
+
+    async def thin_http(self, *, url, max_chars=4000, **_):
+        return PluginResult(output="redirecting", ok=True)
+
+    async def short_real_browser(self, *, url, **_):
+        # 129 chars — example.com's actual rendered text.
+        return PluginResult(
+            output=(
+                "Example Domain. This domain is for use in documentation "
+                "examples without needing permission. Avoid use in operations."
+            ),
+            ok=True,
+            metadata={"url": url, "title": "Example Domain"},
+        )
+
+    monkeypatch.setattr("anthill.plugins.web.WebFetchPlugin.call", thin_http)
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call",
+        short_real_browser,
+    )
+
+    block = await expand_urls_async("https://example.com")
+    # 0.1.54 would have failed this; 0.1.70 accepts it.
+    assert len(block.fetched) == 1
+    assert block.fetched[0].via_browser is True
+    assert "Example Domain" in block.fetched[0].content
+
+
+@pytest.mark.asyncio
+async def test_browser_fallback_detects_login_wall_on_browser_output(
+    monkeypatch,
+) -> None:
+    """If Playwright ALSO sees a login wall (corp Zentao without
+    cookies), don't smuggle the login page into the prompt. Surface
+    'browser-still-login-wall' instead."""
+    from anthill.core.url_attachments import expand_urls_async
+    from anthill.plugins.base import PluginResult
+
+    async def thin_http(self, *, url, max_chars=4000, **_):
+        return PluginResult(output="redirecting", ok=True)
+
+    async def login_wall_browser(self, *, url, **_):
+        # Multi-marker login text that _looks_like_login_wall catches.
+        return PluginResult(
+            output=(
+                "Please login. Sign in below to continue. "
+                "Authentication required. " * 20
+            ),
+            ok=True,
+        )
+
+    monkeypatch.setattr("anthill.plugins.web.WebFetchPlugin.call", thin_http)
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call",
+        login_wall_browser,
+    )
+
+    block = await expand_urls_async("https://corp-zentao.example/bug/1")
+    assert block.fetched == []
+    assert len(block.errors) == 1
+    assert "login wall" in block.errors[0].reason.lower()
+    # The error must include "Browser fallback also hit a login wall"
+    # so the user knows browser ran.
+    assert "auth cookies" in block.errors[0].reason
+
+
+@pytest.mark.asyncio
+async def test_browser_fallback_error_message_explains_missing_install(
+    monkeypatch,
+) -> None:
+    """When Playwright isn't installed, the user-visible error should
+    point at /setup browser specifically — not the generic 'paste
+    content' hint."""
+    from anthill.core.url_attachments import expand_urls_async
+    from anthill.plugins.base import PluginResult
+
+    async def thin_http(self, *, url, max_chars=4000, **_):
+        return PluginResult(output="redirecting", ok=True)
+
+    async def not_installed(self, *, url, **_):
+        return PluginResult(
+            output=None,
+            ok=False,
+            error="browser plugins need the [browser] extra",
+        )
+
+    monkeypatch.setattr("anthill.plugins.web.WebFetchPlugin.call", thin_http)
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call",
+        not_installed,
+    )
+
+    block = await expand_urls_async("https://gated.example/x")
+    assert len(block.errors) == 1
+    # The error should mention the actual remediation, not just
+    # "paste content".
+    assert "/setup browser" in block.errors[0].reason or "Playwright" in block.errors[0].reason
 
 
 @pytest.mark.asyncio

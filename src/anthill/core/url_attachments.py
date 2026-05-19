@@ -248,19 +248,18 @@ async def expand_urls_async(
         # `_try_browser_fallback` returns the same FetchedURL shape
         # if it recovered real content, None otherwise.
         if fetched.is_login_wall:
-            recovered = await _try_browser_fallback(url, per_url_cap=per_url_cap)
-            if recovered is not None:
-                if total_so_far + recovered.char_count <= total_cap:
-                    total_so_far += recovered.char_count
-                    block.fetched.append(recovered)
+            outcome = await _try_browser_fallback(url, per_url_cap=per_url_cap)
+            if outcome.result is not None:
+                if total_so_far + outcome.result.char_count <= total_cap:
+                    total_so_far += outcome.result.char_count
+                    block.fetched.append(outcome.result)
                     continue
             block.errors.append(
                 FetchError(
                     url=url,
-                    reason=(
-                        "fetched but looks like a login wall — "
-                        "paste the content directly if you can "
-                        "(or /setup browser for JS pages)"
+                    reason=_render_fallback_failure(
+                        primary="fetched but looks like a login wall",
+                        browser_failure=outcome.why_failed,
                     ),
                 )
             )
@@ -272,20 +271,21 @@ async def expand_urls_async(
         # we'd happily inline it as if it were a bug report.
         # 0.1.54 — same browser fallback as the login-wall branch.
         if fetched.char_count < THIN_CONTENT_THRESHOLD_CHARS:
-            recovered = await _try_browser_fallback(url, per_url_cap=per_url_cap)
-            if recovered is not None:
-                if total_so_far + recovered.char_count <= total_cap:
-                    total_so_far += recovered.char_count
-                    block.fetched.append(recovered)
+            outcome = await _try_browser_fallback(url, per_url_cap=per_url_cap)
+            if outcome.result is not None:
+                if total_so_far + outcome.result.char_count <= total_cap:
+                    total_so_far += outcome.result.char_count
+                    block.fetched.append(outcome.result)
                     continue
             block.errors.append(
                 FetchError(
                     url=url,
-                    reason=(
-                        f"fetched only {fetched.char_count} chars — "
-                        f"looks like a redirect / auth gate / empty "
-                        f"response. Paste the content directly "
-                        f"(or /setup browser for JS pages)"
+                    reason=_render_fallback_failure(
+                        primary=(
+                            f"fetched only {fetched.char_count} chars — "
+                            f"looks like a redirect / auth gate / empty response"
+                        ),
+                        browser_failure=outcome.why_failed,
                     ),
                 )
             )
@@ -295,52 +295,142 @@ async def expand_urls_async(
     return block
 
 
+def _render_fallback_failure(*, primary: str, browser_failure: str | None) -> str:
+    """0.1.70 — assemble the user-visible error string. Includes WHY
+    the browser fallback didn't recover so the user can act on it:
+      - browser-not-installed → tell them to run /setup browser
+      - browser-still-login-wall → tell them the page needs auth
+      - browser-render-failed → surface Playwright's error text
+      - else → the original "paste content" hint
+    """
+    if browser_failure is None:
+        # Shouldn't happen (caller always provides) — keep the old
+        # generic shape for safety.
+        return f"{primary}. Paste the content directly if you can."
+
+    if browser_failure == "browser-not-installed":
+        return (
+            f"{primary}. Browser fallback unavailable: Playwright not "
+            f"installed. Run [cyan]/setup browser[/cyan] then retry."
+        )
+    if browser_failure == "browser-still-login-wall":
+        return (
+            f"{primary}. Browser fallback also hit a login wall — "
+            f"this page needs auth cookies anthill doesn't have. "
+            f"Paste the content directly."
+        )
+    if browser_failure == "browser-empty-output":
+        return (
+            f"{primary}. Browser fallback ran but the page rendered "
+            f"with no visible text (heavy JS / canvas / 404?). "
+            f"Paste the content directly."
+        )
+    if browser_failure == "browser-content-too-short":
+        return (
+            f"{primary}. Browser fallback returned <50 chars — "
+            f"likely an error stub. Paste the content directly."
+        )
+    if browser_failure.startswith("browser-render-failed"):
+        # Strip the "browser-render-failed: " prefix for readability.
+        detail = browser_failure.split(":", 1)[-1].strip()
+        return (
+            f"{primary}. Browser fallback errored: {detail}. "
+            f"Paste the content directly."
+        )
+    # Unknown failure mode — surface verbatim.
+    return f"{primary}. Browser fallback: {browser_failure}."
+
+
+# 0.1.70 — minimum useful length for a browser-rendered page. Much
+# lower than THIN_CONTENT_THRESHOLD_CHARS (500) because browser-
+# rendered `innerText` is just the VISIBLE content of the page,
+# which can legitimately be ~100 chars for a Q&A snippet, a simple
+# definition page, or any minimalist landing page. The 500-char
+# threshold made sense for raw HTML over httpx (where short = stub
+# / redirect) but is wrong here — we'd reject legitimate browser
+# output. Use the is_login_wall heuristic instead for quality signal.
+_BROWSER_MIN_USEFUL_CHARS = 50
+
+
+@dataclass
+class _BrowserFallbackOutcome:
+    """0.1.70 — diagnostic detail surfaced to the caller so the user
+    can see WHY the fallback didn't recover (vs the old opaque
+    'looks like a login wall' that covered both failure modes)."""
+
+    result: "FetchedURL | None"
+    why_failed: str | None  # None when result is not None
+
+
 async def _try_browser_fallback(
     url: str, *, per_url_cap: int
-) -> "FetchedURL | None":
+) -> _BrowserFallbackOutcome:
     """0.1.54 — try Playwright when httpx gave us nothing useful.
+    0.1.70 — return reason string so the error message can be useful.
 
     Real-user trigger: Zentao bug pages served ~100 bytes to httpx
-    (redirect stub / cookie gate). A real browser gets the actual
+    (redirect stub / cookie gate). A real browser sees the actual
     bug body because it runs the JS that fills in the page.
 
-    Returns None when:
-      - Playwright isn't installed (the [browser] extra opt-in)
-      - The browser render also produced nothing useful
-      - Any exception during the render (treat as graceful no-op)
+    Outcome shapes:
+      result != None       → recovered, caller should use it
+      result is None, why_failed = "browser-not-installed"
+      result is None, why_failed = "browser-render-failed: <err>"
+      result is None, why_failed = "browser-empty-output"
+      result is None, why_failed = "browser-still-login-wall"
+      result is None, why_failed = "browser-content-too-short"
 
     The cost is the price of admission: a Playwright render is
     multiple seconds. We pay it only on the failure branch, never
-    on a successful httpx fetch. This is the right tradeoff —
-    failing fast on httpx is cheap; succeeding slowly via browser
-    on the OTHERWISE-failed cases is a strict UX improvement.
+    on a successful httpx fetch.
     """
     try:
         from anthill.plugins.browser import BrowserRenderPlugin
     except ImportError:
-        return None
+        return _BrowserFallbackOutcome(None, "browser-not-installed")
     plugin = BrowserRenderPlugin()
     try:
         result = await plugin.call(
             url=url, timeout=20.0, max_chars=per_url_cap
         )
-    except Exception:  # noqa: BLE001 — fallback must never crash the fetch path
-        return None
-    if not result.ok or not result.output:
-        return None
+    except Exception as e:  # noqa: BLE001 — fallback must never crash the fetch path
+        return _BrowserFallbackOutcome(
+            None, f"browser-render-failed: {type(e).__name__}: {e}"
+        )
+    if not result.ok:
+        # Most common case: Playwright not installed. The plugin's
+        # _missing() returns ok=False with an install-hint error
+        # string. Surface as "browser-not-installed" so the user-
+        # visible message points at /setup browser specifically.
+        err_text = (result.error or "").lower()
+        if "[browser]" in err_text or "playwright" in err_text:
+            return _BrowserFallbackOutcome(None, "browser-not-installed")
+        return _BrowserFallbackOutcome(
+            None, f"browser-render-failed: {result.error or 'ok=False'}"
+        )
+    if not result.output:
+        return _BrowserFallbackOutcome(None, "browser-empty-output")
     text = str(result.output)
-    if len(text) < THIN_CONTENT_THRESHOLD_CHARS:
-        # The browser also got nothing real — don't fake it.
-        return None
-    return FetchedURL(
-        url=url,
-        display_host=_display_host(url),
-        content=text,
-        char_count=len(text),
-        is_login_wall=False,
-        # Mark the source so post-hoc analysis can tell httpx fetches
-        # apart from playwright-rescued ones.
-        via_browser=True,
+    # 0.1.70 — if browser also sees a login wall, fail informatively
+    # rather than smuggling the login page into the prompt.
+    if _looks_like_login_wall(text):
+        return _BrowserFallbackOutcome(None, "browser-still-login-wall")
+    # 0.1.70 — drop the 500-char threshold here; a real page with
+    # short body (e.g. example.com = 129 chars) is still useful.
+    # Only reject *catastrophically* short text — the kind that's
+    # almost certainly an error stub.
+    if len(text) < _BROWSER_MIN_USEFUL_CHARS:
+        return _BrowserFallbackOutcome(None, "browser-content-too-short")
+    return _BrowserFallbackOutcome(
+        FetchedURL(
+            url=url,
+            display_host=_display_host(url),
+            content=text,
+            char_count=len(text),
+            is_login_wall=False,
+            via_browser=True,
+        ),
+        None,
     )
 
 
