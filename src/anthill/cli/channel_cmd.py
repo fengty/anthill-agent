@@ -60,6 +60,16 @@ CHANNEL_SPECS: dict[str, list[dict[str, Any]]] = {
     "discord": [
         {"key": "bot_token", "prompt": "Bot token (from Discord dev portal)", "kind": "secret"},
     ],
+    # 0.1.61 — Email send (SMTP). MVP receive piggybacks on
+    # webhook-bridge services; not in scope here. smtp_port defaults
+    # to 587 (STARTTLS); use 465 for implicit SSL.
+    "email": [
+        {"key": "smtp_host", "prompt": "SMTP host (e.g. smtp.gmail.com)", "kind": "field"},
+        {"key": "smtp_port", "prompt": "SMTP port (587 STARTTLS / 465 SSL)", "kind": "field"},
+        {"key": "username", "prompt": "SMTP username (usually your email)", "kind": "field"},
+        {"key": "password", "prompt": "SMTP password / app password", "kind": "secret"},
+        {"key": "from_addr", "prompt": "From: address (blank = same as username)", "kind": "field", "optional": True},
+    ],
 }
 
 
@@ -155,13 +165,18 @@ def channel_list() -> None:
 
 @channel.command("add")
 @click.argument("name", required=False)
-@click.option("--kind", help="lark / telegram / slack / wecom / discord")
+@click.option("--kind", help="lark / telegram / slack / wecom / discord / email")
 @click.option("--app-id", help="Lark App ID")
 @click.option("--app-secret", help="Lark App secret")
 @click.option("--bot-token", help="Telegram / Slack / Discord bot token")
 @click.option("--corp-id", help="WeCom corp id")
 @click.option("--corp-secret", help="WeCom corp secret")
 @click.option("--agent-id", help="WeCom agent id")
+@click.option("--smtp-host", help="Email: SMTP hostname")
+@click.option("--smtp-port", help="Email: SMTP port (587 STARTTLS / 465 SSL)")
+@click.option("--username", help="Email: SMTP username")
+@click.option("--password", help="Email: SMTP password / app password")
+@click.option("--from-addr", help="Email: From address (defaults to username)")
 def channel_add(
     name: str | None,
     kind: str | None,
@@ -171,6 +186,11 @@ def channel_add(
     corp_id: str | None,
     corp_secret: str | None,
     agent_id: str | None,
+    smtp_host: str | None,
+    smtp_port: str | None,
+    username: str | None,
+    password: str | None,
+    from_addr: str | None,
 ) -> None:
     """Add a channel. With no flags, runs interactively."""
     cfg = load_config()
@@ -209,6 +229,13 @@ def channel_add(
                 "agent_id": agent_id,
             },
             "discord": {"bot_token": bot_token},
+            "email": {
+                "smtp_host": smtp_host,
+                "smtp_port": smtp_port or "587",
+                "username": username,
+                "password": password,
+                "from_addr": from_addr,
+            },
         }
         extras = {}
         secrets_map = {}
@@ -373,4 +400,26 @@ def build_channel(entry: ChannelEntry):  # noqa: ANN201
         if not token:
             return None
         return DiscordChannel(bot_token=token)
+    if entry.kind == "email":
+        # 0.1.61 — Email (SMTP send). Defaults to port 587 (STARTTLS)
+        # when entry.extra doesn't have it. from_addr falls back to
+        # username inside EmailChannel.__init__.
+        from anthill.channels.email import EmailChannel
+        smtp_host = entry.extra.get("smtp_host")
+        username = entry.extra.get("username")
+        password = s("password")
+        if not (smtp_host and username and password):
+            return None
+        port_raw = entry.extra.get("smtp_port") or "587"
+        try:
+            smtp_port = int(port_raw)
+        except (TypeError, ValueError):
+            smtp_port = 587
+        return EmailChannel(
+            smtp_host=smtp_host,
+            smtp_port=smtp_port,
+            username=username,
+            password=password,
+            from_addr=entry.extra.get("from_addr") or None,
+        )
     return None
