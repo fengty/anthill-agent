@@ -62,6 +62,12 @@ class Recipe:
     after argument substitution. `subtasks` is optional — when set,
     Scout is skipped and the subtask list runs directly with each
     subtask's prompt also substituted.
+
+    0.1.65 — quality tracking for the self-improvement loop:
+      - `recent_quality_scores` rolling window (last 5) of quality
+        signals from skill matches
+      - `baseline_quality` set on first save; what we compare drift against
+      - `template_revisions` count — bumped each time refine fires
     """
 
     name: str
@@ -71,6 +77,10 @@ class Recipe:
     created_at: float = field(default_factory=time.time)
     last_run_at: float | None = None
     run_count: int = 0
+    # 0.1.65 — quality tracking
+    recent_quality_scores: list[float] = field(default_factory=list)
+    baseline_quality: float | None = None
+    template_revisions: int = 0
 
     def placeholders(self) -> list[str]:
         """Distinct {name} placeholders found in the template + any subtask prompts."""
@@ -172,6 +182,16 @@ def save_recipe(recipe: Recipe, nation_dir_path: Path) -> Path:
     if recipe.last_run_at is not None:
         lines.append(f"last_run_at = {recipe.last_run_at}")
     lines.append(f"run_count = {recipe.run_count}")
+    # 0.1.65 — quality tracking, forward-compatible (older readers
+    # that don't know these keys still load via _recipe_from_dict
+    # because every new field has a sane default).
+    if recipe.baseline_quality is not None:
+        lines.append(f"baseline_quality = {recipe.baseline_quality}")
+    if recipe.template_revisions:
+        lines.append(f"template_revisions = {recipe.template_revisions}")
+    if recipe.recent_quality_scores:
+        scores = ", ".join(f"{s}" for s in recipe.recent_quality_scores)
+        lines.append(f"recent_quality_scores = [{scores}]")
 
     for sub in recipe.subtasks:
         lines.append("")
@@ -244,6 +264,15 @@ def _recipe_from_dict(data: dict) -> Recipe | None:
                     depends_on=[d for d in deps if isinstance(d, str)],
                 )
             )
+    # 0.1.65 — load quality tracking fields when present. Missing
+    # fields default; older recipe files load with no quality data
+    # and accumulate it on next match.
+    raw_scores = data.get("recent_quality_scores", []) or []
+    quality_scores = (
+        [float(s) for s in raw_scores if isinstance(s, (int, float))]
+        if isinstance(raw_scores, list)
+        else []
+    )
     return Recipe(
         name=name,
         template=template,
@@ -252,6 +281,13 @@ def _recipe_from_dict(data: dict) -> Recipe | None:
         created_at=float(data.get("created_at", time.time())),
         last_run_at=float(data["last_run_at"]) if "last_run_at" in data else None,
         run_count=int(data.get("run_count", 0)),
+        recent_quality_scores=quality_scores,
+        baseline_quality=(
+            float(data["baseline_quality"])
+            if "baseline_quality" in data
+            else None
+        ),
+        template_revisions=int(data.get("template_revisions", 0)),
     )
 
 

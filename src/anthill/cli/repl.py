@@ -671,6 +671,9 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /skill list   show all saved skills (with usage stats)
     /skill rm X   remove a specific saved skill
     /skill prune  remove all 🌫 stale skills (>14d unused)
+    /skill refine X
+                  refine a saved skill's template when quality has dropped
+                  vs baseline (auto-detected; surfaced after the matching ask)
     /memory       this nation's persistent MEMORY.md
     /memory consolidate
                   dedup near-duplicates, archive overflow
@@ -1588,6 +1591,47 @@ async def _handle_ask(
             f"({int(matched.confidence * 100)}% match via "
             f"{matched.matched_via})[/dim]"
         )
+        # 0.1.65 — record this run's quality signal on the recipe.
+        # Quality = average success_score across the ask's attempts
+        # (last attempt per outcome, ignoring None). Persisted to
+        # the TOML so drift detection survives REPL restart. Detect
+        # drift and surface a nudge when significant — user can run
+        # `/skill refine X` to actually refine.
+        try:
+            scores: list[float] = []
+            for o in result.outcomes:
+                if o.status != "ok":
+                    continue
+                final = o.final
+                if final is not None and isinstance(
+                    final.success_score, (int, float)
+                ):
+                    scores.append(float(final.success_score))
+            if scores:
+                from anthill.core.recipes import save_recipe
+                from anthill.core.skill_refinement import (
+                    assess_drift,
+                    record_quality_signal,
+                )
+                avg = sum(scores) / len(scores)
+                record_quality_signal(matched.recipe, avg)
+                ndir = nation_dir(config.home, nation.name)
+                try:
+                    save_recipe(matched.recipe, ndir)
+                except Exception:  # noqa: BLE001
+                    pass
+                drift = assess_drift(matched.recipe)
+                if drift is not None and drift.needs_refinement:
+                    console.print(
+                        f"  [dim]📉 skill quality drift: "
+                        f"baseline {drift.baseline:.2f} → "
+                        f"recent {drift.recent_mean:.2f} "
+                        f"(-{drift.drift:.2f}). Run "
+                        f"[cyan]/skill refine {matched.recipe.name}[/cyan] "
+                        f"to update the template.[/dim]"
+                    )
+        except Exception:  # noqa: BLE001 — quality tracking is best-effort
+            pass
         # Clear the marker so the next ask doesn't re-print.
         nation.last_matched_skill = None
 
@@ -3291,11 +3335,100 @@ def run_repl(
                                     )
                     except Exception as e:  # noqa: BLE001
                         console.print(f"  [red]prune failed: {e}[/red]")
+                elif sub == "refine":
+                    # 0.1.65 — self-improvement loop. When quality
+                    # has drifted below baseline, refine the recipe's
+                    # template using the most recent successful
+                    # instance + an LLM call. Caller-supplied opt-in
+                    # (we PROPOSE in the splash hint; user runs THIS
+                    # to commit a refined template).
+                    if not tail:
+                        console.print(
+                            "[yellow]Usage: /skill refine <skill-name>[/yellow]"
+                        )
+                    else:
+                        try:
+                            from anthill.core.feedback import load_last_ask
+                            from anthill.core.recipes import (
+                                load_recipe,
+                                save_recipe,
+                            )
+                            from anthill.core.skill_refinement import (
+                                apply_refinement,
+                                assess_drift,
+                                refine_template,
+                            )
+                            recipe = load_recipe(tail, ndir)
+                            if recipe is None:
+                                console.print(
+                                    f"  [yellow]no such skill: {tail}[/yellow]"
+                                )
+                            else:
+                                drift = assess_drift(recipe)
+                                if drift is None or not drift.needs_refinement:
+                                    console.print(
+                                        f"  [dim]skill [cyan]{tail}[/cyan] "
+                                        f"doesn't show drift yet "
+                                        f"(need {3} runs + 0.15 quality "
+                                        f"drop).[/dim]"
+                                    )
+                                else:
+                                    last = load_last_ask(ndir)
+                                    recent_request = (
+                                        last.request if last is not None
+                                        else ""
+                                    )
+                                    recent_output = (
+                                        last.final_output if last is not None
+                                        else ""
+                                    )
+
+                                    # Build a small async closure
+                                    # that uses the nation's default
+                                    # model for the refine call.
+                                    async def _refine_call(prompt: str) -> str:
+                                        result = await nation.run(
+                                            "general", prompt
+                                        )
+                                        return str(result.output or "")
+
+                                    import asyncio as _asyncio
+                                    new_template = _asyncio.run(
+                                        refine_template(
+                                            recipe,
+                                            recent_request=recent_request,
+                                            recent_output=recent_output,
+                                            refine_fn=_refine_call,
+                                        )
+                                    )
+                                    if new_template:
+                                        console.print(
+                                            "  [bold]Proposed new template:[/bold]"
+                                        )
+                                        console.print(
+                                            f"    [dim]{new_template[:400]}[/dim]"
+                                        )
+                                        apply_refinement(recipe, new_template)
+                                        save_recipe(recipe, ndir)
+                                        console.print(
+                                            f"  [green]✓[/green] refined "
+                                            f"[cyan]{tail}[/cyan] "
+                                            f"(revision #{recipe.template_revisions}). "
+                                            f"Quality history reset; next 5 "
+                                            f"uses set the new baseline."
+                                        )
+                                    else:
+                                        console.print(
+                                            "  [yellow]refinement produced no "
+                                            "output — try again later[/yellow]"
+                                        )
+                        except Exception as e:  # noqa: BLE001
+                            console.print(f"  [red]refine failed: {e}[/red]")
                 else:
                     console.print(
                         "[yellow]Usage: /skill save <name> | "
-                        "/skill list | /skill rm <name> | /skill prune"
-                        "[/yellow]"
+                        "/skill list | /skill rm <name> | /skill prune | "
+                        "/skill refine <name>[/yellow]"
                     )
             elif cmd in ("skills",):
                 # 0.1.17 — show what skill_mining sees in this nation's
