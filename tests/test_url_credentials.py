@@ -166,3 +166,121 @@ def test_remove_doesnt_affect_other_domains(isolated_home) -> None:
     remove_credentials("drop.example.com")
     assert load_credentials("keep.example.com") is not None
     assert load_credentials("drop.example.com") is None
+
+
+# --- 0.1.72 — Playwright storage_state cache ----------------------------
+
+
+def test_cookie_state_round_trip(isolated_home) -> None:
+    from anthill.core.url_credentials import (
+        load_cookie_state,
+        save_cookie_state,
+    )
+
+    state = {
+        "cookies": [
+            {
+                "name": "session",
+                "value": "abc123",
+                "domain": "zentao.example.com",
+                "path": "/",
+                "expires": 1800000000,
+                "httpOnly": True,
+                "secure": False,
+                "sameSite": "Lax",
+            }
+        ],
+        "origins": [
+            {
+                "origin": "https://zentao.example.com",
+                "localStorage": [{"name": "lang", "value": "zh-CN"}],
+            }
+        ],
+    }
+    save_cookie_state("zentao.example.com", state)
+    loaded = load_cookie_state("zentao.example.com")
+    assert loaded is not None
+    # Anthill's metadata header should be STRIPPED on load so the
+    # returned dict is a drop-in for browser.new_context(storage_state=).
+    assert "_anthill_meta" not in loaded
+    assert loaded["cookies"][0]["name"] == "session"
+    assert loaded["cookies"][0]["value"] == "abc123"
+    assert loaded["origins"][0]["origin"] == "https://zentao.example.com"
+
+
+def test_cookie_state_missing_returns_none(isolated_home) -> None:
+    from anthill.core.url_credentials import load_cookie_state
+
+    assert load_cookie_state("never-saved.example.com") is None
+
+
+def test_cookie_state_corrupt_file_returns_none(isolated_home) -> None:
+    """Hand-edited / power-cut / not-JSON file must not crash load."""
+    from anthill.core.url_credentials import (
+        cookie_state_path,
+        load_cookie_state,
+    )
+
+    path = cookie_state_path("corrupt.example.com")
+    path.write_text("this is not json {{{")
+    assert load_cookie_state("corrupt.example.com") is None
+
+
+def test_cookie_state_path_sanitizes_domain_with_port(isolated_home) -> None:
+    """Domain with port (e.g. example.com:8443) → filesystem-safe path."""
+    from anthill.core.url_credentials import cookie_state_path
+
+    p = cookie_state_path("example.com:8443")
+    # Colon is not in [a-zA-Z0-9._-] so should be replaced.
+    assert ":" not in p.name
+    assert "example.com" in p.name
+
+
+def test_remove_cookie_state_returns_true_when_present(isolated_home) -> None:
+    from anthill.core.url_credentials import (
+        remove_cookie_state,
+        save_cookie_state,
+    )
+
+    save_cookie_state("doomed.example.com", {"cookies": [], "origins": []})
+    assert remove_cookie_state("doomed.example.com") is True
+    assert remove_cookie_state("doomed.example.com") is False  # idempotent
+
+
+def test_cookie_state_age_seconds(isolated_home) -> None:
+    """Age is positive after save, None when file absent."""
+    from anthill.core.url_credentials import (
+        cookie_state_age_seconds,
+        save_cookie_state,
+    )
+
+    assert cookie_state_age_seconds("fresh.example.com") is None
+    save_cookie_state("fresh.example.com", {"cookies": []})
+    age = cookie_state_age_seconds("fresh.example.com")
+    assert age is not None
+    assert age >= 0
+    # Just saved → < 1 second
+    assert age < 5.0
+
+
+def test_anthill_meta_written_to_file(isolated_home) -> None:
+    """The on-disk file SHOULD have the meta header; load strips it
+    on the way out. This test pins the file format so future readers
+    in other tools know what they're looking at."""
+    import json as _json
+
+    from anthill.core.url_credentials import (
+        cookie_state_path,
+        save_cookie_state,
+    )
+
+    save_cookie_state(
+        "meta.example.com", {"cookies": [{"name": "x", "value": "y"}]}
+    )
+    raw = _json.loads(cookie_state_path("meta.example.com").read_text())
+    assert "_anthill_meta" in raw
+    assert raw["_anthill_meta"]["domain"] == "meta.example.com"
+    assert raw["_anthill_meta"]["schema"] == 1
+    assert raw["_anthill_meta"]["saved_at"] > 0
+    # Playwright fields still at top-level for direct loading.
+    assert raw["cookies"] == [{"name": "x", "value": "y"}]

@@ -55,8 +55,16 @@ class BrowserRenderPlugin(Plugin):
         wait_selector: str | None = None,
         timeout: float = 30.0,
         max_chars: int = 8000,
+        storage_state: dict | None = None,
         **_: Any,
     ) -> PluginResult:
+        """Fetch a URL with a real browser.
+
+        0.1.72 — `storage_state` (Playwright dict shape: cookies +
+        origins) lets the caller seed the browser with a previously-
+        saved logged-in session. When the saved cookies still work,
+        the page renders directly and we skip the slow login dance.
+        """
         if not url or not url.startswith(("http://", "https://")):
             return PluginResult(output=None, ok=False, error=f"invalid url: {url!r}")
         try:
@@ -68,7 +76,12 @@ class BrowserRenderPlugin(Plugin):
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
                 try:
-                    context = await browser.new_context()
+                    if storage_state is not None:
+                        context = await browser.new_context(
+                            storage_state=storage_state
+                        )
+                    else:
+                        context = await browser.new_context()
                     page = await context.new_page()
                     await page.goto(url, timeout=int(timeout * 1000), wait_until="networkidle")
                     if wait_selector:
@@ -240,6 +253,10 @@ class BrowserRenderPlugin(Plugin):
                     text = await page.evaluate("() => document.body.innerText || ''")
                     title = await page.title()
                     final_url = page.url
+                    # 0.1.72 — capture cookie state BEFORE closing the
+                    # context. Caller persists this; next fetch on the
+                    # same domain skips the login dance entirely.
+                    captured_state = await context.storage_state()
                 finally:
                     await browser.close()
         except Exception as e:  # noqa: BLE001
@@ -257,6 +274,9 @@ class BrowserRenderPlugin(Plugin):
                 "truncated": truncated,
                 "char_count": len(text),
                 "via_login": True,
+                # storage_state surfaces so url_attachments.py can
+                # save_cookie_state(domain, state) after success.
+                "storage_state": captured_state,
             },
         )
 

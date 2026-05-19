@@ -165,8 +165,9 @@ class ReplCompleter:
             # the wizard.
             candidates = ("browser",)
         elif slash == "/auth":
-            # 0.1.71 — per-domain credentials for the browser fallback.
-            candidates = ("add", "list", "rm", "remove")
+            # 0.1.71/72 — per-domain credentials + cookie cache for
+            # the browser fallback.
+            candidates = ("add", "list", "rm", "remove", "clear-cookies")
         return sorted(c for c in candidates if c.startswith(partial))
 
     def _complete_attachment(self, token: str) -> list[str]:

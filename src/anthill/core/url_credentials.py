@@ -26,9 +26,14 @@ is the same protection the model API keys get.
 
 from __future__ import annotations
 
+import json
+import re
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlparse
 
+from anthill.config import AnthillConfig
 from anthill.core.userconfig import load_secrets, remove_secret, upsert_secret
 
 
@@ -130,3 +135,113 @@ def remove_credentials(domain: str) -> bool:
     for k in keys:
         remove_secret(k)
     return True
+
+
+# ---------------------------------------------------------------------------
+# 0.1.72 — Playwright storage_state cache (cookie persistence)
+# ---------------------------------------------------------------------------
+#
+# After a successful login flow, Playwright's `context.storage_state()`
+# returns a JSON-serializable dict with all cookies + per-origin
+# localStorage. Persisting this to disk and loading it into the NEXT
+# context skips the login dance entirely (login is multi-second, cookie
+# load is milliseconds).
+#
+# Storage layout: ~/.anthill/url_auth_state/<sanitized_domain>.json
+# Sanitization: replace any non-[a-zA-Z0-9._-] char with '_' so port
+# colons and other oddities can't break filesystem assumptions.
+
+
+def _state_dir() -> Path:
+    home = AnthillConfig.load().home
+    d = home / "url_auth_state"
+    d.mkdir(parents=True, exist_ok=True)
+    # 0700 — only owner can list / read. Mirrors the secrets.toml
+    # 0600 protection one level up.
+    try:
+        d.chmod(0o700)
+    except OSError:
+        pass
+    return d
+
+
+_SANITIZE_RE = re.compile(r"[^a-zA-Z0-9._-]")
+
+
+def cookie_state_path(domain: str) -> Path:
+    """Filesystem path where this domain's cached storage_state lives."""
+    safe = _SANITIZE_RE.sub("_", domain)
+    return _state_dir() / f"{safe}.json"
+
+
+def save_cookie_state(domain: str, state: dict) -> None:
+    """Persist Playwright storage_state for `domain`.
+
+    `state` is the dict returned by `context.storage_state()` —
+    typically `{"cookies": [...], "origins": [...]}`. We write 0600
+    so it's owner-readable only (cookies are bearer tokens).
+    """
+    path = cookie_state_path(domain)
+    # Add a meta header so future readers can see when this was
+    # captured (Playwright's own format has no top-level metadata).
+    payload = {
+        "_anthill_meta": {
+            "saved_at": time.time(),
+            "domain": domain,
+            "schema": 1,
+        },
+        **state,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def load_cookie_state(domain: str) -> dict | None:
+    """Return saved storage_state for `domain`, or None when missing.
+
+    Strips the `_anthill_meta` header so the returned dict is a
+    drop-in for `browser.new_context(storage_state=...)`.
+    """
+    path = cookie_state_path(domain)
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    # Strip our metadata; return the rest as-is.
+    raw.pop("_anthill_meta", None)
+    return raw
+
+
+def remove_cookie_state(domain: str) -> bool:
+    """Wipe the saved cookies for `domain`. True iff a file existed."""
+    path = cookie_state_path(domain)
+    if not path.exists():
+        return False
+    try:
+        path.unlink()
+    except OSError:
+        return False
+    return True
+
+
+def cookie_state_age_seconds(domain: str) -> float | None:
+    """Seconds since the saved storage_state was written. None when
+    no file. Used by /auth status to surface staleness."""
+    path = cookie_state_path(domain)
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text())
+        saved_at = float(raw.get("_anthill_meta", {}).get("saved_at") or 0)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if saved_at <= 0:
+        return None
+    return max(0.0, time.time() - saved_at)

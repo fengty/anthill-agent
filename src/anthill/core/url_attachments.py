@@ -455,6 +455,17 @@ async def _try_browser_with_login(
         )
     if len(text) < _BROWSER_MIN_USEFUL_CHARS:
         return _BrowserFallbackOutcome(None, "login-empty-output")
+    # 0.1.72 — login succeeded. Persist the cookie state so the next
+    # fetch on the same domain can skip the login dance and read with
+    # cookies directly. Best-effort: failure to save doesn't break
+    # the current ask.
+    try:
+        from anthill.core.url_credentials import save_cookie_state
+        state = (result.metadata or {}).get("storage_state")
+        if isinstance(state, dict):
+            save_cookie_state(domain, state)
+    except Exception:  # noqa: BLE001
+        pass
     return _BrowserFallbackOutcome(
         FetchedURL(
             url=url,
@@ -469,7 +480,9 @@ async def _try_browser_with_login(
 
 
 async def _try_browser_fallback(
-    url: str, *, per_url_cap: int
+    url: str,
+    *,
+    per_url_cap: int,
 ) -> _BrowserFallbackOutcome:
     """0.1.54 — try Playwright when httpx gave us nothing useful.
     0.1.70 — return reason string so the error message can be useful.
@@ -495,9 +508,26 @@ async def _try_browser_fallback(
     except ImportError:
         return _BrowserFallbackOutcome(None, "browser-not-installed")
     plugin = BrowserRenderPlugin()
+    # 0.1.72 — if we have saved cookies for this domain, ride them
+    # in. When they still work, the page renders without a login
+    # dance (fast path). When they've expired, we fall through to
+    # the existing "browser-still-login-wall" branch and the credentialed
+    # retry will re-login and save fresh cookies.
+    try:
+        from anthill.core.url_credentials import (
+            extract_domain,
+            load_cookie_state,
+        )
+        domain = extract_domain(url)
+        stored_state = load_cookie_state(domain) if domain else None
+    except Exception:  # noqa: BLE001
+        stored_state = None
     try:
         result = await plugin.call(
-            url=url, timeout=20.0, max_chars=per_url_cap
+            url=url,
+            timeout=20.0,
+            max_chars=per_url_cap,
+            storage_state=stored_state,
         )
     except Exception as e:  # noqa: BLE001 — fallback must never crash the fetch path
         return _BrowserFallbackOutcome(

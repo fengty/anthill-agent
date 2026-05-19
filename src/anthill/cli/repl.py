@@ -718,8 +718,10 @@ HELP_TEXT = """[bold]REPL commands[/bold]
     /setup browser  install Playwright + chromium for URL fetch fallback
                     (one-shot; only needed if you paste SPA / login-walled URLs)
     /auth add     store login creds for a domain (used by browser fallback)
-    /auth list    show domains with stored creds
-    /auth rm X    remove credentials for a domain
+    /auth list    show domains with stored creds + 🍪 cookie freshness
+    /auth rm X    remove credentials (also clears cached cookies)
+    /auth clear-cookies X
+                  force re-login on next fetch (creds untouched)
 
   [bold]Session[/bold]
     /clear        clear screen (nation state preserved)
@@ -2723,7 +2725,9 @@ def run_repl(
 
                 from anthill.core.url_credentials import (
                     DomainCredentials,
+                    cookie_state_age_seconds,
                     list_domains,
+                    remove_cookie_state,
                     remove_credentials,
                     save_credentials,
                 )
@@ -2787,15 +2791,58 @@ def run_repl(
                             f"  [bold]{len(domains)} domain(s) with stored creds:[/bold]"
                         )
                         for d in domains:
-                            console.print(f"    [cyan]{d}[/cyan]")
+                            # 0.1.72 — show cookie freshness next to
+                            # each domain. None = no cookies yet (first
+                            # fetch will do full login); X ago = cached.
+                            age = cookie_state_age_seconds(d)
+                            if age is None:
+                                tag = "[dim](no cookies yet)[/dim]"
+                            elif age < 3600:
+                                tag = f"[dim]🍪 cookies {int(age // 60)}m old[/dim]"
+                            elif age < 86400:
+                                tag = f"[dim]🍪 cookies {int(age // 3600)}h old[/dim]"
+                            else:
+                                tag = (
+                                    f"[dim yellow]🍪 cookies "
+                                    f"{int(age // 86400)}d old[/dim yellow]"
+                                )
+                            console.print(f"    [cyan]{d}[/cyan]  {tag}")
+                elif sub == "clear-cookies" or sub == "clearcookies":
+                    # 0.1.72 — force re-login on next fetch. Useful
+                    # when cookies got out of sync (server-side session
+                    # revoked, etc.) and the wall→login chain doesn't
+                    # naturally re-trigger.
+                    if not tail:
+                        console.print(
+                            "[yellow]Usage: /auth clear-cookies <domain>[/yellow]"
+                        )
+                    elif remove_cookie_state(tail):
+                        console.print(
+                            f"  [green]✓[/green] cleared cookies for "
+                            f"[cyan]{tail}[/cyan]. Next fetch will re-login."
+                        )
+                    else:
+                        console.print(
+                            f"  [yellow]no cookies cached for {tail!r}[/yellow]"
+                        )
                 elif sub == "rm" or sub == "remove":
                     if not tail:
                         console.print("[yellow]Usage: /auth rm <domain>[/yellow]")
                     else:
-                        if remove_credentials(tail):
+                        removed_creds = remove_credentials(tail)
+                        # 0.1.72 — wipe cached cookies too. Otherwise
+                        # they'd linger as orphans (no creds to refresh
+                        # them when expired, but still get loaded next
+                        # fetch).
+                        removed_cookies = remove_cookie_state(tail)
+                        if removed_creds:
+                            cookies_msg = (
+                                " (cookies also cleared)" if removed_cookies
+                                else ""
+                            )
                             console.print(
                                 f"  [green]✓[/green] removed credentials for "
-                                f"[cyan]{tail}[/cyan]"
+                                f"[cyan]{tail}[/cyan]{cookies_msg}"
                             )
                         else:
                             console.print(
@@ -2804,7 +2851,8 @@ def run_repl(
                 else:
                     console.print(
                         "[yellow]Usage: /auth add | /auth list | "
-                        "/auth rm <domain>[/yellow]"
+                        "/auth rm <domain> | /auth clear-cookies <domain>"
+                        "[/yellow]"
                     )
             elif cmd == "setup":
                 # 0.1.5+ — re-enter the wizard on demand. Useful when the

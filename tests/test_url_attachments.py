@@ -582,6 +582,152 @@ async def test_browser_login_failure_surfaces_in_error(
 
 
 @pytest.mark.asyncio
+async def test_cookies_fast_path_skips_login_when_session_valid(
+    monkeypatch, tmp_path
+) -> None:
+    """0.1.72: when storage_state is cached AND still valid, the
+    browser renders real content on the FIRST try — login dance
+    skipped entirely. Verify by checking call_with_login was never
+    invoked."""
+    monkeypatch.setenv("ANTHILL_HOME", str(tmp_path))
+    from anthill.core.url_attachments import expand_urls_async
+    from anthill.core.url_credentials import (
+        DomainCredentials,
+        save_cookie_state,
+        save_credentials,
+    )
+    from anthill.plugins.base import PluginResult
+
+    save_credentials(DomainCredentials("zentao.example.com", "u", "p"))
+    # Pre-warm cookies (simulates a previous successful login).
+    save_cookie_state(
+        "zentao.example.com",
+        {"cookies": [{"name": "session", "value": "valid"}], "origins": []},
+    )
+
+    async def login_wall_http(self, *, url, max_chars=4000, **_):
+        return PluginResult(
+            output=(
+                "Please login. Sign in below. Authentication required. " * 30
+            ),
+            ok=True,
+        )
+
+    cookies_received: dict = {}
+
+    async def browser_with_cookies(self, *, url, storage_state=None, **kw):
+        cookies_received["state"] = storage_state
+        # Cookies still valid → real content, no login wall.
+        return PluginResult(
+            output=(
+                "Bug #56128 detail: NullPointerException at "
+                "UserService.java line 45. " * 5
+            ),
+            ok=True,
+            metadata={"url": url, "title": "bug"},
+        )
+
+    login_called: dict = {"count": 0}
+
+    async def fail_if_called(self, **kw):
+        login_called["count"] += 1
+        return PluginResult(output="should not be called", ok=False)
+
+    monkeypatch.setattr(
+        "anthill.plugins.web.WebFetchPlugin.call", login_wall_http
+    )
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call",
+        browser_with_cookies,
+    )
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call_with_login",
+        fail_if_called,
+    )
+
+    block = await expand_urls_async(
+        "https://zentao.example.com/zentao/bug-view-56128.html"
+    )
+    assert len(block.fetched) == 1
+    assert "NullPointerException" in block.fetched[0].content
+    # Cookies were threaded into the browser call.
+    assert cookies_received["state"] is not None
+    assert cookies_received["state"]["cookies"][0]["value"] == "valid"
+    # Login dance NEVER ran — cookie cache is the entire optimization.
+    assert login_called["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_login_persists_cookies_for_next_fetch(
+    monkeypatch, tmp_path
+) -> None:
+    """0.1.72: after a successful credentialed login, the
+    storage_state is saved to disk. Subsequent /auth list sees
+    'cookies Xm old', and the cookie fast path activates."""
+    monkeypatch.setenv("ANTHILL_HOME", str(tmp_path))
+    from anthill.core.url_attachments import expand_urls_async
+    from anthill.core.url_credentials import (
+        DomainCredentials,
+        load_cookie_state,
+        save_credentials,
+    )
+    from anthill.plugins.base import PluginResult
+
+    save_credentials(DomainCredentials("zentao.example.com", "u", "p"))
+    # No pre-cached cookies → must go through full login.
+    assert load_cookie_state("zentao.example.com") is None
+
+    async def login_wall(self, *, url, max_chars=4000, **_):
+        return PluginResult(
+            output="Please login. Sign in. " * 30, ok=True
+        )
+
+    async def browser_login_wall(self, *, url, storage_state=None, **kw):
+        # First browser call (no cookies) hits login wall.
+        return PluginResult(
+            output="Please login. Sign in. Authentication required. " * 20,
+            ok=True,
+        )
+
+    async def login_returns_content_and_state(self, **kw):
+        # Credentialed login succeeded — return fresh storage_state
+        # in metadata so url_attachments can persist it.
+        return PluginResult(
+            output="Bug detail content " * 20,
+            ok=True,
+            metadata={
+                "url": kw.get("url"),
+                "title": "bug",
+                "storage_state": {
+                    "cookies": [
+                        {"name": "session", "value": "freshly-issued"}
+                    ],
+                    "origins": [],
+                },
+            },
+        )
+
+    monkeypatch.setattr("anthill.plugins.web.WebFetchPlugin.call", login_wall)
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call",
+        browser_login_wall,
+    )
+    monkeypatch.setattr(
+        "anthill.plugins.browser.BrowserRenderPlugin.call_with_login",
+        login_returns_content_and_state,
+    )
+
+    block = await expand_urls_async(
+        "https://zentao.example.com/zentao/bug-view-56128.html"
+    )
+    assert len(block.fetched) == 1
+    # CRITICAL: cookie file must exist post-login.
+    saved = load_cookie_state("zentao.example.com")
+    assert saved is not None
+    assert saved["cookies"][0]["value"] == "freshly-issued"
+
+
+@pytest.mark.asyncio
 async def test_browser_login_no_creds_hints_at_auth_add(
     monkeypatch, tmp_path
 ) -> None:
