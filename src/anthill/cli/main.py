@@ -197,6 +197,12 @@ from anthill.cli.values_cmd import values as _values_group  # noqa: E402
 cli.add_command(_values_group)
 
 
+# 0.1.67 — `anthill cron ...` for scheduled asks.
+from anthill.cli.cron_cmd import cron as _cron_group  # noqa: E402
+
+cli.add_command(_cron_group)
+
+
 @cli.command()
 @click.argument("name", default="default")
 def init(name: str) -> None:
