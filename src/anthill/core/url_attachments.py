@@ -39,6 +39,16 @@ _URL_RE = re.compile(
 # Trailing punctuation to strip — same as for @-file tokens.
 _TRAILING_NOISE = ".,;!?。，；！？:：—-—_'\"`「」『』 \t)]}"
 
+
+def has_url(text: str) -> bool:
+    """0.1.53 — fast check used by conversation.is_follow_up and the
+    clarifier guard: does ``text`` contain a fetchable URL? URLs are
+    fresh-task signals, not follow-up signals — the URL itself is
+    the context the user is asking about, so a 2-word "分析下：URL"
+    should never inherit prior-turn wrapping.
+    """
+    return bool(_URL_RE.search(text))
+
 # Per-URL char cap when inlining into the prompt. Web pages can be
 # huge; truncating helps both context windows and judge quality.
 DEFAULT_PER_URL_CHARS = 8000

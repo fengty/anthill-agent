@@ -127,6 +127,14 @@ def is_follow_up(current: str, prior: Turn | None) -> bool:
     from anthill.core.skill_match import is_trivial_request
     if is_trivial_request(text):
         return False
+    # 0.1.53 — URL-bearing requests are fresh tasks. The URL IS the
+    # context the user is asking about; wrapping with stale prior
+    # turns adds noise. Real-user case: "分析下：http://..." (2 tokens)
+    # otherwise hits the word_count <= 5 path below and inherits the
+    # last bug-analysis turn's framing.
+    from anthill.core.url_attachments import has_url
+    if has_url(text) or "@" in text:
+        return False
     lower = text.lower()
 
     # Marker hit is sufficient regardless of length. Uses the same

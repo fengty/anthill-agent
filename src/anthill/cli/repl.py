@@ -1114,6 +1114,14 @@ async def _handle_ask(
     # URLs. Closes the real-user gap "贴了 URL，Anthill 说我不会
     # 浏览网页." Login-walled pages are detected and skipped with
     # a friendly hint instead of feeding HTML into the prompt.
+    # 0.1.53 — track URL fetch outcome so the clarifier guard below
+    # can react: when the user posted a URL but we couldn't actually
+    # see its content (login wall, thin content), bouncing back
+    # through clarifier "请把页面内容粘贴过来" is exactly the
+    # citizens-serve-the-king violation we keep fighting. Let the
+    # subtask run, fail/refuse gracefully, and the 0.1.40 retry
+    # path can do its thing. Don't add another round-trip first.
+    url_fetch_was_skipped = False
     try:
         from anthill.core.url_attachments import expand_urls
         url_block = expand_urls(request)
@@ -1131,6 +1139,7 @@ async def _handle_ask(
                 f"  [yellow]⚠ skipped {err.url}[/yellow] "
                 f"[dim]({err.reason})[/dim]"
             )
+            url_fetch_was_skipped = True
         # Block rendered text goes IN FRONT of any @file block and
         # in front of the user request, so Scout sees the fetched
         # context before the question.
@@ -1484,12 +1493,15 @@ async def _handle_ask(
                     f"[dim](round {round_n})[/dim]"
                 )
 
+        # 0.1.53 — suppress clarifier when URL fetch was skipped.
+        # See the matching block on the regular nation.ask path below.
+        clarify_for_this_ask = None if url_fetch_was_skipped else on_clarify
         delib = await run_deliberate(
             nation, effective_request,
             max_rounds=max_rounds,
             quality_threshold=quality_threshold,
             on_progress=on_progress,
-            on_clarify=on_clarify,  # v0.9.0
+            on_clarify=clarify_for_this_ask,  # v0.9.0; 0.1.53 guard
             on_plan=on_plan if stats.plan_review else None,  # v0.1.13
             nation_dir=nation_dir(config.home, nation.name),
             on_round=_on_round,
@@ -1505,10 +1517,18 @@ async def _handle_ask(
             f"[dim](rounds: {traj})[/dim]"
         )
     else:
+        # 0.1.53 — if the URL fetch step couldn't actually retrieve
+        # the page (login wall / thin content), the clarifier's
+        # "请把页面内容粘贴过来" prompt is exactly the bounce-back
+        # we keep telling citizens not to do. The user already
+        # KNOWS the fetch failed (⚠ line above). Let the subtask
+        # run with what's available; refusal-retry (0.1.40) handles
+        # any "I can't do this" output from the citizen path.
+        clarify_for_this_ask = None if url_fetch_was_skipped else on_clarify
         result = await nation.ask(
             effective_request,
             on_progress=on_progress,
-            on_clarify=on_clarify,  # v0.9.0
+            on_clarify=clarify_for_this_ask,  # v0.9.0; 0.1.53 guard
             on_plan=on_plan if stats.plan_review else None,  # v0.1.13
             nation_dir=nation_dir(config.home, nation.name),
         )

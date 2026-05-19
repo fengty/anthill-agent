@@ -198,6 +198,57 @@ def test_is_follow_up_greeting_with_real_content_is_NOT_reset() -> None:
     assert is_follow_up("你好 还有什么发现", c.last_turn()) is True
 
 
+# --- 0.1.53 — URL/attachment requests are fresh tasks, not follow-ups ----
+
+
+def test_is_follow_up_url_only_request_is_fresh_task() -> None:
+    """The original bug from the live 0.1.52 session:
+
+        » 分析下：http://ss.chandao.pamirs.top/zentao/bug-view-56128.html
+          ↳ continuing from 4 previous turn(s)
+
+    Two whitespace-tokens "分析下：URL" hit the word_count ≤ 5 rule
+    and inherited prior bug-analysis context. The URL IS the
+    context — no need to wrap."""
+    from anthill.core.conversation import ConversationContext, is_follow_up
+
+    c = ConversationContext()
+    c.record("write a report", "(long report)")
+    assert (
+        is_follow_up(
+            "分析下：http://ss.chandao.pamirs.top/zentao/bug-view-56128.html",
+            c.last_turn(),
+        )
+        is False
+    )
+
+
+def test_is_follow_up_at_file_request_is_fresh_task() -> None:
+    """Same rule for @file attachments — the file IS the context."""
+    from anthill.core.conversation import ConversationContext, is_follow_up
+
+    c = ConversationContext()
+    c.record("write a report", "(long report)")
+    assert is_follow_up("@README.md", c.last_turn()) is False
+
+
+def test_is_follow_up_url_with_question_still_fresh_task() -> None:
+    """Even if the user adds prose around the URL, the URL marker
+    should still mean "fresh task with embedded context", not "follow
+    up the previous conversation"."""
+    from anthill.core.conversation import ConversationContext, is_follow_up
+
+    c = ConversationContext()
+    c.record("translate this", "(answer)")
+    assert (
+        is_follow_up(
+            "what does https://example.com/page actually say",
+            c.last_turn(),
+        )
+        is False
+    )
+
+
 # --- wrap_with_context ---------------------------------------------------
 
 
