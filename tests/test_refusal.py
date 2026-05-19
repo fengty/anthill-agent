@@ -122,6 +122,89 @@ def test_real_world_research_refusal() -> None:
     assert is_user_serving_refusal(text) is True
 
 
+# --- 0.1.55 — court-speak + 把/将 / new refusal verbs --------------------
+
+
+def test_real_world_court_speak_refusal() -> None:
+    """The exact 0.1.54 live-session output. The model went into
+    "尊敬的陛下，臣..." court-speak (RP against anthill's
+    king/citizen system prompt) and 0.1.40 missed it because:
+      - subject pronoun is "臣" not "我"
+      - refusal verb is "提供" not "访问"
+      - paste-request uses 把/将 construction ("请将...粘贴")
+
+    All three should now match independently."""
+    from anthill.core.refusal import is_user_serving_refusal
+
+    text = (
+        "## 抱歉，无法完成分析\n\n"
+        "尊敬的陛下，臣无法仅凭此 URL 提供实质性分析，原因如下：\n\n"
+        "### 缺失的关键信息\n\n"
+        "- ❌ 缺陷标题\n"
+        "- ❌ 问题描述\n\n"
+        "### 恳请陛下恩准\n\n"
+        "请将缺陷报告的**文字内容**直接粘贴于此，臣立既为您提供：\n"
+        "1. 根因分析\n"
+        "2. 影响评估\n"
+    )
+    assert is_user_serving_refusal(text) is True
+
+
+def test_chinese_ba_jiang_construction_paste_request() -> None:
+    """The 把/将 construction with non-adjacent verb. 0.1.40 missed
+    "请将X粘贴" because it required 请 directly before 粘贴."""
+    from anthill.core.refusal import is_user_serving_refusal
+
+    for text in [
+        "我无法处理这个，请将文件内容粘贴到这里。" * 3,
+        "请把相关链接发送给我，谢谢。" * 3,
+        "麻烦你把报告内容直接粘贴过来，我再帮你分析。" * 3,
+    ]:
+        assert is_user_serving_refusal(text), f"missed: {text[:40]}"
+
+
+def test_chinese_chen_court_speak_refusal() -> None:
+    """臣 as the refusal subject. Pure court-speak case."""
+    from anthill.core.refusal import is_user_serving_refusal
+
+    text = (
+        "臣无法仅凭此 URL 完成分析。"
+        "缺少关键信息：缺陷标题、复现步骤、错误日志。"
+        "恳请陛下提供详细内容。"
+    )
+    assert is_user_serving_refusal(text) is True
+
+
+def test_chinese_wofa_provide_analyze_complete() -> None:
+    """0.1.40 covered "我无法访问/打开/读取" but missed the more
+    common case where the refusal verb is the PRIMARY task verb:
+    "我无法提供分析" / "我无法完成分析" / "我无法进行分析"."""
+    from anthill.core.refusal import is_user_serving_refusal
+
+    for text in [
+        "我无法仅凭这个 URL 提供完整的分析。请提供更多上下文。" * 3,
+        "本人无法仅凭如此简短的描述完成分析。请补充。" * 3,
+        "我无法根据当前信息进行深入分析。请提供详细内容。" * 3,
+    ]:
+        assert is_user_serving_refusal(text), f"missed: {text[:40]}"
+
+
+def test_court_speak_non_refusal_still_passes() -> None:
+    """A real-content reply that happens to include court-speak
+    flavoring must NOT be flagged. The model can be in-character
+    AND still answer the question."""
+    from anthill.core.refusal import is_user_serving_refusal
+
+    text = (
+        "尊敬的陛下，臣分析完成。" * 1
+        + "根据 bug 内容，根本原因是空指针。"
+        "建议修复 UserService.java 第 45 行，添加 null 检查。"
+        "影响范围：所有登录用户。优先级：P1。"
+        "复测建议：先在测试环境验证。"
+    )
+    assert is_user_serving_refusal(text) is False
+
+
 # --- classify_attempt integration -------------------------------------
 
 

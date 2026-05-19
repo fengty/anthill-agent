@@ -68,6 +68,25 @@ _STRONG_REFUSAL_PATTERNS: tuple[str, ...] = (
     r"我(?:无法|不能|没办法)(?:直接)?(?:访问|打开|浏览|获取|读取)",
     r"我(?:没有|不具备)(?:直接|访问)?(?:链接|网络|网页|外部)的?(?:能力|权限)",
     r"如果你?能(?:提供|分享|粘贴)",
+    # 0.1.55 — patterns observed in real model output that 0.1.40
+    # missed. The "court-speak" replies ("尊敬的陛下，臣无法...")
+    # come from RP-ing against Anthill's king/citizen system prompt;
+    # functionally still user-serving refusals.
+    #
+    # 把/将-construction: "请将报告内容直接粘贴" / "请把链接发给我"
+    # — non-greedy noun phrase between 把/将 and the verb keeps this
+    # from running across paragraphs.
+    r"(?:请|麻烦)\s*(?:你)?(?:把|将)\s*[^。\n]{1,40}?\s*(?:粘贴|发送|提供|分享|告诉|发我|发过来|传过来|贴过来|贴上来)",
+    # Refusal verbs we missed: 提供 (provide), 进行 (carry out),
+    # 完成 (complete), 分析 (analyze). When (我|臣) cannot DO the
+    # primary task verb, that's a refusal, not just a network
+    # limitation.
+    r"(?:我|臣|本人)(?:无法|不能|没办法|未能)(?:仅凭|只凭|单凭|根据)?[^。\n]*?(?:提供|进行|完成|分析|给出|做出|输出)\s*(?:实质性|有效|详细)?(?:的)?(?:分析|内容|结果|回答|帮助)",
+    # Court-speak refusal subject. "臣无法/未能/不敢" — almost
+    # always followed by an apology or paste-request.
+    r"臣(?:无法|未能|不敢|斗胆)",
+    # "需要您/陛下提供/粘贴" — the polite version of "please paste".
+    r"(?:需要|恳请|烦请)\s*(?:您|陛下|您方|阁下)?\s*(?:提供|粘贴|发送|分享)",
 )
 
 
