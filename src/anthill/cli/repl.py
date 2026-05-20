@@ -651,85 +651,42 @@ def _proxy_preflight() -> None:
         console.print()
 
 
-HELP_TEXT = """[bold]REPL commands[/bold]
-
-  Just type a question to send it to the nation.
+HELP_TEXT = """[bold]anthill REPL[/bold] — just type a question to send it to the nation.
 
   [bold]Inspect[/bold]
-    /trails       pheromone map
-    /identity     who this nation has become
-    /power        national strength + ages
-    /status       compact status card (model, citizens, cost so far)
-    /history      recent asks
-    /search Q     grep across all session JSONL (use /regex/ for regex mode)
-    /timing       per-task_type + per-phase latency over this session
-    /compress     collapse middle of conversation window (head+tail preserved)
-    /project      project context Scout sees (cwd, git branch, files)
-    /skills       recurring patterns the nation has noticed in history
-    /skill save X distill the last complex ask into a named skill
-                  (next similar ask uses it automatically)
-    /skill list   show all saved skills (with usage stats)
-    /skill rm X   remove a specific saved skill
-    /skill prune  remove all 🌫 stale skills (>14d unused)
-    /skill refine X
-                  refine a saved skill's template when quality has dropped
-                  vs baseline (auto-detected; surfaced after the matching ask)
-    /memory       this nation's persistent MEMORY.md
-    /memory consolidate
-                  dedup near-duplicates, archive overflow
-    /profile      your global USER.md (alias: /preferences)
-    /profile consolidate
-                  same hygiene pass for USER.md
-    /profile accept [kind]
-                  commit inferences the nation has noticed about you
-    /profile skip [kind]
-                  dismiss pending inferences for this session
-    /remember X   add a one-line lesson to MEMORY.md
-    /remember-me X
-                  add a one-line fact about yourself to USER.md
-    /recall X     full-text search every past ask in this nation
-    /session      info about current + recent saved sessions
-                  (resume from outside with: anthill --resume <id>)
-    /bg ask X     fire an ask in the background; result returns here
-                  automatically when done. /bg list and /bg show <id>
-                  for the rest.
-
-  [bold]Mid-ask controls (0.1.36+)[/bold]
-    Ctrl+C        pause the current ask → [c]ancel · [r]edirect with new instruction
-                  Picks up the agent's work without killing the REPL.
-    /citizens          list alive citizens + which models they use
-    /citizens migrate  point all unresolvable citizens at the default
-    /citizens migrate X
-                       evacuate every citizen running on model X
-                       (use when X is configured but its key is bad)
+    /trails           pheromone map — what each model is good at
+    /history          recent asks
+    /search Q         find past asks across all sessions
+    /timing           per-phase latency for the current session
 
   [bold]Steer[/bold]
-    /rate up      strengthen pheromones for the last answer
-    /rate down    erode pheromones for the last answer
-    /model         list configured models (numbered)
-    /model add     interactive — add a new model (same flow as /setup)
-    /model use X   switch default model (X = name or list index)
-    /model rm X    delete a model (X = name or index)
-    /model rm      interactive — walk each model with y/N
-    /model test X  verify a model's API key (the (auth) diagnostic)
-    /nation X     switch to a different nation (creates if missing)
-    /plan         toggle plan review (skip/keep subtasks before run)
-    /setup        relaunch the interactive setup wizard
-    (URL behind a login wall? anthill will ask for credentials inline
-     the first time it sees one — no command to remember.)
+    /model            list, add, switch, remove, test models
+    /nation X         switch nation (creates if missing)
+    /rate up | down   reinforce or erode pheromones for the last answer
+    /skill list       skills the nation has saved (with usage stats)
+    /setup            re-run the setup wizard
+
+  [bold]Memory[/bold]
+    /remember X       add a one-line lesson the nation should keep
+    /remember-me X    add a one-line fact about yourself
+    /profile          your global USER.md
+    /memory           this nation's persistent notes
 
   [bold]Session[/bold]
-    /clear        clear screen (nation state preserved)
-    /help, /?     this help
-    /quit, /q     exit
+    /clear            clear screen (state preserved)
+    /quit, /q         exit
+    Ctrl+C            pause current ask → cancel or redirect
+    Ctrl+R            reverse-search history · ↑↓ recall · Tab complete
+    \"\"\"               start a multi-line block; close with \"\"\" on its own line
 
-  [bold]Editing[/bold]
-    ←/→           move within the line
-    ↑/↓           previous / next from history (saved across sessions)
-    Ctrl+A / E    jump to line start / end
-    Ctrl+R        reverse-search history
-    Tab           complete slash commands, model / nation names, @paths
-    \"\"\"           start a multi-line block; close with \"\"\" on its own line
+  [bold]Auto-handled (no commands to learn)[/bold]
+    URL behind a login wall   anthill asks for credentials inline once,
+                              then caches cookies for next time
+    Browser plugin missing    anthill offers to install Playwright when needed
+    Long conversation         /compress trims the middle; head/tail preserved
+    Stale skills              flagged on startup with one-line nudge
+
+  [dim]Full reference: docs/commands.md[/dim]
 
   [bold]Attachments[/bold]
     @path/to/file       attach a file as context
@@ -1205,6 +1162,31 @@ async def _handle_ask(
             effective_request = rendered + effective_request
     except Exception:  # noqa: BLE001 — URL fetch must never break the REPL
         pass
+
+    # 0.2.0 — short-circuit: if the request was JUST a URL (or URL +
+    # tiny prose) AND we couldn't get content AND user declined the
+    # inline auth prompt → do NOT run subtasks. They'd just burn 3
+    # refusal-retry rounds producing variants of "please paste the
+    # content". Surface a clear "here's what you can do" message
+    # instead. This is the consolidation fix for the live-session
+    # waste pattern.
+    if (
+        url_fetch_was_skipped
+        and not url_block.fetched
+        and _request_is_essentially_just_url(request)
+    ):
+        console.print(
+            "  [yellow]Skipped — citizens have no content to work with.[/yellow]"
+        )
+        console.print(
+            "  [dim]Options:[/dim]\n"
+            "  [dim]·[/dim] Paste the page text directly and ask again.\n"
+            "  [dim]·[/dim] If you saw a credentials prompt, run the ask "
+            "again and answer it this time.\n"
+            "  [dim]·[/dim] For internal/SPA pages, "
+            "[cyan]/setup browser[/cyan] enables Playwright fallback."
+        )
+        return
 
     # 0.1.28 — conversation memory injection. When the current ask
     # looks like a follow-up ("我说的是 2026 年的", "tell me more",
@@ -2093,6 +2075,38 @@ def _show_status(nation: Nation, stats: SessionStats) -> None:
     console.print(f"[bold]Cost[/bold]      ${stats.cost_usd:.4f} this session")
 
 
+def _request_is_essentially_just_url(request: str) -> bool:
+    """0.2.0 — does this request reduce to "look at this URL, please"?
+
+    Used to short-circuit asks where URL fetch failed AND there's no
+    real content for citizens to work with. Heuristic:
+      - the request contains a URL
+      - after stripping the URL + common verbs (analyze/分析/查看/
+        summarize/解读/...), what remains is < 20 chars
+
+    The point isn't perfect classification — it's catching the common
+    "贴 URL，问个问题" pattern that costs 3 refusal-retry rounds with
+    no chance of useful output.
+    """
+    import re as _re
+
+    text = request.strip()
+    if not text:
+        return False
+    # Strip URLs.
+    text = _re.sub(r"https?://\S+", "", text)
+    # Strip common URL-action verbs / particles.
+    for w in (
+        "分析下", "分析", "解析", "查看", "看看", "看下", "解读",
+        "summarize", "analyze", "look at", "check", "review", "explain",
+        "请", "帮我", "麻烦", "下", ":", "：", "?", "？", "。", "，",
+    ):
+        text = text.replace(w, " ")
+    # Collapse whitespace.
+    text = " ".join(text.split())
+    return len(text) < 20
+
+
 def _maybe_install_browser_interactively(request, url_block):
     """0.1.73 — when a URL fetch failed because Playwright isn't
     installed, ask inline "install now?" rather than dropping a
@@ -2888,144 +2902,6 @@ def run_repl(
                     nation = load_nation(nation.name, config.home) or nation
                 else:
                     console.print("[yellow]Usage: /rate up | /rate down[/yellow]")
-            elif cmd == "auth":
-                # 0.1.71 — `/auth add <domain>` stores creds the
-                # browser fallback uses when it hits a login wall.
-                # `/auth list` shows configured domains (no creds).
-                # `/auth rm <domain>` removes.
-                import getpass as _getpass
-
-                from anthill.core.url_credentials import (
-                    DomainCredentials,
-                    cookie_state_age_seconds,
-                    list_domains,
-                    remove_cookie_state,
-                    remove_credentials,
-                    save_credentials,
-                )
-
-                def _ask(prompt: str, *, allow_blank: bool = False) -> str:
-                    try:
-                        v = input(f"  {prompt}: ").strip()
-                    except (EOFError, KeyboardInterrupt):
-                        return ""
-                    if not v and not allow_blank:
-                        return ""
-                    return v
-
-                def _ask_secret(prompt: str) -> str:
-                    try:
-                        return _getpass.getpass(f"  {prompt}: ").strip()
-                    except (EOFError, KeyboardInterrupt):
-                        return ""
-
-                arg = rest.strip()
-                sub = arg.split(" ", 1)[0].lower() if arg else ""
-                tail = arg.split(" ", 1)[1].strip() if " " in arg else ""
-                if sub == "add":
-                    domain = tail or _ask("Domain (e.g. zentao.example.com)")
-                    if not domain:
-                        console.print("[yellow]Domain required.[/yellow]")
-                    else:
-                        username = _ask("Username")
-                        password = _ask_secret("Password")
-                        login_url = _ask(
-                            "Login URL (blank = auto-detect from target URL)",
-                            allow_blank=True,
-                        )
-                        if not (username and password):
-                            console.print(
-                                "[yellow]Username and password required.[/yellow]"
-                            )
-                        else:
-                            save_credentials(
-                                DomainCredentials(
-                                    domain=domain,
-                                    username=username,
-                                    password=password,
-                                    login_url=login_url or None,
-                                )
-                            )
-                            console.print(
-                                f"  [green]✓[/green] credentials stored for "
-                                f"[cyan]{domain}[/cyan]. Next URL fetch on "
-                                f"that domain will use them automatically."
-                            )
-                elif sub == "list" or sub == "":
-                    domains = list_domains()
-                    if not domains:
-                        console.print(
-                            "  [dim]No domain credentials configured. "
-                            "[cyan]/auth add[/cyan] to set one.[/dim]"
-                        )
-                    else:
-                        console.print(
-                            f"  [bold]{len(domains)} domain(s) with stored creds:[/bold]"
-                        )
-                        for d in domains:
-                            # 0.1.72 — show cookie freshness next to
-                            # each domain. None = no cookies yet (first
-                            # fetch will do full login); X ago = cached.
-                            age = cookie_state_age_seconds(d)
-                            if age is None:
-                                tag = "[dim](no cookies yet)[/dim]"
-                            elif age < 3600:
-                                tag = f"[dim]🍪 cookies {int(age // 60)}m old[/dim]"
-                            elif age < 86400:
-                                tag = f"[dim]🍪 cookies {int(age // 3600)}h old[/dim]"
-                            else:
-                                tag = (
-                                    f"[dim yellow]🍪 cookies "
-                                    f"{int(age // 86400)}d old[/dim yellow]"
-                                )
-                            console.print(f"    [cyan]{d}[/cyan]  {tag}")
-                elif sub == "clear-cookies" or sub == "clearcookies":
-                    # 0.1.72 — force re-login on next fetch. Useful
-                    # when cookies got out of sync (server-side session
-                    # revoked, etc.) and the wall→login chain doesn't
-                    # naturally re-trigger.
-                    if not tail:
-                        console.print(
-                            "[yellow]Usage: /auth clear-cookies <domain>[/yellow]"
-                        )
-                    elif remove_cookie_state(tail):
-                        console.print(
-                            f"  [green]✓[/green] cleared cookies for "
-                            f"[cyan]{tail}[/cyan]. Next fetch will re-login."
-                        )
-                    else:
-                        console.print(
-                            f"  [yellow]no cookies cached for {tail!r}[/yellow]"
-                        )
-                elif sub == "rm" or sub == "remove":
-                    if not tail:
-                        console.print("[yellow]Usage: /auth rm <domain>[/yellow]")
-                    else:
-                        removed_creds = remove_credentials(tail)
-                        # 0.1.72 — wipe cached cookies too. Otherwise
-                        # they'd linger as orphans (no creds to refresh
-                        # them when expired, but still get loaded next
-                        # fetch).
-                        removed_cookies = remove_cookie_state(tail)
-                        if removed_creds:
-                            cookies_msg = (
-                                " (cookies also cleared)" if removed_cookies
-                                else ""
-                            )
-                            console.print(
-                                f"  [green]✓[/green] removed credentials for "
-                                f"[cyan]{tail}[/cyan]{cookies_msg}"
-                            )
-                        else:
-                            console.print(
-                                f"  [yellow]no credentials for {tail!r}[/yellow]"
-                            )
-                else:
-                    console.print(
-                        "[yellow]Usage: /auth add | /auth list | "
-                        "/auth rm <domain> | /auth clear-cookies <domain>"
-                        "[/yellow]"
-                    )
             elif cmd == "setup":
                 # 0.1.5+ — re-enter the wizard on demand. Useful when the
                 # user said "n" at startup but changed their mind, or wants

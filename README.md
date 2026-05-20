@@ -3,7 +3,7 @@
 [![CI](https://github.com/fengty/anthill-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/fengty/anthill-agent/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-632%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1455%20passing-brightgreen.svg)](tests/)
 [![Maintenance](https://img.shields.io/badge/maintenance-hobby%20project-yellow.svg)](MAINTENANCE.md)
 
 > Give Anthill one request. It splits the work, dispatches each piece
@@ -122,6 +122,45 @@ anthill serve
 Point your bot's webhook at `http://your-host:8765/lark/webhook` and the
 nation answers any message it receives. Same nation, same memory across
 channels — your Lark bot and your Slack bot share one mind.
+
+---
+
+## When to use Anthill, when to use something else
+
+**Anthill is not trying to be a general-purpose agent platform like
+[Hermes](https://github.com/NousResearch/hermes-agent).** Hermes has a
+team, a community, a docs site, an IDE-integration suite (ACP), a
+skills marketplace ([agentskills.io](https://agentskills.io)), and
+years of polish. If you want all of that, use Hermes.
+
+**Use Anthill when you specifically want:**
+
+- **Multi-model collaboration on every ask.** Scout decomposes, each
+  subtask routes to whoever does it best (DeepSeek, Claude, MiniMax,
+  Kimi, …), then a synthesis step pulls the answer together. Hermes
+  is single-agent.
+- **Pheromone routing that learns.** Model × task_type fit is
+  empirical, not a hard-coded role table. `/trails` shows it.
+- **User-serving refusal detection.** When a citizen says "I cannot
+  fetch URLs, please paste content", anthill notices and retries with
+  a resourceful-nudge addendum. Most agents accept the refusal.
+- **Skill quality drift detection.** Saved skills track their own
+  baseline; when quality drops, anthill prompts you to refine via
+  LLM. Hermes archives stale skills but doesn't rewrite them.
+- **Chinese-language and corp-internal work.** Auto-distilled
+  skills for Zentao / DingTalk / Feishu integration, court-speak
+  refusal patterns (`臣无法…`), 把/将-construction detection.
+- **A small Python project you can read and modify.** Anthill is
+  ~50KB of source across ~80 files. Hermes is 5+ MB across
+  thousands.
+
+**Don't use Anthill when:**
+
+- You need a polished TUI, IDE integration, or a community.
+- You want serverless backends (Daytona / Modal / Singularity).
+- You need 2FA, OAuth, or enterprise SSO flows.
+- You need to bet a production service on it. Anthill is 0.1.x
+  hobby work; bugs ship.
 
 ---
 
