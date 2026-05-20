@@ -2163,11 +2163,36 @@ def _maybe_resolve_login_wall_interactively(request, url_block):
         return url_block
 
     # Find the first error that looks like it might be unlocked by
-    # credentials. The /auth-add hint string is what 0.1.71's
-    # `_render_fallback_failure` emits for "login-no-creds".
+    # credentials. We cast a wide net — any of the failure modes that
+    # _render_fallback_failure produces around login walls should
+    # trigger the prompt:
+    #
+    #   "login wall"        — primary marker, always present when
+    #                         httpx OR browser hit a login page
+    #   "<50 chars" / "stub" — browser returned a login redirect that
+    #                         was below the useful-length floor
+    #   "needs auth cookies" — browser saw a login wall too
+    #   "/auth add"          — the literal hint we used to look for
+    #
+    # As long as ONE of these markers is present AND we have no
+    # stored creds for the URL's domain, we surface the inline prompt.
+    # Real-user case (the bug 0.1.73 missed): Zentao login redirect
+    # gave Playwright <50 chars, error said "Browser fallback returned
+    # <50 chars — likely an error stub. Paste content directly." —
+    # which didn't include "/auth add" so the prompt stayed silent.
+    _AUTH_MARKERS = (
+        "login wall",
+        "needs login",
+        "needs auth cookies",
+        "/auth add",
+        "<50 chars",
+        "auth gate",
+        "Login succeeded",   # came back from login but content empty
+    )
     candidate = None
     for err in url_block.errors:
-        if "/auth add" not in err.reason and "needs login" not in err.reason:
+        reason_lower = err.reason.lower()
+        if not any(m.lower() in reason_lower for m in _AUTH_MARKERS):
             continue
         domain = extract_domain(err.url)
         if not domain:

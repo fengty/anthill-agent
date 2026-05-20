@@ -90,6 +90,64 @@ def test_login_prompt_skipped_when_no_login_error(isolated_home) -> None:
     assert out is block
 
 
+def test_login_prompt_fires_on_browser_too_short_error(isolated_home) -> None:
+    """The exact 0.1.73 live-session bug: error reason contained
+    'fetched but looks like a login wall. Browser fallback returned
+    <50 chars — likely an error stub. Paste the content directly.'
+
+    No `/auth add` substring → 0.1.73 missed it → user got 3 LLM
+    retries instead of the auth prompt. Verify 0.1.74 catches it
+    via the broader marker set."""
+    block = URLAttachmentBlock()
+    block.errors.append(
+        FetchError(
+            url="http://ss.chandao.pamirs.top/zentao/bug-view-56128.html",
+            reason=(
+                "fetched but looks like a login wall. "
+                "Browser fallback returned <50 chars — "
+                "likely an error stub. Paste the content directly."
+            ),
+        )
+    )
+    # No creds for this domain → prompt should fire.
+    inputs = iter(["", ""])  # empty username = abort (we just want to
+                              # verify the prompt SHOWED, not the full
+                              # save path which is already covered).
+    with patch("sys.stdin.isatty", return_value=True), \
+         patch("builtins.input", side_effect=lambda *a, **kw: next(inputs)) as mock_in:
+        _maybe_resolve_login_wall_interactively(
+            "http://ss.chandao.pamirs.top/zentao/bug-view-56128.html",
+            block,
+        )
+    # Critical: input() must have been called — that proves the
+    # prompt fired. (Empty username then aborts, but the prompt did
+    # fire, which is what 0.1.73 was failing to do.)
+    assert mock_in.call_count >= 1
+
+
+def test_login_prompt_fires_on_browser_still_login_wall_error(isolated_home) -> None:
+    """Another _render_fallback_failure shape: browser ran but ALSO
+    saw a login wall. Same root cause; same prompt should fire."""
+    block = URLAttachmentBlock()
+    block.errors.append(
+        FetchError(
+            url="https://corp-jira.example.com/issue/PROJ-1",
+            reason=(
+                "fetched but looks like a login wall. "
+                "Browser fallback also hit a login wall — this page "
+                "needs auth cookies anthill doesn't have. Paste the "
+                "content directly."
+            ),
+        )
+    )
+    with patch("sys.stdin.isatty", return_value=True), \
+         patch("builtins.input", return_value="") as mock_in:
+        _maybe_resolve_login_wall_interactively(
+            "https://corp-jira.example.com/issue/PROJ-1", block
+        )
+    assert mock_in.call_count >= 1
+
+
 def test_login_prompt_skipped_when_creds_already_stored(isolated_home) -> None:
     """If creds for the domain are already in secrets.toml, don't
     bother asking — the fallback chain would have used them. This
