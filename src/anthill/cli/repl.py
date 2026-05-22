@@ -2017,10 +2017,20 @@ async def _handle_ask(
                     f"({next(iter(models_seen))})[/dim]"
                 )
             console.print(header)
+            # 0.2.3 — per-subtask routing explanation. Show WHY this
+            # citizen was picked: their trail strength for this task
+            # type, or "exploration pick" when there's no prior data
+            # or 10% noise selected a non-top citizen. Makes the
+            # pheromone learning concretely visible.
+            from anthill.core.trails_view import explain_routing_decision
             for tt, aid, model in participants:
+                why = explain_routing_decision(
+                    nation.pheromones, nation.agents, aid, tt
+                )
                 console.print(
                     f"  [magenta]{tt}[/magenta] "
                     f"[dim]→[/dim] [cyan]{aid[:12]}[/cyan][dim]/{model}[/dim]"
+                    f"  [dim]· {why}[/dim]"
                 )
 
     # 0.1.4+ — episodic sources line. Shows when Scout actually pulled
@@ -2039,15 +2049,91 @@ async def _handle_ask(
     console.print()
 
 
-def _show_trails(nation: Nation) -> None:
-    table = Table(title="Pheromone trails")
-    table.add_column("Citizen", style="cyan")
-    table.add_column("Task type", style="magenta")
-    table.add_column("Strength", style="green", justify="right")
-    trails = sorted(nation.pheromones.trails(), key=lambda t: t.strength, reverse=True)
-    for t in trails:
-        table.add_row(t.agent_id, t.task_type, f"{t.strength:.2f}")
+def _show_trails(nation: Nation, drill_task: str | None = None) -> None:
+    """0.2.3 — pheromone visualization.
+
+    No arg → heatmap (task_type × citizen, color-coded strength)
+    With arg → per-task_type ranking (drill-in)
+    """
+    from anthill.core.trails_view import (
+        build_heatmap,
+        cell_intensity_label,
+        rank_for_task,
+        trails_summary_line,
+    )
+
+    if drill_task:
+        # Drill-in mode: rank citizens for one task_type.
+        ranking = rank_for_task(
+            nation.pheromones, nation.agents, drill_task
+        )
+        if not ranking.cells:
+            console.print(
+                f"  [dim]No trails for task_type [cyan]{drill_task}[/cyan] yet. "
+                f"The nation hasn't tried this kind of work.[/dim]"
+            )
+            return
+        table = Table(title=f"Pheromone ranking — {drill_task}")
+        table.add_column("Rank", justify="right", style="dim")
+        table.add_column("Citizen", style="cyan")
+        table.add_column("Model", style="magenta")
+        table.add_column("Strength", justify="right", style="green")
+        table.add_column("Alarm", justify="right", style="red")
+        table.add_column("Net", justify="right")
+        table.add_column("Samples", justify="right", style="dim")
+        for i, cell in enumerate(ranking.cells, start=1):
+            net = max(0.0, cell.strength - cell.alarm)
+            color, _ = cell_intensity_label(cell.strength)
+            table.add_row(
+                f"#{i}",
+                cell.agent_id[:12],
+                cell.agent_model,
+                f"[{color}]{cell.strength:.2f}[/{color}]",
+                f"{cell.alarm:.2f}" if cell.alarm else "—",
+                f"{net:.2f}",
+                str(cell.sample_count),
+            )
+        console.print(table)
+        return
+
+    # Default mode: heatmap of every (task_type, citizen) cell.
+    task_types, agents, cells = build_heatmap(
+        nation.pheromones, nation.agents
+    )
+    if not cells:
+        console.print(
+            "  [dim]No pheromone data yet. After a few asks the trails will "
+            "show up here.[/dim]"
+        )
+        return
+    table = Table(title="Pheromone heatmap")
+    table.add_column("task_type", style="magenta")
+    for a in agents:
+        # Header: "ant-1\n(deepseek)" — two-line for readability.
+        short_id = a.id[:10]
+        table.add_column(
+            f"{short_id}\n[dim]({a.model})[/dim]", justify="right"
+        )
+    for tt in task_types:
+        row = [tt]
+        for a in agents:
+            cell = cells.get((a.id, tt))
+            if cell is None:
+                row.append("[dim]·[/dim]")
+            else:
+                color, _ = cell_intensity_label(cell.strength)
+                row.append(f"[{color}]{cell.strength:.2f}[/{color}]")
+        table.add_row(*row)
     console.print(table)
+    console.print(
+        f"  [dim]{trails_summary_line(nation.pheromones, nation.agents)}[/dim]"
+    )
+    console.print(
+        "  [dim]→ /trails <task_type> to drill in. "
+        "Color: [cyan]cool 0.2-0.4[/cyan] · [yellow]mid 0.4-0.6[/yellow] · "
+        "[dark_orange]warm 0.6-0.8[/dark_orange] · "
+        "[red]hot 0.8+[/red][/dim]"
+    )
 
 
 def _show_identity(nation: Nation) -> None:
@@ -2948,7 +3034,10 @@ def run_repl(
             if cmd in ("help", "h", "?"):
                 console.print(HELP_TEXT)
             elif cmd == "trails":
-                _show_trails(nation)
+                # 0.2.3 — `/trails` shows heatmap; `/trails <task_type>`
+                # drills into one task with ranked citizens.
+                drill = rest.strip() or None
+                _show_trails(nation, drill_task=drill)
             elif cmd == "identity":
                 _show_identity(nation)
             elif cmd == "power":
