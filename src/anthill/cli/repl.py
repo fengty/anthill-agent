@@ -949,20 +949,18 @@ def _onboarding_card(nation: Nation) -> None:
             n_successful = 0
 
     if n_successful >= 3:
-        # Mature nation — welcome back card
-        vocab = sorted(nation.culture.task_catalog.keys()) if nation.culture else []
-        vocab_line = (
-            ", ".join(vocab[:5]) + (f" +{len(vocab) - 5}" if len(vocab) > 5 else "")
-            if vocab else "no task types yet"
-        )
+        # 0.2.12 — splash polish: drop the task-type vocab line
+        # (it's internal label noise — users don't think in
+        # "research/analyze/summarize"). Lead with the topic view
+        # from 0.2.11 + most-recent ask. Compact command grid.
         console.print(
-            f"[bold]👋 Welcome back.[/bold] This nation has completed "
-            f"[bold cyan]{n_successful}[/bold cyan] ask(s) "
-            f"across vocabulary: [dim]{vocab_line}[/dim]"
+            f"[bold]👋 anthill[/bold] · [cyan]{nation.name}[/cyan] nation "
+            f"· [bold]{n_successful}[/bold] asks done"
         )
-        # 0.2.11 — "what you've been working on" line. Auto-clusters
-        # history into topics and shows the top 5 with ask counts.
-        # Best-effort: history I/O failure leaves the splash unchanged.
+        # 0.2.11 — "what you've been working on" line (now the
+        # headline). Auto-clusters history into topics. Best-effort.
+        last_ask_snippet: str | None = None
+        last_ask_ago: str | None = None
         try:
             ndir_for_wiki = (
                 nation.history_path.parent
@@ -971,25 +969,41 @@ def _onboarding_card(nation: Nation) -> None:
             )
             if ndir_for_wiki is not None and ndir_for_wiki.exists():
                 from anthill.core.wiki import (
+                    _humanize_ago,
                     build_topics,
                     format_splash_line,
                 )
                 from anthill.core.history import load_history as _load_h
-                topics = build_topics(_load_h(ndir_for_wiki))
+                history = _load_h(ndir_for_wiki)
+                topics = build_topics(history)
                 line = format_splash_line(topics)
                 if line:
                     console.print(
-                        f"  [dim]最近在做:[/dim] [cyan]{line}[/cyan]"
+                        f"  [dim]在做:[/dim] [cyan]{line}[/cyan]"
+                    )
+                # 0.2.12 — "last asked" line. Concrete, jog-the-
+                # memory entry for resuming after a break.
+                if history:
+                    import time as _time
+                    last = max(history, key=lambda e: e.timestamp)
+                    snip = last.request.replace("\n", " ").strip()
+                    if len(snip) > 60:
+                        snip = snip[:60] + "…"
+                    last_ask_snippet = snip
+                    last_ask_ago = _humanize_ago(
+                        _time.time() - last.timestamp
                     )
         except Exception:  # noqa: BLE001
             pass
+        if last_ask_snippet:
+            console.print(
+                f"  [dim]上次问:[/dim] {last_ask_snippet} "
+                f"[dim]({last_ask_ago})[/dim]"
+            )
+        # Compact command grid — only the most-used three.
         console.print(
-            "  [cyan]/identity[/cyan]  who your nation has become      "
-            "[cyan]/trails[/cyan]   who's learned what"
-        )
-        console.print(
-            "  [cyan]/history[/cyan]  browse past asks                 "
-            "[cyan]/power[/cyan]    national strength"
+            "  [dim]/history /trails /identity · "
+            "Ctrl+C 取消 · Tab 自动补全[/dim]"
         )
         # 0.1.58 — curator-lite: passive stale-skill nudge at REPL start.
         # If there are 3+ saved skills that have been unused for 14+
