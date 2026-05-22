@@ -681,24 +681,40 @@ class Nation:
                     # ~400 tokens per self-referential ask, zero
                     # otherwise.
                     self_block = ""
+                    self_referential = False
                     try:
                         from anthill.core.self_context import (
                             looks_self_referential,
                             self_context_block,
                         )
-                        if looks_self_referential(request):
+                        self_referential = looks_self_referential(request)
+                        if self_referential:
                             from anthill.core.userconfig import load_config
                             self_block = self_context_block(
                                 load_config(), nation_name=self.name
                             )
                     except Exception:  # noqa: BLE001
                         self_block = ""
-                    episodic_context = "\n\n".join(
-                        b for b in (
-                            self_block, project_block, workflow_block,
-                            plugin_block, similar_block,
-                        ) if b
-                    )
+                        self_referential = False
+                    if self_referential:
+                        # 0.2.8 — self-referential ask = NEW topic about
+                        # anthill itself. Past asks (probably mysql /
+                        # zentao) and inferred workflow templates would
+                        # confuse Scout into asking "are you talking
+                        # about mysql or anthill?". Suppress everything
+                        # except self-knowledge. The user wants a
+                        # concrete answer about anthill, not a
+                        # cross-topic deliberation.
+                        episodic_context = self_block
+                        # Mining sources are noise here too.
+                        episodic_sources = []
+                    else:
+                        episodic_context = "\n\n".join(
+                            b for b in (
+                                self_block, project_block, workflow_block,
+                                plugin_block, similar_block,
+                            ) if b
+                        )
                     scout = Scout(model=self.scout_model)
                     # 0.1.44 — capture Scout wall-clock so timing line
                     # can show "Scout: 3.1s" separately from subtasks.

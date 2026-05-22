@@ -1197,8 +1197,18 @@ async def _handle_ask(
     # turn(s) to the prompt that reaches Scout so the planner sees
     # what the user is actually continuing.
     from anthill.core.conversation import is_follow_up, wrap_with_context
+    from anthill.core.self_context import looks_self_referential
     last_turn = stats.conversation.last_turn()
-    if is_follow_up(request, last_turn):
+    # 0.2.8 — self-referential asks ("你能...", "anthill 怎么...") are
+    # NEW topics, not follow-ups. Even if the user JUST talked about
+    # mysql, "你如何对接飞书?" is asking about anthill itself, not
+    # about mysql. Wrapping with prior mysql turns pollutes the
+    # prompt and makes Scout pick `clarify` ("是 mysql 监控还是 anthill
+    # 集成?"). Real session data showed this exact failure.
+    if (
+        is_follow_up(request, last_turn)
+        and not looks_self_referential(request)
+    ):
         effective_request = wrap_with_context(
             effective_request, stats.conversation.recent()
         )

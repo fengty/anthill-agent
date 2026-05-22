@@ -186,6 +186,28 @@ def test_block_includes_brevity_directive() -> None:
 # --- integration sketch ------------------------------------------------
 
 
+def test_self_referential_skips_follow_up_wrap() -> None:
+    """0.2.8 — self-referential asks must NOT inherit conversation
+    context. Otherwise after a few mysql turns, asking 'how do you
+    connect to lark?' gets wrapped with mysql history and the model
+    asks 'are you asking about mysql or anthill?'."""
+    from anthill.core.conversation import ConversationContext, is_follow_up
+    from anthill.core.self_context import looks_self_referential
+
+    c = ConversationContext()
+    # Pretend the user just discussed mysql middleware.
+    c.record("帮我部署 mysql 中间件", "用阿里云 RDS for MySQL ...")
+
+    # Now ask about anthill itself — clearly a new topic.
+    ask = "你如何和我的飞书对接的？"
+    last_turn = c.last_turn()
+    # is_follow_up will fire (short input + prior turn).
+    assert is_follow_up(ask, last_turn) is True
+    # But the self-referential marker should ALSO fire — which is
+    # what the REPL uses to suppress the wrap.
+    assert looks_self_referential(ask) is True
+
+
 def test_self_referential_request_full_pipeline_shape() -> None:
     """End-to-end shape: a self-referential request → block contains
     enough context to answer concretely.
