@@ -312,7 +312,7 @@ async def test_nation_ask_invokes_clarifier_for_non_trivial(monkeypatch) -> None
     # which skips clarification by design. Use a request long enough to fall
     # through to "normal" (clarifier should fire on ambiguous normal).
     await n.ask(
-        "help me figure out a presentation thing for next week",
+        "research X",
         on_clarify=handler,
     )
 
@@ -351,5 +351,5 @@ async def test_nation_ask_no_handler_means_no_clarifier_call(monkeypatch) -> Non
 
     # Same non-trivial request shape as the previous test — eliminates
     # ambiguity over whether trivial fast-path was the reason.
-    await n.ask("help me figure out a presentation thing for next week")
+    await n.ask("research X")
     assert clarifier_calls == 0

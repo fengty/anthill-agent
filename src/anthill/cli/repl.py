@@ -1330,7 +1330,25 @@ async def _handle_ask(
             streaming_state["open"] = False
             streaming_state["chars"] = 0
 
+    # 0.2.5 — spinner during the silent Clarify + Scout phases.
+    # Real-session data showed 22-27s of dead air before the first
+    # subtask event fires. With this, the user sees:
+    #   [dots spinner] 🧠 thinking...
+    # which auto-disappears the moment the first subtask `started`
+    # event arrives.
+    thinking_state: dict = {"status": None, "shown": False, "stopped": False}
+
+    def _stop_thinking_indicator() -> None:
+        if thinking_state["status"] is not None and not thinking_state["stopped"]:
+            try:
+                thinking_state["status"].stop()
+            except Exception:  # noqa: BLE001
+                pass
+            thinking_state["stopped"] = True
+
     async def on_progress(event: ProgressEvent) -> None:
+        # First-event hook: kill the spinner once subtasks start.
+        _stop_thinking_indicator()
         st = event.subtask
         idx = event.index + 1
         if event.kind == "started":
@@ -1567,13 +1585,27 @@ async def _handle_ask(
         # run with what's available; refusal-retry (0.1.40) handles
         # any "I can't do this" output from the citizen path.
         clarify_for_this_ask = None if url_fetch_was_skipped else on_clarify
-        result = await nation.ask(
-            effective_request,
-            on_progress=on_progress,
-            on_clarify=clarify_for_this_ask,  # v0.9.0; 0.1.53 guard
-            on_plan=on_plan if stats.plan_review else None,  # v0.1.13
-            nation_dir=nation_dir(config.home, nation.name),
+        # 0.2.5 — start "thinking..." spinner. Auto-killed by
+        # on_progress on first subtask event; explicit stop in
+        # finally to handle the no-event paths (cache hit / trivial).
+        thinking_state["status"] = console.status(
+            "[dim]🧠 thinking...[/dim]", spinner="dots"
         )
+        try:
+            thinking_state["status"].start()
+            thinking_state["shown"] = True
+        except Exception:  # noqa: BLE001 — non-TTY may not support spinner
+            pass
+        try:
+            result = await nation.ask(
+                effective_request,
+                on_progress=on_progress,
+                on_clarify=clarify_for_this_ask,  # v0.9.0; 0.1.53 guard
+                on_plan=on_plan if stats.plan_review else None,  # v0.1.13
+                nation_dir=nation_dir(config.home, nation.name),
+            )
+        finally:
+            _stop_thinking_indicator()
     save_nation(nation, config.home)
 
     # 0.1.42 — surface skill match if Nation.ask used a saved recipe

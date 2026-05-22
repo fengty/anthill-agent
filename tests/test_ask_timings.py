@@ -128,7 +128,7 @@ async def test_ask_normal_path_captures_scout_time(monkeypatch) -> None:
     monkeypatch.setattr(_Scout, "plan", slow_plan)
 
     result = await n.ask(
-        "help me figure out a presentation thing for next week"
+        "research X"
     )
     assert result.timings.plan_source == "scout"
     assert result.timings.scout_seconds is not None
@@ -316,7 +316,7 @@ async def test_ask_captures_clarify_seconds_when_clarifier_runs(monkeypatch) -> 
         return "ok"
 
     result = await n.ask(
-        "help me figure out a presentation thing for next week",
+        "research X",
         on_clarify=handler,
     )
     assert result.timings.clarify_seconds is not None

@@ -506,7 +506,19 @@ class Nation:
         ):
             from anthill.core.clarify import maybe_clarify
             from anthill.core.complexity import fast_classify
-            if fast_classify(request) != "trivial":
+            should_clarify = fast_classify(request) != "trivial"
+            # 0.2.5 — additional skip when the request is already
+            # substantive. Real-session data showed clarify burning
+            # 22.8s on "mysql这些" (5 chars) while the user knew
+            # what they wanted — and burning ~3.6s on "你能做什么"
+            # (5 chars) before producing a generic answer.
+            # Heuristic: skip clarify when the ask already contains
+            # >=25 chars of substance. Clarify is most useful for
+            # genuinely ambiguous fragments; once the user typed a
+            # sentence they've committed to a direction.
+            if should_clarify and len(request.strip()) >= 25:
+                should_clarify = False
+            if should_clarify:
                 # 0.1.47 — capture clarify wall-clock. This was the
                 # 7.4s "hidden" cost in real session logs.
                 _clarify_t0 = time.perf_counter()
