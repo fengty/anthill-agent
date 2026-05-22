@@ -960,6 +960,29 @@ def _onboarding_card(nation: Nation) -> None:
             f"[bold cyan]{n_successful}[/bold cyan] ask(s) "
             f"across vocabulary: [dim]{vocab_line}[/dim]"
         )
+        # 0.2.11 — "what you've been working on" line. Auto-clusters
+        # history into topics and shows the top 5 with ask counts.
+        # Best-effort: history I/O failure leaves the splash unchanged.
+        try:
+            ndir_for_wiki = (
+                nation.history_path.parent
+                if nation.history_path is not None
+                else None
+            )
+            if ndir_for_wiki is not None and ndir_for_wiki.exists():
+                from anthill.core.wiki import (
+                    build_topics,
+                    format_splash_line,
+                )
+                from anthill.core.history import load_history as _load_h
+                topics = build_topics(_load_h(ndir_for_wiki))
+                line = format_splash_line(topics)
+                if line:
+                    console.print(
+                        f"  [dim]最近在做:[/dim] [cyan]{line}[/cyan]"
+                    )
+        except Exception:  # noqa: BLE001
+            pass
         console.print(
             "  [cyan]/identity[/cyan]  who your nation has become      "
             "[cyan]/trails[/cyan]   who's learned what"
@@ -1734,6 +1757,16 @@ async def _handle_ask(
         build_entry_from_ask(request, result.plan.subtasks, result.outcomes),
         nation_dir(config.home, nation.name),
     )
+    # 0.2.11 — refresh the auto-wiki ("what this nation has been
+    # working on") after every successful ask. Writes wiki.md inside
+    # the nation dir. Best-effort: I/O failures here must not break
+    # the post-ask path. The welcome splash reads this file on the
+    # next REPL start.
+    try:
+        from anthill.core.wiki import refresh_wiki
+        refresh_wiki(nation_dir(config.home, nation.name))
+    except Exception:  # noqa: BLE001
+        pass
     # 0.1.28 — record this turn in the rolling conversation window so
     # follow-up asks within the same session can reach the recent
     # exchange. Keyed on the VISIBLE request (not effective_request)
