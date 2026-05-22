@@ -1278,12 +1278,19 @@ async def _handle_ask(
 
         if not plan.subtasks:
             return plan  # nothing to review
+        # 0.2.13 — always show the plan + multi-model routing
+        # preview. This is anthill's headline differentiator visible
+        # to the user: they see "research → deepseek (trail 0.85),
+        # analyze → minimax (0.78)" BEFORE execution starts, so
+        # the multi-model collaboration story is concrete, not just
+        # a post-hoc trace.
+        _print_plan_overview(plan, nation)
+        # Plan-review interaction is gated by the explicit flag.
+        # When plan_review is off, the overview is all the user
+        # sees — no interactive prompt, just visibility.
+        if not stats.plan_review:
+            return plan
         console.print()
-        console.print(
-            f"  [bold cyan]Plan[/bold cyan] "
-            f"[dim]({len(plan.subtasks)} subtask(s), "
-            f"complexity={plan.complexity})[/dim]"
-        )
         current = list(plan.subtasks)
         while True:
             for i, st in enumerate(current, start=1):
@@ -1609,7 +1616,7 @@ async def _handle_ask(
             quality_threshold=quality_threshold,
             on_progress=on_progress,
             on_clarify=clarify_for_this_ask,  # v0.9.0; 0.1.53 guard
-            on_plan=on_plan if stats.plan_review else None,  # v0.1.13
+            on_plan=on_plan,  # 0.2.13: always (overview + optional review)
             nation_dir=nation_dir(config.home, nation.name),
             on_round=_on_round,
             on_phase=_on_phase,                 # v0.1.27
@@ -1648,7 +1655,7 @@ async def _handle_ask(
                 effective_request,
                 on_progress=on_progress,
                 on_clarify=clarify_for_this_ask,  # v0.9.0; 0.1.53 guard
-                on_plan=on_plan if stats.plan_review else None,  # v0.1.13
+                on_plan=on_plan,  # 0.2.13: always (overview + optional review)
                 nation_dir=nation_dir(config.home, nation.name),
             )
         finally:
@@ -2136,6 +2143,55 @@ async def _handle_ask(
     console.print()
     _print_final_output(result.final_output)
     console.print()
+
+
+def _print_plan_overview(plan, nation) -> None:  # noqa: ANN001
+    """0.2.13 — surface Scout's plan + multi-model routing preview.
+
+    Why: anthill's actual differentiator is "different models
+    collaborate on each ask". Before this version, the user only
+    saw the collaboration AFTER the fact in the post-execution
+    trace ("3 subtask(s) on 2 model(s)..."). Now the story shows
+    up BEFORE execution starts:
+
+      📋 Scout 拆成 3 步: research → analyze → summarize
+         预计路由: research → deepseek (0.85), analyze → minimax (0.78),
+                   summarize → 探索 (cold)
+
+    Routing preview is best-effort (uses current pheromone rank;
+    the real assignment at runtime may differ via 10% exploration
+    or `forbid` from retries). Good enough to make the
+    multi-model story visible.
+    """
+    if not plan.subtasks:
+        return
+    try:
+        from anthill.core.trails_view import rank_for_task
+    except ImportError:
+        return
+    chain = " → ".join(s.task_type for s in plan.subtasks)
+    console.print()
+    console.print(
+        f"  [bold cyan]📋 Scout 拆成 {len(plan.subtasks)} 步:[/bold cyan] "
+        f"[magenta]{chain}[/magenta]"
+    )
+    # Per-subtask routing preview.
+    routing_parts: list[str] = []
+    for s in plan.subtasks:
+        ranking = rank_for_task(nation.pheromones, nation.agents, s.task_type)
+        if ranking.cells:
+            top = ranking.cells[0]
+            routing_parts.append(
+                f"{s.task_type} → {top.agent_model} "
+                f"([dim]{top.strength:.2f}[/dim])"
+            )
+        else:
+            routing_parts.append(
+                f"{s.task_type} → [yellow]探索[/yellow] [dim](cold)[/dim]"
+            )
+    console.print(
+        f"     [dim]预计路由:[/dim] {', '.join(routing_parts)}"
+    )
 
 
 def _print_final_output(text: str) -> None:
