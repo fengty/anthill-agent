@@ -49,6 +49,31 @@ from anthill.core.router import Router, RouterConfig
 from anthill.core.scout import Plan, Scout, Subtask
 
 
+# 0.2.9 — brevity directive prepended to every citizen's system prompt.
+#
+# Why: real-session data (sess-173c98b13a.jsonl) showed citizens
+# defaulting to 8 KB tutorials for 5-char questions. The 30+ second
+# response wasn't network latency — it was the model writing pages
+# of tables and step-by-step guides nobody asked for. Output length
+# is by far the biggest controllable contributor to felt slowness.
+#
+# Directive shape: ONE paragraph, no bullets (bullets would invite
+# the model to mirror that structure). Triggers on EVERY subtask
+# unless the user's request explicitly says "详细" / "完整" / "step
+# by step" / "tell me everything" — in which case the model is
+# allowed to go long.
+_BREVITY_DIRECTIVE = """\
+Default to concise outputs: aim for under 800 characters and 1-2
+sections. Concrete commands / code / examples beat prose. Skip
+preamble ("好的，让我帮您...") and skip wrap-up summaries
+("综上所述..."). End with "想展开告诉我" or equivalent if the user
+might want more. ONLY produce long form (multiple sections, tables,
+step-by-step guides) when the user explicitly says "详细" /
+"完整" / "step by step" / "tell me everything". This applies to
+every response; if a longer answer is genuinely needed, lead with
+the answer and put the elaboration AFTER, not before."""
+
+
 @dataclass
 class AskTimings:
     """0.1.44 — per-ask wall-clock breakdown for diagnostics.
@@ -321,18 +346,30 @@ class Nation:
         )
 
     def _compose_system(self, agent: Agent) -> str | None:
-        """Combine agent persona + nation house_style + persistent memory.
+        """Combine brevity directive + agent persona + nation house_style +
+        persistent memory.
 
-        Persona is the agent's individual disposition. House style is the
-        nation's shared voice. Memory context (0.1.29+) is the union of
-        USER.md (what the king has told us about themselves) and
-        MEMORY.md (what this nation has learned). All apply at once.
+        0.2.9 — brevity directive added at the TOP. Real-session data
+        showed citizens default to wall-of-text outputs (8 KB tutorials
+        with multiple sections, tables, error-troubleshooting matrices)
+        even when the user asked a 2-sentence question. The 32-second
+        wait that follows isn't network or model latency — it's the
+        model GENERATING those extra 7 KB. Cap the default; let the
+        user opt into long form.
 
-        Order matters: memory first so the agent sees user preferences
-        BEFORE persona / style. Persona quirks shouldn't override what
-        the user explicitly asked for.
+        Persona is the agent's individual disposition. House style is
+        the nation's shared voice. Memory context (0.1.29+) is the
+        union of USER.md (what the king has told us about themselves)
+        and MEMORY.md (what this nation has learned). All apply at
+        once.
+
+        Order matters: brevity first (it sets length defaults that
+        other parts may override locally), then memory so the agent
+        sees user preferences BEFORE persona/style. Persona quirks
+        shouldn't override what the user explicitly asked for.
         """
         parts: list[str] = []
+        parts.append(_BREVITY_DIRECTIVE.strip())
         if self.memory_context.strip():
             parts.append(self.memory_context.strip())
         if agent.persona:
