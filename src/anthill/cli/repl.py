@@ -664,8 +664,9 @@ HELP_TEXT = """[bold]anthill REPL[/bold] — just type a question to send it to 
     /nation X         switch nation (creates if missing)
     /rate up | down   reinforce or erode pheromones for the last answer
     /skill list       skills the nation has saved (with usage stats)
-    /loop <Ns|m|h> X  run an ask repeatedly until done or Ctrl+C
-                      (each iteration sees the previous output)
+    /loop <Ns|m|h> X  run an ask on a fixed interval until Ctrl+C
+    /loop X           self-paced loop — model picks the cadence,
+                      stops itself with [[loop:done]] when finished
     /setup            re-run the setup wizard
 
   [bold]Memory[/bold]
@@ -2094,6 +2095,7 @@ async def _handle_loop_cmd(
     import asyncio as _asyncio
 
     from anthill.core.loop import (
+        SELF_PACE_INSTRUCTION,
         LoopSpec,
         LoopState,
         format_interval,
@@ -2105,41 +2107,50 @@ async def _handle_loop_cmd(
     text = rest.strip()
     if not text:
         console_.print(
-            "[yellow]Usage:[/yellow] /loop <interval> <ask>\n"
-            "  examples:\n"
+            "[yellow]Usage:[/yellow] /loop [<interval>] <ask>\n"
+            "  fixed-interval (you pick the cadence):\n"
             "    /loop 30s check git status with @./.git\n"
-            "    /loop 5m  fetch the deploy log and summarize what changed"
+            "    /loop 5m  fetch the deploy log and summarize what changed\n"
+            "  self-paced (model picks; 0.2.2):\n"
+            "    /loop watch the deploy, stop when status=success"
         )
         return
 
-    # First whitespace-delimited token is the interval; the rest is
-    # the ask. This is simple-minded but matches the documented form.
+    # 0.2.2 — decide fixed vs self-paced by parsing the first token.
+    # If it parses as an interval AND there's text after, fixed mode.
+    # Otherwise the whole thing is the ask, model picks cadence.
     parts = text.split(maxsplit=1)
-    if len(parts) < 2:
-        console_.print(
-            "[yellow]/loop needs both an interval and an ask. "
-            "Example: /loop 30s check git status[/yellow]"
+    first_interval = parse_interval(parts[0])
+    if first_interval is not None and len(parts) == 2:
+        # Fixed-interval mode (0.2.1 behavior).
+        if first_interval < 1.0:
+            console_.print(
+                "[yellow]Interval must be >= 1s. Don't melt your machine.[/yellow]"
+            )
+            return
+        spec = LoopSpec(
+            interval_seconds=first_interval,
+            request=parts[1],
         )
-        return
-    interval_str, ask_text = parts[0], parts[1]
-    interval = parse_interval(interval_str)
-    if interval is None:
-        console_.print(
-            f"[yellow]Couldn't parse interval {interval_str!r}. "
-            f"Try 30s / 5m / 1h.[/yellow]"
+        mode_tag = format_interval(first_interval) + " interval"
+    else:
+        # Self-paced mode — model decides when to wake up via the
+        # [[loop:...]] marker. interval_seconds is unused.
+        spec = LoopSpec(
+            interval_seconds=0.0,
+            request=text,
+            self_paced=True,
         )
-        return
-    if interval < 1.0:
-        console_.print(
-            "[yellow]Interval must be >= 1s. Don't melt your machine.[/yellow]"
-        )
-        return
-
-    spec = LoopSpec(interval_seconds=interval, request=ask_text)
+        mode_tag = "self-paced"
 
     async def _one_iteration(state: LoopState) -> str:
         """Run one ask, return its final_output."""
         ask_request = state.request_with_context()
+        # Self-paced mode: ensure the model sees the marker contract.
+        # We append the instruction every iteration (cheap; model
+        # context is already rebuilt each ask).
+        if spec.self_paced:
+            ask_request = ask_request + SELF_PACE_INSTRUCTION
         result = await nation.ask(
             ask_request,
             nation_dir=nation_dir(config.home, nation.name),
@@ -2150,8 +2161,7 @@ async def _handle_loop_cmd(
         if phase == "tick_start":
             console_.print(
                 f"\n  [bold cyan]🔄 loop {state.iteration}[/bold cyan] "
-                f"[dim]({format_interval(spec.interval_seconds)} interval, "
-                f"Ctrl+C to stop)[/dim]"
+                f"[dim]({mode_tag}, Ctrl+C to stop)[/dim]"
             )
         elif phase == "tick_end":
             # Show output trimmed for the loop banner; full output is
@@ -2162,8 +2172,7 @@ async def _handle_loop_cmd(
             console_.print(f"  [dim]→ {preview}[/dim]")
 
     console_.print(
-        f"[bold]Starting loop[/bold] [dim]"
-        f"({format_interval(interval)} interval, "
+        f"[bold]Starting loop[/bold] [dim]({mode_tag}, "
         f"max {spec.max_iterations} iterations)[/dim]"
     )
     console_.print("  [dim]Press Ctrl+C to stop.[/dim]")
@@ -2183,6 +2192,19 @@ async def _handle_loop_cmd(
             console_.print(
                 f"\n  [red]✗ loop stopped at iteration {final.iteration} "
                 f"due to an error.[/red]"
+            )
+        elif final.stop_reason == "model_done":
+            # 0.2.2 — model declared task complete via [[loop:done]].
+            console_.print(
+                f"\n  [green]✓ done[/green] [dim](model declared "
+                f"complete after {final.iteration} iteration(s))[/dim]"
+            )
+        elif final.stop_reason == "model_done_implicit":
+            # 0.2.2 — model stopped emitting markers; assumed done.
+            console_.print(
+                f"\n  [yellow]⏸ stopped[/yellow] [dim]"
+                f"(no [[loop:...]] marker for {final.iteration} iteration(s); "
+                f"assumed done)[/dim]"
             )
         else:
             console_.print(

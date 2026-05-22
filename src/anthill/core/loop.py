@@ -50,6 +50,12 @@ class LoopSpec:
     request: str
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     history_window: int = DEFAULT_HISTORY_WINDOW
+    # 0.2.2 — self-paced mode. When True, the model decides the
+    # next cadence via a [[loop:...]] marker at end of each iteration.
+    # interval_seconds is ignored in this mode (the model's decision
+    # wins). Triggered from the REPL by typing `/loop <ask>` without
+    # an interval token.
+    self_paced: bool = False
 
 
 @dataclass
@@ -141,6 +147,106 @@ def format_interval(seconds: float) -> str:
     return "".join(parts)
 
 
+# --- self-paced mode (0.2.2) --------------------------------------------
+#
+# When LoopSpec.self_paced is True, the model decides the cadence of
+# the next iteration via a marker at end of output:
+#
+#   [[loop:done]]           — task complete, stop the loop
+#   [[loop:continue]]       — no wait, run again immediately
+#   [[loop:wait 60]]        — pause N seconds (default unit: seconds)
+#   [[loop:wait 5m]]        — also accepts m/h suffixes
+#
+# We append SELF_PACE_INSTRUCTION to the user's request when
+# self_paced=True; the final subtask sees it and ends with the marker.
+# After each iteration, parse_loop_decision strips the marker from the
+# displayed output AND tells run_loop what to do next.
+#
+# Why marker-in-output instead of a second LLM call?
+#   - Cheaper (1 call/iter vs 2)
+#   - Simpler — no separate decision agent prompt
+#   - The model has full context of what just happened, doesn't need
+#     a second pass to judge "should we continue?"
+
+SELF_PACE_INSTRUCTION = """\
+
+==================
+LOOP CONTROL: this ask runs in a self-paced loop. At the END of your
+response, on its own line, include EXACTLY ONE of:
+
+  [[loop:done]]           — the task is complete; stop the loop
+  [[loop:continue]]       — keep going immediately, no wait
+  [[loop:wait <N>]]       — pause N seconds (e.g. [[loop:wait 60]])
+                            also accepts m/h units: [[loop:wait 5m]]
+
+Choose `done` when the task succeeded OR when further iterations
+won't help. Choose `wait N` when you're polling something that won't
+change instantly (deploy progress, log tailing, PR merge). Choose
+`continue` for fast iterative refinement.
+If you omit the marker, the loop will stop after a few iterations.
+=================="""
+
+
+# Capture either a bare decision (done/continue) or "wait <number>[unit]".
+_LOOP_MARKER_RE = re.compile(
+    r"""
+    \[\[\s*loop\s*:\s*
+      (?:
+        (?P<decision>done|continue)
+        |
+        wait\s+(?P<wait_num>\d+(?:\.\d+)?)\s*(?P<wait_unit>[smh])?
+      )
+    \s*\]\]
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def parse_loop_decision(text: str) -> tuple[str, str, float]:
+    """Parse a self-pace marker out of an iteration's output.
+
+    Returns (decision, cleaned_output, wait_seconds):
+      decision in {"done", "continue", "wait", "none"}
+      cleaned_output = `text` with the marker line stripped
+      wait_seconds = seconds to sleep when decision == "wait", else 0.0
+
+    "none" means no marker found. Caller decides the default behavior
+    (run_loop assumes done after a few iterations, otherwise waits 5s).
+
+    The first marker wins if a buggy model emits multiple. We strip
+    every match to keep the displayed output clean.
+    """
+    if not text:
+        return "none", text, 0.0
+    matches = list(_LOOP_MARKER_RE.finditer(text))
+    if not matches:
+        return "none", text, 0.0
+
+    first = matches[0]
+    if first.group("decision"):
+        decision = first.group("decision").lower()
+        wait_seconds = 0.0
+    else:
+        decision = "wait"
+        n = float(first.group("wait_num"))
+        unit = (first.group("wait_unit") or "s").lower()
+        wait_seconds = n * {"s": 1.0, "m": 60.0, "h": 3600.0}[unit]
+
+    # Strip ALL markers (just in case there are stragglers).
+    cleaned = _LOOP_MARKER_RE.sub("", text).rstrip()
+    return decision, cleaned, wait_seconds
+
+
+# How many iterations of a self-paced loop to tolerate without a
+# marker before assuming the model has implicitly declared done.
+# Below this we treat "no marker" as "continue with a brief wait" so
+# we don't kill the loop on a single forgetful response.
+_NO_MARKER_GIVE_UP_AFTER = 3
+# Default sleep when self-paced loop got no marker but isn't yet at
+# the give-up threshold. Keeps wasted token cost bounded.
+_NO_MARKER_DEFAULT_WAIT_SECONDS = 5.0
+
+
 # --- execution -----------------------------------------------------------
 
 
@@ -192,6 +298,36 @@ async def run_loop(
                 )
                 state.stop_reason = "error"
                 break
+
+            # 0.2.2 — self-paced cadence. Pull the [[loop:...]] marker
+            # out of the output; that decides what happens next. The
+            # cleaned output (marker stripped) is what we record /
+            # display.
+            next_sleep: float = spec.interval_seconds
+            if spec.self_paced:
+                decision, cleaned, wait_secs = parse_loop_decision(output)
+                output = cleaned  # user sees this; no marker noise
+                if decision == "done":
+                    state.record_output(output)
+                    state.stop_reason = "model_done"
+                    if on_progress is not None:
+                        on_progress(state, "tick_end")
+                    break
+                if decision == "wait":
+                    next_sleep = wait_secs
+                elif decision == "continue":
+                    next_sleep = 0.0
+                else:  # "none" — model forgot the marker
+                    if state.iteration >= _NO_MARKER_GIVE_UP_AFTER:
+                        # Model has had multiple chances; assume done
+                        # rather than burn more iterations.
+                        state.record_output(output)
+                        state.stop_reason = "model_done_implicit"
+                        if on_progress is not None:
+                            on_progress(state, "tick_end")
+                        break
+                    next_sleep = _NO_MARKER_DEFAULT_WAIT_SECONDS
+
             state.record_output(output)
             if on_progress is not None:
                 on_progress(state, "tick_end")
@@ -205,9 +341,9 @@ async def run_loop(
                     break
 
             # Sleep before next iteration unless we already hit max.
-            if state.iteration < spec.max_iterations:
+            if state.iteration < spec.max_iterations and next_sleep > 0:
                 try:
-                    await asyncio.sleep(spec.interval_seconds)
+                    await asyncio.sleep(next_sleep)
                 except asyncio.CancelledError:
                     state.stop_reason = "user_stop"
                     raise

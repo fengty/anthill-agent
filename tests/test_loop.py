@@ -265,3 +265,197 @@ def test_loop_spec_defaults() -> None:
     spec = LoopSpec(interval_seconds=30, request="x")
     assert spec.max_iterations == DEFAULT_MAX_ITERATIONS
     assert spec.history_window == DEFAULT_HISTORY_WINDOW
+    assert spec.self_paced is False
+
+
+# --- 0.2.2 — self-paced loop --------------------------------------------
+
+
+from anthill.core.loop import (  # noqa: E402 — import after the basic tests
+    SELF_PACE_INSTRUCTION,
+    parse_loop_decision,
+)
+
+
+# parse_loop_decision: marker grammar
+
+
+def test_parse_done_marker() -> None:
+    decision, cleaned, wait = parse_loop_decision(
+        "All good now.\n[[loop:done]]"
+    )
+    assert decision == "done"
+    assert wait == 0.0
+    assert "[[loop:" not in cleaned
+    assert "All good now." in cleaned
+
+
+def test_parse_continue_marker() -> None:
+    decision, cleaned, wait = parse_loop_decision(
+        "Still building...\n[[loop:continue]]"
+    )
+    assert decision == "continue"
+    assert wait == 0.0
+    assert "[[loop:" not in cleaned
+
+
+def test_parse_wait_seconds_marker() -> None:
+    decision, cleaned, wait = parse_loop_decision(
+        "Waiting for deploy.\n[[loop:wait 60]]"
+    )
+    assert decision == "wait"
+    assert wait == 60.0
+
+
+def test_parse_wait_minutes_marker() -> None:
+    decision, cleaned, wait = parse_loop_decision(
+        "Need to wait.\n[[loop:wait 5m]]"
+    )
+    assert decision == "wait"
+    assert wait == 300.0
+
+
+def test_parse_wait_hours_marker() -> None:
+    decision, cleaned, wait = parse_loop_decision(
+        "Long poll.\n[[loop:wait 1h]]"
+    )
+    assert decision == "wait"
+    assert wait == 3600.0
+
+
+def test_parse_no_marker_returns_none_decision() -> None:
+    decision, cleaned, wait = parse_loop_decision("Just an output, no marker.")
+    assert decision == "none"
+    assert cleaned == "Just an output, no marker."
+    assert wait == 0.0
+
+
+def test_parse_marker_case_insensitive() -> None:
+    decision, _, _ = parse_loop_decision("[[LOOP:DONE]]")
+    assert decision == "done"
+
+
+def test_parse_marker_strips_all_occurrences() -> None:
+    """Buggy model might emit multiple markers — strip all, but
+    decision = first one."""
+    text = "[[loop:continue]] some text [[loop:wait 30]]"
+    decision, cleaned, wait = parse_loop_decision(text)
+    assert decision == "continue"  # first wins
+    assert wait == 0.0
+    assert "[[loop:" not in cleaned
+
+
+def test_parse_empty_text() -> None:
+    decision, cleaned, wait = parse_loop_decision("")
+    assert decision == "none"
+    assert cleaned == ""
+
+
+# Integration: run_loop in self_paced mode
+
+
+@pytest.mark.asyncio
+async def test_self_paced_stops_on_done_marker() -> None:
+    """Model emits [[loop:done]] → loop stops, stop_reason='model_done'."""
+    spec = LoopSpec(
+        interval_seconds=0.0,
+        request="poll deploy",
+        self_paced=True,
+        max_iterations=10,
+    )
+
+    iter_count = {"n": 0}
+
+    async def fake_iteration(state):
+        iter_count["n"] += 1
+        if iter_count["n"] >= 3:
+            return "deploy succeeded.\n[[loop:done]]"
+        return f"still building (iter {iter_count['n']}).\n[[loop:wait 1]]"
+
+    final = await run_loop(spec, on_iteration=fake_iteration)
+    assert final.stop_reason == "model_done"
+    assert final.iteration == 3
+    # Marker stripped from displayed output.
+    assert "[[loop:" not in final.prior_outputs[-1]
+    assert "deploy succeeded" in final.prior_outputs[-1]
+
+
+@pytest.mark.asyncio
+async def test_self_paced_respects_continue() -> None:
+    """[[loop:continue]] = no sleep before next iteration."""
+    spec = LoopSpec(
+        interval_seconds=999.0,  # very long — would be obvious if used
+        request="x",
+        self_paced=True,
+        max_iterations=3,
+    )
+
+    import time as _t
+    started = _t.time()
+
+    async def fake_iteration(state):
+        if state.iteration < 3:
+            return "go.\n[[loop:continue]]"
+        return "done.\n[[loop:done]]"
+
+    final = await run_loop(spec, on_iteration=fake_iteration)
+    elapsed = _t.time() - started
+    # 3 iterations with continue (no sleep) should finish in well
+    # under 1 second; if we'd honored interval_seconds=999 it'd hang
+    # for ~16 minutes.
+    assert elapsed < 1.0
+    assert final.stop_reason == "model_done"
+
+
+@pytest.mark.asyncio
+async def test_self_paced_implicit_done_after_3_missing_markers() -> None:
+    """Model forgot the marker 3 iterations in a row → assume done."""
+    spec = LoopSpec(
+        interval_seconds=0.0,
+        request="x",
+        self_paced=True,
+        max_iterations=10,
+    )
+
+    async def no_marker(state):
+        return "I have an opinion but I forgot to add the marker."
+
+    final = await run_loop(spec, on_iteration=no_marker)
+    assert final.stop_reason == "model_done_implicit"
+    assert final.iteration == 3  # the give-up threshold
+
+
+@pytest.mark.asyncio
+async def test_self_paced_marker_stripped_from_prior_output() -> None:
+    """Subsequent iterations see the CLEANED prior output (no marker
+    noise polluting the context)."""
+    spec = LoopSpec(
+        interval_seconds=0.0,
+        request="next?",
+        self_paced=True,
+        max_iterations=2,
+        history_window=1,
+    )
+
+    received: list[str] = []
+
+    async def fake_iteration(state):
+        received.append(state.request_with_context())
+        if state.iteration == 1:
+            return "iteration one work.\n[[loop:continue]]"
+        return "iteration two work.\n[[loop:done]]"
+
+    await run_loop(spec, on_iteration=fake_iteration)
+
+    # Iter 2's request contains prior output WITHOUT the marker.
+    assert "iteration one work" in received[1]
+    assert "[[loop:continue]]" not in received[1]
+    assert "[[loop:" not in received[1]
+
+
+def test_self_pace_instruction_documented() -> None:
+    """The instruction text is the contract with the model — make sure
+    all three decision markers are documented in it."""
+    assert "[[loop:done]]" in SELF_PACE_INSTRUCTION
+    assert "[[loop:continue]]" in SELF_PACE_INSTRUCTION
+    assert "[[loop:wait" in SELF_PACE_INSTRUCTION
