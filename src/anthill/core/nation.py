@@ -674,8 +674,30 @@ class Nation:
                             )
                         else:
                             project_block = ""
+                    # 0.2.6 — inject anthill's self-knowledge when the
+                    # user asks ABOUT anthill ("你能..." / "anthill 怎么用").
+                    # Without this, models answer abstractly because
+                    # they don't know they're inside anthill. Costs
+                    # ~400 tokens per self-referential ask, zero
+                    # otherwise.
+                    self_block = ""
+                    try:
+                        from anthill.core.self_context import (
+                            looks_self_referential,
+                            self_context_block,
+                        )
+                        if looks_self_referential(request):
+                            from anthill.core.userconfig import load_config
+                            self_block = self_context_block(
+                                load_config(), nation_name=self.name
+                            )
+                    except Exception:  # noqa: BLE001
+                        self_block = ""
                     episodic_context = "\n\n".join(
-                        b for b in (project_block, workflow_block, plugin_block, similar_block) if b
+                        b for b in (
+                            self_block, project_block, workflow_block,
+                            plugin_block, similar_block,
+                        ) if b
                     )
                     scout = Scout(model=self.scout_model)
                     # 0.1.44 — capture Scout wall-clock so timing line
