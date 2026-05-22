@@ -664,6 +664,8 @@ HELP_TEXT = """[bold]anthill REPL[/bold] — just type a question to send it to 
     /nation X         switch nation (creates if missing)
     /rate up | down   reinforce or erode pheromones for the last answer
     /skill list       skills the nation has saved (with usage stats)
+    /loop <Ns|m|h> X  run an ask repeatedly until done or Ctrl+C
+                      (each iteration sees the previous output)
     /setup            re-run the setup wizard
 
   [bold]Memory[/bold]
@@ -2075,6 +2077,128 @@ def _show_status(nation: Nation, stats: SessionStats) -> None:
     console.print(f"[bold]Cost[/bold]      ${stats.cost_usd:.4f} this session")
 
 
+async def _handle_loop_cmd(
+    rest: str,
+    nation,  # noqa: ANN001 — circular import to type-annotate
+    config,  # noqa: ANN001
+    stats,   # noqa: ANN001
+    console_,  # noqa: ANN001 (the rich Console — passed to avoid global lookup churn)
+) -> None:
+    """0.2.1 — `/loop <interval> <ask>` handler.
+
+    Parse interval + request, drive `run_loop` against `nation.ask`
+    while streaming a per-iteration banner to the REPL. Cancellation
+    via Ctrl+C is handled by the async runner — we catch
+    CancelledError here and surface a clean stop message.
+    """
+    import asyncio as _asyncio
+
+    from anthill.core.loop import (
+        LoopSpec,
+        LoopState,
+        format_interval,
+        parse_interval,
+        run_loop,
+    )
+    from anthill.core.persistence import nation_dir
+
+    text = rest.strip()
+    if not text:
+        console_.print(
+            "[yellow]Usage:[/yellow] /loop <interval> <ask>\n"
+            "  examples:\n"
+            "    /loop 30s check git status with @./.git\n"
+            "    /loop 5m  fetch the deploy log and summarize what changed"
+        )
+        return
+
+    # First whitespace-delimited token is the interval; the rest is
+    # the ask. This is simple-minded but matches the documented form.
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        console_.print(
+            "[yellow]/loop needs both an interval and an ask. "
+            "Example: /loop 30s check git status[/yellow]"
+        )
+        return
+    interval_str, ask_text = parts[0], parts[1]
+    interval = parse_interval(interval_str)
+    if interval is None:
+        console_.print(
+            f"[yellow]Couldn't parse interval {interval_str!r}. "
+            f"Try 30s / 5m / 1h.[/yellow]"
+        )
+        return
+    if interval < 1.0:
+        console_.print(
+            "[yellow]Interval must be >= 1s. Don't melt your machine.[/yellow]"
+        )
+        return
+
+    spec = LoopSpec(interval_seconds=interval, request=ask_text)
+
+    async def _one_iteration(state: LoopState) -> str:
+        """Run one ask, return its final_output."""
+        ask_request = state.request_with_context()
+        result = await nation.ask(
+            ask_request,
+            nation_dir=nation_dir(config.home, nation.name),
+        )
+        return (result.final_output or "").strip()
+
+    def _on_progress(state: LoopState, phase: str) -> None:
+        if phase == "tick_start":
+            console_.print(
+                f"\n  [bold cyan]🔄 loop {state.iteration}[/bold cyan] "
+                f"[dim]({format_interval(spec.interval_seconds)} interval, "
+                f"Ctrl+C to stop)[/dim]"
+            )
+        elif phase == "tick_end":
+            # Show output trimmed for the loop banner; full output is
+            # already on screen via streaming if Nation.ask streams.
+            out = state.prior_outputs[-1] if state.prior_outputs else ""
+            preview = (out[:200] + "…") if len(out) > 200 else out
+            preview = preview.replace("\n", " ")
+            console_.print(f"  [dim]→ {preview}[/dim]")
+
+    console_.print(
+        f"[bold]Starting loop[/bold] [dim]"
+        f"({format_interval(interval)} interval, "
+        f"max {spec.max_iterations} iterations)[/dim]"
+    )
+    console_.print("  [dim]Press Ctrl+C to stop.[/dim]")
+
+    try:
+        final = await run_loop(
+            spec,
+            on_iteration=_one_iteration,
+            on_progress=_on_progress,
+        )
+        if final.stop_reason == "max_iters":
+            console_.print(
+                f"\n  [yellow]⚠ stopped after {final.iteration} iterations "
+                f"(max_iterations cap). Re-run /loop to continue.[/yellow]"
+            )
+        elif final.stop_reason == "error":
+            console_.print(
+                f"\n  [red]✗ loop stopped at iteration {final.iteration} "
+                f"due to an error.[/red]"
+            )
+        else:
+            console_.print(
+                f"\n  [green]✓ loop finished[/green] "
+                f"[dim](reason: {final.stop_reason}, "
+                f"iterations: {final.iteration})[/dim]"
+            )
+    except _asyncio.CancelledError:
+        # Cancelled by Ctrl+C — show a clean line instead of a
+        # stacktrace. REPL prompt comes back next.
+        console_.print(
+            "\n  [yellow]⏹ loop cancelled.[/yellow]"
+        )
+        raise
+
+
 def _request_is_essentially_just_url(request: str) -> bool:
     """0.2.0 — does this request reduce to "look at this URL, please"?
 
@@ -2880,6 +3004,27 @@ def run_repl(
                         f"  [dim]📦 collapsed {collapsed} middle "
                         f"turn(s); kept 2 anchor + 4 recent.[/dim]"
                     )
+            elif cmd == "loop":
+                # 0.2.1 — recurring-ask loop. Usage:
+                #   /loop 30s <ask>
+                #   /loop 5m  <ask>
+                #   /loop 2h  <ask>
+                # Each iteration sees the previous output as context;
+                # Ctrl+C stops the loop cleanly.
+                #
+                # Bridge to async via asyncio.run, same pattern as
+                # _handle_ask further down. KeyboardInterrupt /
+                # CancelledError caught so the REPL prompt comes back
+                # cleanly instead of bubbling up to the REPL loop.
+                try:
+                    asyncio.run(
+                        _handle_loop_cmd(
+                            rest, nation, config, stats, console
+                        )
+                    )
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    # Already surfaced by the handler; just return to prompt.
+                    pass
             elif cmd == "clear":
                 console.clear()
                 # 0.1.28 — also reset the rolling conversation window
