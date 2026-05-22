@@ -144,6 +144,85 @@ def _read_request_line(prompt: str = "» ") -> str:
     return "\n".join(buffer).rstrip()
 
 
+def _compose_in_editor(initial: str = "") -> str | None:
+    """0.2.15 — invoke `$EDITOR` for multi-paragraph prompts.
+
+    REPL one-liners are great for "fix this typo" but punishing for
+    "review this 600-word spec." Triple-quote multi-line mode helps
+    but every paste eats the readline buffer. `/edit` opens vim /
+    nano / VS Code on a tmp file; the user composes freely, saves,
+    and the saved content becomes the next ask.
+
+    Returns the saved content (stripped) or None when the user wrote
+    nothing / cancelled. Lines beginning with `#` are treated as
+    comments and stripped (so we can prepend a helpful header).
+    """
+    import os
+    import shlex
+    import subprocess
+    import tempfile
+
+    # Editor resolution: explicit $EDITOR wins; otherwise prefer a
+    # visual editor over `vi` (vi often makes new users feel stuck).
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL")
+    if not editor:
+        for fallback in ("nano", "vim", "vi"):
+            try:
+                # Cheap "is it on PATH" probe.
+                subprocess.run(
+                    ["which", fallback],
+                    check=True,
+                    capture_output=True,
+                )
+                editor = fallback
+                break
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                continue
+    if not editor:
+        console.print(
+            "  [yellow]No editor found.[/yellow] "
+            "[dim]Set $EDITOR or install nano/vim.[/dim]"
+        )
+        return None
+
+    header = (
+        "# Compose your ask below. Lines starting with '#' are\n"
+        "# ignored. Save and exit to send; leave blank to cancel.\n"
+        "#\n"
+    )
+    body = header + (initial.strip() + "\n" if initial.strip() else "")
+
+    with tempfile.NamedTemporaryFile(
+        mode="w+", suffix=".md", prefix="anthill-ask-", delete=False
+    ) as tf:
+        tf.write(body)
+        path = tf.name
+
+    try:
+        # shlex.split lets users set EDITOR="code --wait" etc.
+        cmd = shlex.split(editor) + [path]
+        try:
+            subprocess.call(cmd)
+        except FileNotFoundError:
+            console.print(
+                f"  [yellow]Editor '{editor}' failed to launch.[/yellow]"
+            )
+            return None
+        # Re-read.
+        with open(path, encoding="utf-8") as fh:
+            raw = fh.read()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    # Strip comment lines + trailing whitespace.
+    kept_lines = [ln for ln in raw.splitlines() if not ln.lstrip().startswith("#")]
+    result = "\n".join(kept_lines).strip()
+    return result or None
+
+
 _AUTH_HINT_THRESHOLD = 3
 
 
@@ -678,6 +757,7 @@ HELP_TEXT = """[bold]anthill REPL[/bold] — just type a question to send it to 
     /memory           this nation's persistent notes
 
   [bold]Session[/bold]
+    /edit, /e [seed]  compose a long ask in $EDITOR — vim / nano / code
     /clear            clear screen (state preserved)
     /quit, /q         exit
     Ctrl+C            pause current ask → cancel or redirect
@@ -3327,6 +3407,30 @@ def run_repl(
                     # where it seeds the per-subtask forbid set.
                     stats.queued_retry_request = last.request
                     stats.queued_retry_forbid = forbidden_agents
+            elif cmd in ("edit", "e"):
+                # 0.2.15 — open $EDITOR for the next ask. Multi-paragraph
+                # asks in REPL one-line mode (or even triple-quoted
+                # multi-line) are a pain: every paste fights readline.
+                # `/edit` hands the user vim/nano/code; saved content
+                # becomes the ask. Optional rest is a seed prompt:
+                # `/edit fix the bug in ...` opens with that prefilled.
+                composed = _compose_in_editor(initial=rest)
+                if not composed:
+                    console.print("  [dim]edit cancelled — nothing sent.[/dim]")
+                else:
+                    # Queue via the same channel /retry uses: the next
+                    # REPL iteration picks up `queued_retry_request`,
+                    # skips the prompt, and threads through ask path.
+                    # forbid stays None — this is a fresh ask.
+                    preview = composed[:60].replace("\n", " ")
+                    if len(composed) > 60:
+                        preview += "…"
+                    console.print(
+                        f"  [dim]✎ composed ({len(composed)} chars):"
+                        f"[/dim] [cyan]{preview}[/cyan]"
+                    )
+                    stats.queued_retry_request = composed
+                    stats.queued_retry_forbid = None
             elif cmd == "compress":
                 # 0.1.62 — head-tail conversation compression.
                 # Collapses the middle of the rolling window when it
