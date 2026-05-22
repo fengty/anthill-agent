@@ -167,18 +167,19 @@ def test_block_includes_anthill_version() -> None:
     assert __version__ in block
 
 
-def test_block_includes_anti_abstract_directive() -> None:
-    """The block should explicitly tell the model NOT to answer in
-    abstract AI terms. That's the failure mode we're fixing."""
+def test_block_includes_brevity_directive() -> None:
+    """0.2.7 update: the block should demand BRIEF answers, not
+    elaborate tutorials. Previous version produced 8KB how-to walls
+    for simple questions."""
     block = self_context_block(None)
     block_lower = block.lower()
-    # Some variant of "answer about anthill specifically, not in
-    # general" must be present.
+    # Some variant of "be brief" / "stop" / "short answer" must
+    # be present.
     assert (
-        "not abstract" in block_lower
-        or "concrete" in block_lower
-        or "stay on-anthill" in block_lower
-        or "not with" in block_lower
+        "brief" in block_lower
+        or "concise" in block_lower
+        or "short answer" in block_lower
+        or "stop" in block_lower
     )
 
 

@@ -1,6 +1,6 @@
 [project]
 name = "anthill-agent"
-version = "0.2.6"
+version = "0.2.7"
 description = "Multi-model AI nation that decomposes one request across specialists, learns who's best at what, and gets better the longer you use it."
 readme = "README.md"
 requires-python = ">=3.9"
