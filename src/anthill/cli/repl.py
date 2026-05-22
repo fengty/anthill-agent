@@ -2045,8 +2045,37 @@ async def _handle_ask(
             f"[dim](use [cyan]/history show {sources[0][:8]}[/cyan] to inspect)[/dim]"
         )
     console.print()
-    console.print(result.final_output)
+    _print_final_output(result.final_output)
     console.print()
+
+
+def _print_final_output(text: str) -> None:
+    """0.2.4 — render final output as rich Markdown.
+
+    Pre-0.2.4 we printed `result.final_output` as plain text, which
+    meant model markdown leaked through verbatim: ## headers,
+    ASCII-art tables, ``` code fences, bullet markers all just
+    sat there as wall-of-text. Real user feedback from the live
+    session: "好丑啊".
+
+    Rich's Markdown widget formats them properly:
+      - Headers get bold + color hierarchy
+      - Tables render as actual tables (with the same data, way
+        less visual noise)
+      - Code fences become syntax-highlighted blocks
+      - Bullets indent
+
+    We fall back to plain text on rendering failure (some models
+    produce truly weird output that trips Markdown parsing —
+    that's a graceful degradation, not a regression).
+    """
+    if not text or not text.strip():
+        return
+    try:
+        from rich.markdown import Markdown
+        console.print(Markdown(text))
+    except Exception:  # noqa: BLE001 — never break the REPL on a render hiccup
+        console.print(text)
 
 
 def _show_trails(nation: Nation, drill_task: str | None = None) -> None:
@@ -2250,12 +2279,14 @@ async def _handle_loop_cmd(
                 f"[dim]({mode_tag}, Ctrl+C to stop)[/dim]"
             )
         elif phase == "tick_end":
-            # Show output trimmed for the loop banner; full output is
-            # already on screen via streaming if Nation.ask streams.
+            # 0.2.4 — render the iteration's output as Markdown.
+            # Pre-0.2.4 we only showed a truncated preview, which
+            # buried the actual analysis. With Markdown rendering
+            # the loop becomes useful as a status display
+            # ("watch the deploy, see fresh report each tick").
             out = state.prior_outputs[-1] if state.prior_outputs else ""
-            preview = (out[:200] + "…") if len(out) > 200 else out
-            preview = preview.replace("\n", " ")
-            console_.print(f"  [dim]→ {preview}[/dim]")
+            if out.strip():
+                _print_final_output(out)
 
     console_.print(
         f"[bold]Starting loop[/bold] [dim]({mode_tag}, "
