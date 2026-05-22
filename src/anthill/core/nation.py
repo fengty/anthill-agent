@@ -493,6 +493,7 @@ class Nation:
         budget: Budget | None = None,
         max_replans: int = 1,
         pre_plan: Plan | None = None,
+        forbid: set[str] | None = None,
     ) -> AskResult:
         """Execute a natural-language request from the king.
 
@@ -868,6 +869,7 @@ class Nation:
             on_progress=progress_cb,
             resume_state=resume_state,
             budget=tracker,
+            initial_forbid=forbid,
         )
 
         # Self-correction loop. When a subtask fails terminally, ask Scout

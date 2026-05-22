@@ -663,6 +663,8 @@ HELP_TEXT = """[bold]anthill REPL[/bold] — just type a question to send it to 
     /model            list, add, switch, remove, test models
     /nation X         switch nation (creates if missing)
     /rate up | down   reinforce or erode pheromones for the last answer
+    /retry            re-ask the last question — but FORBID the
+                      citizen that just ran it (let another model try)
     /skill list       skills the nation has saved (with usage stats)
     /loop <Ns|m|h> X  run an ask on a fixed interval until Ctrl+C
     /loop X           self-paced loop — model picks the cadence,
@@ -736,6 +738,11 @@ class SessionStats:
         # history-entry id. Without this the user would get the same
         # hint after every matching ask.
         self.suggested_skill_ids: set[str] = set()
+        # 0.2.14 — `/retry` injects the previous request back into
+        # the REPL input loop with a forbid set so a DIFFERENT
+        # citizen handles it next time. None when no retry queued.
+        self.queued_retry_request: str | None = None
+        self.queued_retry_forbid: set[str] | None = None
 
     def add(self, input_tokens: int, output_tokens: int, cost: float) -> None:
         self.tokens_in += input_tokens
@@ -1104,6 +1111,7 @@ async def _handle_ask(
     deliberate: bool | None = None,  # None = auto-decide by complexity
     max_rounds: int = 3,
     quality_threshold: float = 0.85,
+    forbid: set[str] | None = None,
 ) -> None:
     import time
     from pathlib import Path as _Path
@@ -1657,6 +1665,7 @@ async def _handle_ask(
                 on_clarify=clarify_for_this_ask,  # v0.9.0; 0.1.53 guard
                 on_plan=on_plan,  # 0.2.13: always (overview + optional review)
                 nation_dir=nation_dir(config.home, nation.name),
+                forbid=forbid,  # 0.2.14 — /retry threads ban set here
             )
         finally:
             _stop_thinking_indicator()
@@ -3183,21 +3192,33 @@ def run_repl(
         # so the prompt never gets blocked by stale bg state.
         _surface_pending_bg_deliveries(nation, config, stats)
 
-        try:
-            line = _read_request_line(prompt="» ")
-        except (KeyboardInterrupt, EOFError):
-            console.print()
-            console.print("[dim]bye.[/dim]")
-            # 0.1.35 — graceful close marker on the session file so
-            # the picker can distinguish clean exits from crashes
-            # later if needed. Best-effort; missing file is fine.
+        # 0.2.14 — /retry from the previous slash-command turn injects
+        # the prior request back through the ask path. We intercept
+        # BEFORE the readline prompt so the user sees the retry fire
+        # without having to press Enter on a blank line.
+        if stats.queued_retry_request is not None:
+            line = stats.queued_retry_request
+            stats.queued_retry_request = None
+            # Echo so the user sees what's being re-asked.
+            console.print(f"[dim]» {line}[/dim]")
+            # forbid stays in stats.queued_retry_forbid; consumed by
+            # the ask path below and cleared once it's been used.
+        else:
             try:
-                from anthill.core.sessions import end_session
-                if getattr(stats, "session", None) is not None:
-                    end_session(stats.session, reason="user_quit")
-            except Exception:  # noqa: BLE001
-                pass
-            return 0
+                line = _read_request_line(prompt="» ")
+            except (KeyboardInterrupt, EOFError):
+                console.print()
+                console.print("[dim]bye.[/dim]")
+                # 0.1.35 — graceful close marker on the session file
+                # so the picker can distinguish clean exits from
+                # crashes later if needed. Best-effort.
+                try:
+                    from anthill.core.sessions import end_session
+                    if getattr(stats, "session", None) is not None:
+                        end_session(stats.session, reason="user_quit")
+                except Exception:  # noqa: BLE001
+                    pass
+                return 0
 
         if not line:
             continue
@@ -3270,6 +3291,42 @@ def run_repl(
                             "  [dim]→ inspect: [cyan]"
                             "/session show <session_id>[/cyan][/dim]"
                         )
+            elif cmd == "retry":
+                # 0.2.14 — re-run the last ask, but FORBID the
+                # citizens that ran it last time. The whole point of
+                # /retry in a multi-model nation: not "give me the
+                # same thing again" but "let DIFFERENT models try".
+                # Pheromone updates from this retry teach the nation
+                # which model is better for that task_type.
+                from anthill.core.feedback import load_last_ask
+
+                last = load_last_ask(nation_dir(config.home, nation.name))
+                if last is None:
+                    console.print(
+                        "  [dim]还没有上次 ask 可以 retry. 先问一个问题.[/dim]"
+                    )
+                else:
+                    # Forbid every (agent_id) that ran the previous
+                    # ask. The router will pick someone else;
+                    # pheromone will learn whether the alternative is
+                    # better.
+                    forbidden_agents = {aid for aid, _tt in last.pairs}
+                    forbidden_summary = ", ".join(
+                        sorted({aid[:8] for aid in forbidden_agents})
+                    )
+                    console.print(
+                        f"  [dim]🔄 重跑[/dim] [cyan]"
+                        f"{last.request[:60]}[/cyan]"
+                        f"  [dim]· 禁用上次 citizen: "
+                        f"{forbidden_summary}[/dim]"
+                    )
+                    # The REPL main loop reads these on the next
+                    # iteration, skips the readline prompt, and
+                    # threads forbid down through _handle_ask →
+                    # nation.ask → execute_plan → _run_one_subtask
+                    # where it seeds the per-subtask forbid set.
+                    stats.queued_retry_request = last.request
+                    stats.queued_retry_forbid = forbidden_agents
             elif cmd == "compress":
                 # 0.1.62 — head-tail conversation compression.
                 # Collapses the middle of the rolling window when it
@@ -4170,9 +4227,22 @@ def run_repl(
         # "type your correction and press Enter."
         stats.increment_ask()
         current_request = line
+        # 0.2.14 — pull-and-clear: if a /retry queued a forbid set,
+        # use it for THIS ask only. Cleared immediately so a Ctrl+C
+        # redirect mid-retry doesn't accidentally re-apply it.
+        forbid_for_this_ask = stats.queued_retry_forbid
+        stats.queued_retry_forbid = None
         while True:
             try:
-                asyncio.run(_handle_ask(current_request, nation, config, stats))
+                asyncio.run(
+                    _handle_ask(
+                        current_request,
+                        nation,
+                        config,
+                        stats,
+                        forbid=forbid_for_this_ask,
+                    )
+                )
                 break  # ask finished normally → exit redirect loop
             except KeyboardInterrupt:
                 redirect = _prompt_steer_choice(current_request)

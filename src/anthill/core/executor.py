@@ -221,6 +221,7 @@ async def _run_one_subtask(
     policy: RetryPolicy,
     on_progress: ProgressCallback | None = None,
     budget: "BudgetTracker | None" = None,
+    initial_forbid: set[str] | None = None,
 ) -> None:
     """Execute one subtask with retries; mutate outcomes in place.
 
@@ -321,7 +322,10 @@ async def _run_one_subtask(
                 succeeded = True
     else:
         # Legacy serial retry path — unchanged behavior for fanout=1.
-        forbid: set[str] = set()
+        # 0.2.14 — seed with `initial_forbid` so /retry can ban the
+        # citizens that ran this ask LAST time. Empty set is the
+        # normal first-ever-ask case.
+        forbid: set[str] = set(initial_forbid) if initial_forbid else set()
         for attempt_idx in range(policy.max_attempts):
             # 0.1.40 — if the PRIOR attempt punted the work back to
             # the king (FailureReason.USER_SERVING_REFUSAL), augment
@@ -467,6 +471,7 @@ async def execute_plan(
     on_progress: ProgressCallback | None = None,
     resume_state: dict[int, SubtaskOutcome] | None = None,
     budget: "BudgetTracker | None" = None,
+    initial_forbid: set[str] | None = None,
 ) -> list[SubtaskOutcome]:
     """Run a Plan with retries, citizen rotation, and graceful skipping.
 
@@ -539,6 +544,7 @@ async def execute_plan(
                         policy,
                         on_progress,
                         budget,
+                        initial_forbid=initial_forbid,
                     )
                     for i in pending
                 )
@@ -557,6 +563,7 @@ async def execute_plan(
                 policy,
                 on_progress,
                 budget,
+                initial_forbid=initial_forbid,
             )
 
     return [outcomes[i] for i in range(len(plan.subtasks))]
