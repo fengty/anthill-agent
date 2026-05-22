@@ -737,6 +737,8 @@ HELP_TEXT = """[bold]anthill REPL[/bold] — just type a question to send it to 
     /history          recent asks
     /search Q         find past asks across all sessions
     /timing           per-phase latency for the current session
+    /usage [window]   cost + per-model spend + speed
+                      window: today / week / session / all
 
   [bold]Steer[/bold]
     /model            list, add, switch, remove, test models
@@ -2427,6 +2429,140 @@ def _show_status(nation: Nation, stats: SessionStats) -> None:
     console.print(f"[bold]Cost[/bold]      ${stats.cost_usd:.4f} this session")
 
 
+def _show_usage(
+    nation: Nation,
+    config: AnthillConfig,
+    stats: SessionStats,
+    window: str | None = None,
+) -> None:
+    """0.2.16 — aggregated cost + per-model distribution + speed.
+
+    Reads the nation's `usage.jsonl` (the durable per-attempt ledger
+    written by every ask) and renders a compact 4-section view:
+
+      💰 Cost     $X.XX total · today $Y · this session $Z
+      🧠 Models   deepseek 62%, minimax 28%, claude 10%
+      ⚡ Speed    avg 1,820 tok/s in · 380 tok/s out
+      📊 Volume   142 asks · 31k tokens in · 18k tokens out
+
+    `window` filter:
+      - None / "all"  → all-time
+      - "today"       → since local midnight
+      - "week"        → last 7 days
+      - "session"     → this REPL session only (stats.*)
+    """
+    import time as _time
+    from anthill.core.costs import load_usage, summarise
+    from anthill.core.persistence import nation_dir as _nd
+
+    records = load_usage(_nd(config.home, nation.name))
+    if not records:
+        console.print(
+            "  [dim]No usage data yet. Ask something first.[/dim]"
+        )
+        return
+
+    # Window filter.
+    since: float | None = None
+    label = "all-time"
+    win = (window or "").strip().lower()
+    if win in ("today", "day"):
+        # Local midnight today.
+        t = _time.localtime()
+        since = _time.mktime(
+            (t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1)
+        )
+        label = "today"
+    elif win == "week":
+        since = _time.time() - 7 * 86400
+        label = "last 7 days"
+    elif win == "session":
+        # Cut to this session's start (best-effort: session-id is the
+        # earliest record we've seen this REPL run).
+        since = getattr(stats, "session_started_at", None)
+        if since is None:
+            since = _time.time() - 3600  # last hour fallback
+        label = "this session"
+    elif win in ("", "all"):
+        pass
+    else:
+        console.print(
+            f"  [yellow]Unknown window '{win}'.[/yellow] "
+            "[dim]Try: today / week / session / all[/dim]"
+        )
+        return
+
+    report = summarise(records, since=since)
+
+    if report.total_cost_usd == 0 and not report.by_model:
+        console.print(f"  [dim]No usage in {label}.[/dim]")
+        return
+
+    # --- Cost line --------------------------------------------------
+    console.print(
+        f"[bold]💰 Cost[/bold]    "
+        f"${report.total_cost_usd:.4f} {label} "
+        f"[dim]· {len([r for r in records if (since is None or r.timestamp >= since)])} subtask attempts[/dim]"
+    )
+
+    # --- Model distribution ----------------------------------------
+    # Render by-model with percentage + cost, sorted by spend desc.
+    total = report.total_cost_usd or sum(report.by_model.values())
+    if report.by_model and total > 0:
+        items = sorted(
+            report.by_model.items(), key=lambda kv: kv[1], reverse=True
+        )
+        chunks = []
+        for model, cost in items[:6]:
+            pct = (cost / total * 100) if total > 0 else 0
+            chunks.append(f"{model} {pct:.0f}%")
+        console.print(
+            f"[bold]🧠 Models[/bold]  " + ", ".join(chunks)
+            + (f"[dim] (+{len(items) - 6} more)[/dim]" if len(items) > 6 else "")
+        )
+
+    # --- Speed (tok/s — avg per-attempt throughput) ----------------
+    # We don't store per-attempt duration in UsageRecord, so we
+    # estimate from token counts vs total wall-clock (best-effort).
+    # Real per-attempt timing lives in the session JSONL; this is
+    # the cheap summary.
+    if since is None:
+        window_seconds = (
+            (report.period_end - report.period_start)
+            if (report.period_start and report.period_end)
+            else 0
+        )
+    else:
+        window_seconds = _time.time() - since
+    if window_seconds > 0 and report.total_input + report.total_output > 0:
+        tok_per_s_in = report.total_input / window_seconds
+        tok_per_s_out = report.total_output / window_seconds
+        console.print(
+            f"[bold]⚡ Speed[/bold]   "
+            f"avg {tok_per_s_in:,.0f} tok/s in · "
+            f"{tok_per_s_out:,.0f} tok/s out "
+            f"[dim](over window wall-clock)[/dim]"
+        )
+
+    # --- Volume ----------------------------------------------------
+    # Distinct asks ≈ distinct timestamps to the second isn't great;
+    # report subtask-attempt count instead (already shown above), plus
+    # token totals.
+    console.print(
+        f"[bold]📊 Volume[/bold]  "
+        f"{report.total_input:,} tokens in · "
+        f"{report.total_output:,} tokens out"
+    )
+
+    # --- This-session shortcut (always shown, regardless of window) -
+    if stats.asks > 0:
+        console.print(
+            f"[dim]  this session: {stats.asks} asks · "
+            f"in={stats.tokens_in:,} out={stats.tokens_out:,} · "
+            f"${stats.cost_usd:.4f}[/dim]"
+        )
+
+
 async def _handle_loop_cmd(
     rest: str,
     nation,  # noqa: ANN001 — circular import to type-annotate
@@ -3329,6 +3465,11 @@ def run_repl(
                 # where seconds go ("research subtasks have median 18s,
                 # scout 1.5s") without grepping logs.
                 _show_timing(config, nation, stats)
+            elif cmd == "usage" or cmd == "cost":
+                # 0.2.16 — aggregated $ spent + model distribution +
+                # speed across the nation's lifetime. Optional window
+                # arg: /usage today | week | session | all (default).
+                _show_usage(nation, config, stats, window=rest.strip() or None)
             elif cmd == "search":
                 # 0.1.63 — cross-session grep. Substring by default
                 # (case-insensitive); /regex/ form switches to regex.
