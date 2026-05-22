@@ -2235,6 +2235,23 @@ async def _handle_ask(
     _print_final_output(result.final_output)
     console.print()
 
+    # 0.2.17 — terse follow-up hints. Pure rule-based, no LLM call.
+    # When `suggest_followups` returns nothing, nothing is printed —
+    # we don't pollute the REPL with "what else?" prompts when the
+    # answer was already self-contained.
+    try:
+        from anthill.core.followups import (
+            format_followup_line,
+            suggest_followups,
+        )
+        hints = suggest_followups(request, result.final_output or "")
+        line = format_followup_line(hints)
+        if line:
+            console.print(f"  [dim]{line}[/dim]")
+            console.print()
+    except Exception:  # noqa: BLE001 — followups must never break the ask
+        pass
+
 
 def _print_plan_overview(plan, nation) -> None:  # noqa: ANN001
     """0.2.13 — surface Scout's plan + multi-model routing preview.
