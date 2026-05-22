@@ -83,6 +83,25 @@ Rules for good plans:
   KIND of work — otherwise prefer distinct labels.
 - Never include explanations outside the JSON. Never use code fences.
 
+CRITICAL — when NOT to plan a `clarify` subtask:
+- `clarify` means "ask the user back for more info." Pick this ONLY
+  when the request is so vague you literally cannot guess intent
+  (e.g. "fix it", "help"). Pick it sparingly — every clarify is a
+  round-trip the user has to answer.
+- For "how do I X" / "what is Y" / "explain Z" / "how do you ..." /
+  "你能..." / "你如何..." / "anthill 怎么..." style questions:
+  DO NOT clarify. The user has named a topic; pick `explain` or
+  `answer` and ATTEMPT the answer. If you're uncertain about a
+  detail, give your best guess + add ONE LINE at the end inviting
+  the user to correct ("如果是另一种情况告诉我"), but don't refuse
+  to answer.
+- If you find yourself wanting to ask "do you mean X or Y?" between
+  two plausible interpretations: pick the more likely one and
+  answer it, then mention the other briefly. Don't make the user
+  pick before you'll do any work.
+- A plan with ONLY one subtask of type `clarify` is almost always
+  wrong. Default to attempting an answer.
+
 Complexity field guidance:
 - "trivial":  single-shot factual/greeting/ack. One subtask, ~10 words
               output. Examples: "what's 2+2", "hi", "thanks", "what year is it"
