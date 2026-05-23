@@ -74,6 +74,12 @@ class LoopState:
     #   model_done     — (0.2.2) model declared task complete
     #   error          — unrecoverable error in iteration
     stop_reason: str | None = None
+    # 0.2.18 — number of consecutive iterations with NO loop marker
+    # in self-paced mode. Reset to 0 on every successful marker.
+    # Was iteration-counter-based before; that killed loops where
+    # the model emitted markers on iter 1..N then forgot once on
+    # iter N+1. Real session data showed this happening reliably.
+    consecutive_missed_markers: int = 0
 
     def record_output(self, output: str) -> None:
         """Append iteration output; trim to history_window."""
@@ -237,11 +243,12 @@ def parse_loop_decision(text: str) -> tuple[str, str, float]:
     return decision, cleaned, wait_seconds
 
 
-# How many iterations of a self-paced loop to tolerate without a
-# marker before assuming the model has implicitly declared done.
-# Below this we treat "no marker" as "continue with a brief wait" so
-# we don't kill the loop on a single forgetful response.
-_NO_MARKER_GIVE_UP_AFTER = 3
+# 0.2.18 — how many CONSECUTIVE missed markers to tolerate before
+# calling the loop done. Was "ever missed past iter 3" before, which
+# killed loops where the model emitted markers fine on iter 1..N
+# then forgot once. Now we require N consecutive misses; one good
+# marker resets the counter.
+_NO_MARKER_GIVE_UP_AFTER = 2
 # Default sleep when self-paced loop got no marker but isn't yet at
 # the give-up threshold. Keeps wasted token cost bounded.
 _NO_MARKER_DEFAULT_WAIT_SECONDS = 5.0
@@ -308,19 +315,29 @@ async def run_loop(
                 decision, cleaned, wait_secs = parse_loop_decision(output)
                 output = cleaned  # user sees this; no marker noise
                 if decision == "done":
+                    state.consecutive_missed_markers = 0
                     state.record_output(output)
                     state.stop_reason = "model_done"
                     if on_progress is not None:
                         on_progress(state, "tick_end")
                     break
                 if decision == "wait":
+                    state.consecutive_missed_markers = 0
                     next_sleep = wait_secs
                 elif decision == "continue":
+                    state.consecutive_missed_markers = 0
                     next_sleep = 0.0
                 else:  # "none" — model forgot the marker
-                    if state.iteration >= _NO_MARKER_GIVE_UP_AFTER:
-                        # Model has had multiple chances; assume done
-                        # rather than burn more iterations.
+                    # 0.2.18 — count CONSECUTIVE misses, not total
+                    # iterations. One good marker resets the counter.
+                    # The old "iter ≥ 3 → die" rule killed loops where
+                    # the model was happily emitting markers but
+                    # forgot once.
+                    state.consecutive_missed_markers += 1
+                    if (
+                        state.consecutive_missed_markers
+                        >= _NO_MARKER_GIVE_UP_AFTER
+                    ):
                         state.record_output(output)
                         state.stop_reason = "model_done_implicit"
                         if on_progress is not None:

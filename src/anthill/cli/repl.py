@@ -2646,17 +2646,30 @@ async def _handle_loop_cmd(
         mode_tag = "self-paced"
 
     async def _one_iteration(state: LoopState) -> str:
-        """Run one ask, return its final_output."""
+        """Run one ask, return its final_output.
+
+        0.2.18 — self-paced mode now flags the nation so:
+          - _compose_system skips the brevity directive (so the model
+            doesn't try to "end with 想展开告诉我" instead of the
+            [[loop:...]] marker)
+          - SELF_PACE_INSTRUCTION lives in the system prompt
+            (authoritative), not appended to the user request
+            (where it was buried under context blocks)
+        """
         ask_request = state.request_with_context()
-        # Self-paced mode: ensure the model sees the marker contract.
-        # We append the instruction every iteration (cheap; model
-        # context is already rebuilt each ask).
+        # Set/unset the loop flag around the ask. Try/finally so a
+        # mid-ask exception still clears it (otherwise the user's
+        # next non-loop ask would silently lose its brevity directive).
         if spec.self_paced:
-            ask_request = ask_request + SELF_PACE_INSTRUCTION
-        result = await nation.ask(
-            ask_request,
-            nation_dir=nation_dir(config.home, nation.name),
-        )
+            nation._in_loop_iteration = True  # type: ignore[attr-defined]
+        try:
+            result = await nation.ask(
+                ask_request,
+                nation_dir=nation_dir(config.home, nation.name),
+            )
+        finally:
+            if spec.self_paced:
+                nation._in_loop_iteration = False  # type: ignore[attr-defined]
         return (result.final_output or "").strip()
 
     def _on_progress(state: LoopState, phase: str) -> None:

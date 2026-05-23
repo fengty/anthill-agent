@@ -357,6 +357,15 @@ class Nation:
         model GENERATING those extra 7 KB. Cap the default; let the
         user opt into long form.
 
+        0.2.18 — when `_in_loop_iteration` is set (the REPL's /loop
+        runner toggles this around each ask), we:
+          - SKIP the brevity directive (its "end with 想展开告诉我"
+            fights the loop's "end with [[loop:...]]" marker contract)
+          - APPEND the loop marker contract as a system-level postlude
+            (system prompt has more authority than appending to the
+            user request — which is what 0.2.2 did and what real-
+            session data showed the model dropping)
+
         Persona is the agent's individual disposition. House style is
         the nation's shared voice. Memory context (0.1.29+) is the
         union of USER.md (what the king has told us about themselves)
@@ -369,7 +378,9 @@ class Nation:
         shouldn't override what the user explicitly asked for.
         """
         parts: list[str] = []
-        parts.append(_BREVITY_DIRECTIVE.strip())
+        in_loop = bool(getattr(self, "_in_loop_iteration", False))
+        if not in_loop:
+            parts.append(_BREVITY_DIRECTIVE.strip())
         if self.memory_context.strip():
             parts.append(self.memory_context.strip())
         if agent.persona:
@@ -377,6 +388,12 @@ class Nation:
         style = self.culture.house_style.strip() if self.culture.house_style else ""
         if style:
             parts.append("Nation house style:\n" + style)
+        if in_loop:
+            # Import locally to avoid a circular import at module
+            # load (loop imports from agent → agent imports from
+            # nation in some test paths).
+            from anthill.core.loop import SELF_PACE_INSTRUCTION
+            parts.append(SELF_PACE_INSTRUCTION.strip())
         return "\n\n".join(parts) or None
 
     async def run(

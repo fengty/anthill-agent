@@ -408,8 +408,12 @@ async def test_self_paced_respects_continue() -> None:
 
 
 @pytest.mark.asyncio
-async def test_self_paced_implicit_done_after_3_missing_markers() -> None:
-    """Model forgot the marker 3 iterations in a row → assume done."""
+async def test_self_paced_implicit_done_after_consecutive_missing_markers() -> None:
+    """0.2.18 — model forgot the marker CONSECUTIVELY past the give-up
+    threshold → assume done. The threshold dropped from 3 (counted by
+    iteration) to 2 (counted by consecutive misses) so we stop sooner
+    on a model that NEVER emits markers, but DON'T stop on a model
+    that just had one slip-up mid-run."""
     spec = LoopSpec(
         interval_seconds=0.0,
         request="x",
@@ -422,7 +426,7 @@ async def test_self_paced_implicit_done_after_3_missing_markers() -> None:
 
     final = await run_loop(spec, on_iteration=no_marker)
     assert final.stop_reason == "model_done_implicit"
-    assert final.iteration == 3  # the give-up threshold
+    assert final.iteration == 2  # 2 consecutive misses
 
 
 @pytest.mark.asyncio
