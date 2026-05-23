@@ -415,6 +415,19 @@ class Nation:
             # nation in some test paths).
             from anthill.core.loop import SELF_PACE_INSTRUCTION
             parts.append(SELF_PACE_INSTRUCTION.strip())
+
+        # 0.2.28 — for model families that regress to chatbot mode
+        # (deepseek/glm/gpt/minimax), append a short tail reinforcement
+        # so the LAST thing in context is "act, don't describe."
+        # Recency bias helps where front-loading alone failed.
+        if not getattr(self, "_exec_disabled", False):
+            from anthill.core.shell import (
+                TOOL_USE_REINFORCEMENT_TAIL,
+                model_needs_strong_tool_reinforcement,
+            )
+            if model_needs_strong_tool_reinforcement(agent.model):
+                parts.append(TOOL_USE_REINFORCEMENT_TAIL.strip())
+
         return "\n\n".join(parts) or None
 
     async def run(
