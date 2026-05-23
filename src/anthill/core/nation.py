@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from anthill.core.agent import Agent, TaskResult
+from anthill.models.base import ModelProvider
 from anthill.core.budget import Budget, BudgetSnapshot, BudgetTracker, snapshot
 from anthill.core.cost_signal import (
     COST_DIMENSION,
@@ -437,6 +438,8 @@ class Nation:
         *,
         forbid: set[str] | None = None,
         on_token=None,
+        on_tool_call=None,
+        on_tool_result=None,
     ) -> TaskResult:
         """Execute one typed task: route, run, judge, deposit pheromone.
 
@@ -448,16 +451,37 @@ class Nation:
         it. When set, the agent uses the provider's streaming API; the
         cumulative text matches the non-streaming path.
 
+        ``on_tool_call`` / ``on_tool_result`` (0.2.30) fire during the
+        native tool_use agent loop. Used by the REPL to render
+        "🐚 running: cmd" / output panels inline as the loop unfolds.
+
         When use_judge is true, the LLM judge replaces the worker's binary
         success score with a [0, 1] quality score. Pheromones now reinforce
         quality rather than mere liveness.
         """
         agent = self.router.assign(task_type, forbid=forbid)
+        # 0.2.30 — opt into agent loop via nation.agentic_mode.
+        # Default OFF: existing flow (single-shot + [[bash:]] markers)
+        # stays unchanged. /agentic on flips citizens into native
+        # tool_use multi-turn mode. Will become default in 0.2.32+
+        # once the provider matrix is fully validated.
+        use_loop = (
+            getattr(self, "agentic_mode", False)
+            and not getattr(self, "_exec_disabled", False)
+            # Provider must implement native tool_use. Old duck-typed
+            # _FakeProvider in tests doesn't — falls back cleanly.
+            and hasattr(agent._get_provider(), "complete_with_messages")
+            and type(agent._get_provider()).complete_with_messages
+                is not ModelProvider.complete_with_messages
+        )
         result = await agent.execute(
             task_type,
             prompt,
             system=self._compose_system(agent),
             on_token=on_token,
+            use_agent_loop=use_loop,
+            on_tool_call=on_tool_call,
+            on_tool_result=on_tool_result,
         )
 
         if self.use_judge and result.success_score > 0:

@@ -124,6 +124,10 @@ class Agent:
         *,
         system: str | None = None,
         on_token: TokenCallback | None = None,
+        use_agent_loop: bool = False,
+        agent_loop_executor=None,
+        on_tool_call=None,
+        on_tool_result=None,
     ) -> TaskResult:
         """Run one task. The nation scores the result and deposits pheromone.
 
@@ -142,6 +146,70 @@ class Agent:
         provider = self._get_provider()
         effective_system = system if system is not None else self.persona
         start = time.perf_counter()
+
+        # 0.2.30 — agent loop path. When enabled, the model runs in
+        # multi-turn ReAct mode with native tool_use. Tool calls
+        # (bash_run / browser_action) execute via `agent_loop_executor`
+        # and their outputs flow back into the next turn. The loop
+        # ends when the model returns no more tool_calls.
+        if use_agent_loop:
+            try:
+                from anthill.core.agent_loop import run_agent_loop
+                from anthill.core.tool_executors import dispatch_tool_call
+                from anthill.core.tools_protocol import builtin_tools
+                from anthill.core.failure import (
+                    FailureReason, classify_attempt,
+                )
+
+                executor = agent_loop_executor or dispatch_tool_call
+                loop_result = await run_agent_loop(
+                    provider,
+                    system=effective_system,
+                    initial_user_message=prompt,
+                    # 0.2.30 — include browser tool natively now that
+                    # the executor is wired.
+                    tools=builtin_tools(include_browser=True),
+                    executor=executor,
+                    on_tool_call=on_tool_call,
+                    on_tool_result=on_tool_result,
+                )
+                duration = time.perf_counter() - start
+                text = loop_result.final_text
+                success = 1.0 if text.strip() else 0.0
+                if loop_result.stopped_for == "max_iters":
+                    success = min(success, 0.5)
+                reason = classify_attempt(
+                    text, exception=None, success_score=success,
+                )
+                if loop_result.stopped_for == "max_iters":
+                    reason = FailureReason.TRUNCATED
+                return TaskResult(
+                    task_id=task_id,
+                    agent_id=self.id,
+                    task_type=task_type,
+                    output=text,
+                    success_score=success,
+                    duration_seconds=duration,
+                    input_tokens=loop_result.input_tokens,
+                    output_tokens=loop_result.output_tokens,
+                    failure_reason=reason.value if reason is not None else None,
+                    truncated=loop_result.stopped_for == "max_iters",
+                )
+            except Exception as e:  # noqa: BLE001 — same handling shape as below
+                duration = time.perf_counter() - start
+                from anthill.core.failure import classify_attempt
+                reason = classify_attempt(
+                    f"[error] {e}", exception=e, success_score=0.0,
+                )
+                return TaskResult(
+                    task_id=task_id,
+                    agent_id=self.id,
+                    task_type=task_type,
+                    output=f"[error in agent loop] {e}",
+                    success_score=0.0,
+                    duration_seconds=duration,
+                    failure_reason=reason.value if reason is not None else None,
+                )
 
         try:
             truncated = False

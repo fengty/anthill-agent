@@ -67,7 +67,7 @@ def _make_nation_with_two_agents() -> Nation:
 class _FakeAgent(Agent):
     """A pass-through agent that just records which agent_id ran it."""
 
-    async def execute(self, task_type, prompt, *, system=None, on_token=None):  # type: ignore[override]
+    async def execute(self, task_type, prompt, *, system=None, on_token=None, **kwargs):  # type: ignore[override]
         import uuid
 
         from anthill.core.agent import TaskResult

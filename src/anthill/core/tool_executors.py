@@ -80,22 +80,59 @@ async def bash_executor(call: ToolCall) -> ToolResult:
     )
 
 
-# Browser executor lives here too — 0.2.30 will wire it to a real
-# BrowserSession via nation._browser_session. Stubbed signature in
-# place so dispatch code is forward-compatible.
+# Module-level browser session — shared across all native browser_action
+# tool calls in this REPL process. Lazily started on first use.
+_browser_session = None
+
+
+async def _get_or_create_browser_session():
+    """Return a started BrowserSession, creating one on first call.
+    Lifetime is process-wide; the chromium dies when anthill exits."""
+    global _browser_session
+    if _browser_session is not None:
+        return _browser_session
+    from anthill.core.browser_drive import BrowserSession
+    sess = BrowserSession(state_dir=None, headless=False)
+    start = await sess.start()
+    if not start.ok:
+        return None
+    _browser_session = sess
+    return _browser_session
+
+
 async def browser_executor(call: ToolCall) -> ToolResult:
-    """Stub for 0.2.30. Right now we tell the model to use the
-    [[browser:]] marker syntax instead. Full native impl when
-    BrowserSession integration lands."""
+    """0.2.30 — Real browser driving via the persistent Playwright
+    session. Mirrors the [[browser:ACTION ARGS]] semantics but via
+    native tool_use."""
+    args = call.arguments or {}
+    action = (args.get("action") or "").strip().lower()
+    arg_str = args.get("args", "") or ""
+    if not action:
+        return ToolResult(
+            tool_call_id=call.id,
+            content="browser_action requires `action` (goto/click/fill/...)",
+            is_error=True,
+        )
+    sess = await _get_or_create_browser_session()
+    if sess is None:
+        return ToolResult(
+            tool_call_id=call.id,
+            content=(
+                "Playwright is not installed. Run /setup browser in the "
+                "REPL or `anthill setup browser` from the shell, then "
+                "retry."
+            ),
+            is_error=True,
+        )
+    br = await sess.execute(action, arg_str)
+    content_lines = [f"# {br.short_summary}"]
+    if br.value is not None and br.value != "":
+        content_lines.append(f"--- result ---")
+        content_lines.append(str(br.value))
     return ToolResult(
         tool_call_id=call.id,
-        content=(
-            "browser_action via native tool_use isn't wired yet "
-            "(0.2.30). Use the [[browser:ACTION ARGS]] marker syntax "
-            "in your text response instead — it executes via the "
-            "same Playwright session."
-        ),
-        is_error=True,
+        content="\n".join(content_lines),
+        is_error=not br.ok,
     )
 
 

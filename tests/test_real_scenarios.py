@@ -195,7 +195,7 @@ def test_retry_actually_forbids_prior_citizens() -> None:
     from anthill.core.scout import Plan, Subtask
 
     class _FakeAgent(Agent):
-        async def execute(self, task_type, prompt, *, system=None, on_token=None):  # type: ignore[override]
+        async def execute(self, task_type, prompt, *, system=None, on_token=None, **kwargs):  # type: ignore[override]
             import uuid
             return TaskResult(
                 task_id=f"t-{uuid.uuid4().hex[:6]}",

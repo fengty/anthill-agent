@@ -4048,6 +4048,34 @@ def run_repl(
                     )
                     stats.queued_retry_request = composed
                     stats.queued_retry_forbid = None
+            elif cmd == "agentic":
+                # 0.2.30 — flip native tool_use multi-turn mode.
+                # Off (default for now): citizens run single-shot
+                # + parse [[bash:]] / [[browser:]] markers post-hoc.
+                # On: provider's complete_with_messages runs the
+                # multi-turn loop with native tool_use, model gets
+                # to see tool outputs and decide next steps.
+                target = rest.strip().lower()
+                if target in ("on", "1", "true", "yes", ""):
+                    nation.agentic_mode = True  # type: ignore[attr-defined]
+                    console.print(
+                        "  [dim]🧠 agentic mode[/dim] [cyan]on[/cyan] "
+                        "[dim]· citizens run multi-turn tool loops "
+                        "(deepseek/openai-compatible providers only — "
+                        "anthropic supported, others fall back to markers)[/dim]"
+                    )
+                elif target in ("off", "0", "false", "no"):
+                    nation.agentic_mode = False  # type: ignore[attr-defined]
+                    console.print(
+                        "  [dim]🧠 agentic mode[/dim] [cyan]off[/cyan] "
+                        "[dim]· single-shot + [[bash:]] markers[/dim]"
+                    )
+                else:
+                    state = "on" if getattr(nation, "agentic_mode", False) else "off"
+                    console.print(
+                        f"  [dim]🧠 agentic mode currently[/dim] [cyan]{state}[/cyan]"
+                        f"  [dim]· usage: /agentic on | /agentic off[/dim]"
+                    )
             elif cmd in ("noexec", "exec"):
                 # 0.2.19 — toggle shell execution. By default citizens
                 # can emit [[bash:CMD]] and the REPL runs it. `/noexec`

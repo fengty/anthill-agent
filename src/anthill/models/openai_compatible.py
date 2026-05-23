@@ -109,22 +109,29 @@ class OpenAICompatibleProvider(ModelProvider):
         max_tokens: int = 1024,
         temperature: float = 0.7,
     ) -> ModelResponse:
-        """0.2.29 — multi-turn + native tool_use for OpenAI-compatible hosts.
+        """0.2.29/0.2.30 — multi-turn + native tool_use.
 
-        Wire format (OpenAI / DeepSeek / Minimax / Moonshot / Qwen):
-          - tools as `tools` array of {type: function, function: {...}}
-          - tool calls in response.choices[0].message.tool_calls
-            (each has id, function.name, function.arguments JSON-encoded)
-          - tool results submitted as messages with role="tool",
-            tool_call_id=..., content=...
-
-        Anthropic backend ALSO routes here for now (it supports the
-        OpenAI-compatible chat/completions endpoint via the
-        anthropic-compat layer), but the proper Anthropic
-        Messages-API path is 0.2.30 work — for now Anthropic users
-        fall through to the OpenAI-style call which their endpoint
-        accepts.
+        Dispatches by provider_name:
+          - anthropic → Anthropic Messages API (tool_use content blocks)
+          - else → OpenAI-style chat/completions (tool_calls field)
         """
+        if self.provider_name == "anthropic":
+            return await self._anthropic_with_tools(
+                messages, system, tools, max_tokens, temperature,
+            )
+        return await self._openai_with_tools(
+            messages, system, tools, max_tokens, temperature,
+        )
+
+    async def _openai_with_tools(
+        self,
+        messages: list,
+        system: str | None,
+        tools: list | None,
+        max_tokens: int,
+        temperature: float,
+    ) -> ModelResponse:
+        """OpenAI / DeepSeek / Minimax / Moonshot / Qwen path."""
         from anthill.core.tools_protocol import ToolCall, ToolSpec
 
         # Always prepend system as the first message when provided.
@@ -196,6 +203,139 @@ class OpenAICompatibleProvider(ModelProvider):
             latency_ms=latency_ms,
             raw=data,
             finish_reason=choice.get("finish_reason"),
+            tool_calls=tool_calls_list,
+        )
+
+    async def _anthropic_with_tools(
+        self,
+        messages: list,
+        system: str | None,
+        tools: list | None,
+        max_tokens: int,
+        temperature: float,
+    ) -> ModelResponse:
+        """0.2.30 — Anthropic Messages API native tool_use path.
+
+        Wire format differs significantly from OpenAI:
+          - Top-level `system` field (NOT a system message in `messages`)
+          - Tools shape: {name, description, input_schema} (no nested function)
+          - Tool calls come as `tool_use` content blocks in the response
+          - Tool results submitted as user messages with
+            content=[{type: tool_result, tool_use_id, content}]
+
+        We translate the OpenAI-style messages we receive (the loop
+        emits OpenAI-shape internally) into Anthropic's content-block
+        format on the way in, and back on the way out.
+        """
+        from anthill.core.tools_protocol import ToolCall, ToolSpec
+
+        # Translate OpenAI-shape messages to Anthropic content blocks.
+        anthropic_msgs: list[dict[str, Any]] = []
+        for m in messages:
+            role = m.get("role", "user")
+            if role == "system":
+                # Should not normally appear (caller passes system kwarg)
+                # but if it does, fold into the system field.
+                if system is None:
+                    system = m.get("content", "")
+                continue
+            if role == "tool":
+                # OpenAI tool message → Anthropic user message with
+                # tool_result content block.
+                anthropic_msgs.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": m.get("tool_call_id", ""),
+                        "content": m.get("content", ""),
+                    }],
+                })
+                continue
+            if role == "assistant" and m.get("tool_calls"):
+                # OpenAI assistant w/ tool_calls → Anthropic assistant
+                # with tool_use content blocks.
+                blocks: list[dict[str, Any]] = []
+                if m.get("content"):
+                    blocks.append({"type": "text", "text": m["content"]})
+                for tc in m["tool_calls"]:
+                    fn = tc.get("function", {})
+                    args_str = fn.get("arguments", "{}")
+                    try:
+                        args_obj = (
+                            json.loads(args_str)
+                            if isinstance(args_str, str)
+                            else dict(args_str)
+                        )
+                    except (ValueError, TypeError):
+                        args_obj = {}
+                    blocks.append({
+                        "type": "tool_use",
+                        "id": tc.get("id", ""),
+                        "name": fn.get("name", ""),
+                        "input": args_obj,
+                    })
+                anthropic_msgs.append({"role": "assistant", "content": blocks})
+                continue
+            # Plain user/assistant text message — pass through.
+            anthropic_msgs.append({
+                "role": role,
+                "content": m.get("content", ""),
+            })
+
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": anthropic_msgs,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if system:
+            payload["system"] = system
+        if tools:
+            payload["tools"] = [
+                t.to_anthropic_format() if isinstance(t, ToolSpec) else t
+                for t in tools
+            ]
+
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        url = f"{self.base_url}/messages"
+
+        start = time.perf_counter()
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+        latency_ms = (time.perf_counter() - start) * 1000
+
+        # Parse the response. Anthropic returns content as a list of
+        # blocks; text blocks contribute to .text, tool_use blocks
+        # contribute to .tool_calls.
+        text_parts: list[str] = []
+        tool_calls_list: list[ToolCall] = []
+        for block in data.get("content", []) or []:
+            btype = block.get("type")
+            if btype == "text":
+                text_parts.append(block.get("text", ""))
+            elif btype == "tool_use":
+                tool_calls_list.append(
+                    ToolCall(
+                        id=block.get("id", f"call_{len(tool_calls_list)}"),
+                        name=block.get("name", ""),
+                        arguments=block.get("input", {}) or {},
+                    )
+                )
+        usage = data.get("usage", {}) or {}
+        return ModelResponse(
+            text="".join(text_parts),
+            model=self.model,
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            latency_ms=latency_ms,
+            raw=data,
+            finish_reason=data.get("stop_reason"),
             tool_calls=tool_calls_list,
         )
 
