@@ -222,6 +222,8 @@ async def _run_one_subtask(
     on_progress: ProgressCallback | None = None,
     budget: "BudgetTracker | None" = None,
     initial_forbid: set[str] | None = None,
+    on_tool_call=None,
+    on_tool_result=None,
 ) -> None:
     """Execute one subtask with retries; mutate outcomes in place.
 
@@ -362,16 +364,28 @@ async def _run_one_subtask(
                 # Only pass on_token when we actually have one — keeps
                 # backward compatibility with test mocks of nation.run
                 # that pre-date v0.1.10 streaming.
+                # Only pass on_tool_call/on_tool_result when the
+                # caller actually wired them. Test mocks of nation.run
+                # may pre-date 0.2.33 and not accept those kwargs.
+                extra_kwargs: dict = {}
+                if on_tool_call is not None:
+                    extra_kwargs["on_tool_call"] = on_tool_call
+                if on_tool_result is not None:
+                    extra_kwargs["on_tool_result"] = on_tool_result
                 if on_token is not None:
                     result = await nation.run(
                         subtask.task_type,
                         this_prompt,
                         forbid=forbid,
                         on_token=on_token,
+                        **extra_kwargs,
                     )
                 else:
                     result = await nation.run(
-                        subtask.task_type, this_prompt, forbid=forbid
+                        subtask.task_type,
+                        this_prompt,
+                        forbid=forbid,
+                        **extra_kwargs,
                     )
             except RuntimeError:
                 break
@@ -472,6 +486,8 @@ async def execute_plan(
     resume_state: dict[int, SubtaskOutcome] | None = None,
     budget: "BudgetTracker | None" = None,
     initial_forbid: set[str] | None = None,
+    on_tool_call=None,
+    on_tool_result=None,
 ) -> list[SubtaskOutcome]:
     """Run a Plan with retries, citizen rotation, and graceful skipping.
 
@@ -545,6 +561,8 @@ async def execute_plan(
                         on_progress,
                         budget,
                         initial_forbid=initial_forbid,
+                        on_tool_call=on_tool_call,
+                        on_tool_result=on_tool_result,
                     )
                     for i in pending
                 )
@@ -564,6 +582,8 @@ async def execute_plan(
                 on_progress,
                 budget,
                 initial_forbid=initial_forbid,
+                on_tool_call=on_tool_call,
+                on_tool_result=on_tool_result,
             )
 
     return [outcomes[i] for i in range(len(plan.subtasks))]

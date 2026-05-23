@@ -582,6 +582,8 @@ class Nation:
         on_progress=None,
         on_clarify=None,
         on_plan=None,
+        on_tool_call=None,
+        on_tool_result=None,
         resume: InflightAsk | None = None,
         nation_dir: Path | None = None,
         budget: Budget | None = None,
@@ -964,6 +966,8 @@ class Nation:
             resume_state=resume_state,
             budget=tracker,
             initial_forbid=forbid,
+            on_tool_call=on_tool_call,
+            on_tool_result=on_tool_result,
         )
 
         # Self-correction loop. When a subtask fails terminally, ask Scout

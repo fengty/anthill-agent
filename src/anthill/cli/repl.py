@@ -1747,12 +1747,72 @@ async def _handle_ask(
             thinking_state["shown"] = True
         except Exception:  # noqa: BLE001 — non-TTY may not support spinner
             pass
+        # 0.2.33 — surface agent-loop tool calls live. Without this the
+        # multi-turn loop is invisible to the user (model emits 3 tool
+        # calls inside one subtask, user just sees a long silent pause).
+        # The handlers stop the "thinking" spinner so the live tool
+        # banner is what the user reads.
+        def _on_tool_call_live(tc):
+            _stop_thinking_indicator()
+            args = tc.arguments or {}
+            if tc.name == "bash_run":
+                cmd = args.get("cmd", "")
+                console.print(
+                    f"  [bold cyan]🐚 running:[/bold cyan] [magenta]{cmd}[/magenta]"
+                )
+            elif tc.name == "browser_action":
+                action = args.get("action", "")
+                a = args.get("args", "")
+                console.print(
+                    f"  [bold cyan]🌐 browser:[/bold cyan] "
+                    f"[magenta]{action}[/magenta] [dim]{a[:80]}[/dim]"
+                )
+            elif tc.name == "delegate_task":
+                tt = args.get("task_type", "")
+                console.print(
+                    f"  [bold cyan]📨 delegate:[/bold cyan] "
+                    f"[magenta]{tt}[/magenta]"
+                )
+            elif tc.name and tc.name.startswith("kanban_"):
+                verb = tc.name.replace("kanban_", "")
+                console.print(
+                    f"  [bold cyan]📋 kanban {verb}[/bold cyan]"
+                )
+            else:
+                console.print(
+                    f"  [bold cyan]→ tool:[/bold cyan] [magenta]{tc.name}[/magenta]"
+                )
+
+        def _on_tool_result_live(tc, tr):
+            if tr.is_error:
+                head = (tr.content or "").splitlines()[0] if tr.content else ""
+                console.print(f"  [red]✗ {head[:120]}[/red]")
+            else:
+                body = (tr.content or "").strip()
+                if not body:
+                    console.print("  [green]→ ok[/green]")
+                else:
+                    # For long outputs, show first ~5 lines + a count.
+                    lines = body.splitlines()
+                    if len(lines) <= 5 and len(body) <= 400:
+                        for ln in lines:
+                            console.print(f"    [dim]{ln}[/dim]")
+                    else:
+                        for ln in lines[:3]:
+                            console.print(f"    [dim]{ln}[/dim]")
+                        console.print(
+                            f"    [dim]… ({len(lines)} lines, "
+                            f"{len(body)} chars total)[/dim]"
+                        )
+
         try:
             result = await nation.ask(
                 effective_request,
                 on_progress=on_progress,
                 on_clarify=clarify_for_this_ask,  # v0.9.0; 0.1.53 guard
                 on_plan=on_plan,  # 0.2.13: always (overview + optional review)
+                on_tool_call=_on_tool_call_live,  # 0.2.33
+                on_tool_result=_on_tool_result_live,  # 0.2.33
                 nation_dir=nation_dir(config.home, nation.name),
                 forbid=forbid,  # 0.2.14 — /retry threads ban set here
             )
