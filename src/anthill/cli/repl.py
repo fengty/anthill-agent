@@ -3067,11 +3067,15 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
         TestSession,
         build_execution_prompt,
         build_fix_prompt,
+        list_sessions,
         load_requirement,
+        load_session_json,
         parse_cases_response,
         parse_fix_verdict,
         parse_verdict,
+        resolve_session,
         write_report,
+        write_session_json,
     )
 
     # 0.2.35 — `--fix [N]` flag parses out before source resolution.
@@ -3083,6 +3087,41 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
         fix_max_attempts = int(fix_match.group(1)) if fix_match.group(1) else 2
         # Strip the flag from source.
         raw = re.sub(r"\s*--fix(?:\s+\d+)?\b", "", raw).strip()
+
+    # 0.2.36 — `/test history` lists past sessions; doesn't run anything.
+    if raw == "history" or raw.startswith("history "):
+        limit_token = raw[8:].strip() if raw.startswith("history ") else ""
+        try:
+            limit = int(limit_token) if limit_token else 15
+        except ValueError:
+            limit = 15
+        metas = list_sessions(_nd(config.home, nation.name), limit=limit)
+        if not metas:
+            console.print(
+                "  [dim]no test sessions yet. run [cyan]/test \"...\"[/cyan] first.[/dim]"
+            )
+            return None
+        console.print(
+            f"  [bold]recent test sessions[/bold] [dim](showing {len(metas)})[/dim]"
+        )
+        for m in metas:
+            icon = "[green]✓[/green]" if m.failed == 0 else "[red]✗[/red]"
+            ago = _time.time() - m.started_at
+            ago_str = (
+                f"{ago/3600:.1f}h ago" if ago > 3600
+                else f"{ago/60:.0f}m ago" if ago > 60
+                else f"{int(ago)}s ago"
+            )
+            console.print(
+                f"  {icon} [cyan]{m.id}[/cyan] · "
+                f"{m.passed}/{m.total} pass · "
+                f"[dim]{ago_str}[/dim]"
+            )
+            console.print(f"      [dim]{m.requirement_preview}[/dim]")
+        console.print(
+            "  [dim]/retest <id> [--fix N]   rerun failures from one session[/dim]"
+        )
+        return None
 
     source = raw
     if not source:
@@ -3348,9 +3387,11 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
 
         session.ended_at = _time.time()
 
-        # Step 4: write report.
+        # Step 4: write report (markdown for humans + JSON for /retest).
         try:
-            report_path = write_report(session, _nd(config.home, nation.name))
+            nd = _nd(config.home, nation.name)
+            report_path = write_report(session, nd)
+            json_path = write_session_json(session, nd)
             console.print()
             console.print(
                 f"  [bold green]✓ done.[/bold green] "
@@ -3359,6 +3400,297 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
             )
             console.print(
                 f"  [dim]report:[/dim] [cyan]{report_path}[/cyan]"
+            )
+            console.print(
+                f"  [dim]session:[/dim] [cyan]{json_path.stem}[/cyan] "
+                f"[dim](use [cyan]/retest {json_path.stem}[/cyan] to rerun failures)[/dim]"
+            )
+        except Exception as e:  # noqa: BLE001
+            console.print(f"  [red]✗ report write failed: {e}[/red]")
+
+    return _run()
+
+
+def _handle_retest_cmd(
+    rest: str, nation: Nation, config: AnthillConfig, stats: SessionStats,
+):
+    """0.2.36 — rerun failed cases from a past /test session.
+
+    Syntax:
+      /retest                      → latest session
+      /retest <id>                 → specific session (prefix match ok)
+      /retest [id] --fix N         → also auto-fix failures (N attempts)
+      /retest [id] --all           → rerun ALL cases, not just failures
+    """
+    import re
+    import time as _time
+    from anthill.core.persistence import nation_dir as _nd
+    from anthill.core.qa import (
+        FixAttempt,
+        TestResult,
+        build_execution_prompt,
+        build_fix_prompt,
+        load_session_json,
+        parse_fix_verdict,
+        parse_verdict,
+        resolve_session,
+        write_report,
+        write_session_json,
+    )
+
+    raw = rest.strip()
+    # Pull out flags.
+    fix_max_attempts = 0
+    if re.search(r"\s--fix(?:\s+\d+)?\b", " " + raw + " "):
+        m = re.search(r"--fix(?:\s+(\d+))?", raw)
+        fix_max_attempts = int(m.group(1)) if m and m.group(1) else 2
+        raw = re.sub(r"\s*--fix(?:\s+\d+)?\b", "", raw).strip()
+    rerun_all = False
+    if re.search(r"\s--all\b", " " + raw + " "):
+        rerun_all = True
+        raw = re.sub(r"\s*--all\b", "", raw).strip()
+
+    selector = raw or None
+
+    nd = _nd(config.home, nation.name)
+    path = resolve_session(nd, selector)
+    if path is None:
+        console.print(
+            "  [yellow]no test session found.[/yellow] "
+            "[dim]use [cyan]/test history[/cyan] to list, or "
+            "[cyan]/test \"...\"[/cyan] to create one.[/dim]"
+        )
+        return None
+
+    try:
+        session = load_session_json(path)
+    except Exception as e:  # noqa: BLE001
+        console.print(f"  [red]✗ couldn't load {path.name}: {e}[/red]")
+        return None
+
+    # Decide which results to rerun.
+    if rerun_all:
+        to_rerun = list(session.results)
+    else:
+        to_rerun = [
+            r for r in session.results
+            if r.status in ("failed", "errored")
+        ]
+
+    if not to_rerun:
+        console.print(
+            f"  [green]✓[/green] session [cyan]{path.stem}[/cyan] has no "
+            "failures to rerun. [dim](--all to rerun everything)[/dim]"
+        )
+        return None
+
+    console.print(
+        f"  [bold cyan]🔁 retest[/bold cyan] [dim]session[/dim] "
+        f"[cyan]{path.stem}[/cyan]"
+    )
+    console.print(
+        f"  [dim]rerunning {len(to_rerun)} case(s)"
+        + (f" with up to {fix_max_attempts} fix attempt(s)" if fix_max_attempts else "")
+        + "[/dim]"
+    )
+
+    async def _run() -> None:
+        for tr in to_rerun:
+            c = tr.case
+            console.print()
+            console.print(
+                f"  [bold]▶ #{c.id} {c.name}[/bold] "
+                f"[dim](previously: {tr.status})[/dim]"
+            )
+            t0 = _time.perf_counter()
+            actions = [0]
+            try:
+                exec_prompt = build_execution_prompt(c)
+                run_result = await nation.run(
+                    "qa_execute",
+                    exec_prompt,
+                    on_tool_call=lambda _tc: actions.__setitem__(0, actions[0] + 1),
+                )
+                narrative = run_result.output or ""
+                status, reason = parse_verdict(narrative)
+                tr.status = status
+                tr.narrative = narrative
+                tr.duration_seconds = _time.perf_counter() - t0
+                tr.actions_taken = actions[0]
+                tr.error = reason if status != "passed" else None
+            except Exception as e:  # noqa: BLE001
+                tr.status = "errored"
+                tr.error = f"{type(e).__name__}: {e}"
+                tr.duration_seconds = _time.perf_counter() - t0
+
+            icon = {
+                "passed": "[green]✅ PASS[/green]",
+                "failed": "[red]❌ FAIL[/red]",
+                "errored": "[yellow]⚠️ ERROR[/yellow]",
+            }.get(tr.status, "?")
+            tail = f" — {tr.error}" if tr.error else ""
+            console.print(
+                f"  {icon} [dim]({tr.duration_seconds:.1f}s, "
+                f"{tr.actions_taken} tool call(s))[/dim]{tail}"
+            )
+
+            # Fix loop (mirror /test --fix behavior).
+            if fix_max_attempts > 0 and tr.status in ("failed", "errored"):
+                console.print(f"  [bold yellow]🔧 fix-loop[/bold yellow] for #{c.id}")
+                for attempt in range(1, fix_max_attempts + 1):
+                    console.print(
+                        f"    [dim]attempt {attempt}/{fix_max_attempts}[/dim]"
+                    )
+                    fix_t0 = _time.perf_counter()
+                    try:
+                        fix_run = await nation.run(
+                            "qa_fix", build_fix_prompt(tr),
+                        )
+                        fix_status, fix_summary = parse_fix_verdict(
+                            fix_run.output or ""
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        fix_status, fix_summary = "unknown", str(e)
+
+                    if fix_status == "unfixable":
+                        console.print(f"    [red]🚫 unfixable:[/red] {fix_summary[:80]}")
+                        tr.fix_attempts.append(FixAttempt(
+                            attempt=attempt, fix_status="unfixable",
+                            fix_summary=fix_summary,
+                            rerun_status="skipped",
+                            duration_seconds=_time.perf_counter() - fix_t0,
+                        ))
+                        break
+                    if fix_status == "unknown":
+                        console.print(f"    [yellow]❓ no FIXED line:[/yellow] {fix_summary[:80]}")
+                        tr.fix_attempts.append(FixAttempt(
+                            attempt=attempt, fix_status="unknown",
+                            fix_summary=fix_summary,
+                            rerun_status="skipped",
+                            duration_seconds=_time.perf_counter() - fix_t0,
+                        ))
+                        continue
+
+                    console.print(f"    [green]🔧 fixed:[/green] {fix_summary[:80]}")
+                    try:
+                        rerun_run = await nation.run(
+                            "qa_execute", build_execution_prompt(c),
+                        )
+                        rerun_narrative = rerun_run.output or ""
+                        rerun_status, rerun_reason = parse_verdict(rerun_narrative)
+                    except Exception as e:  # noqa: BLE001
+                        rerun_status, rerun_reason = "errored", str(e)
+                        rerun_narrative = ""
+
+                    tr.fix_attempts.append(FixAttempt(
+                        attempt=attempt, fix_status="fixed",
+                        fix_summary=fix_summary,
+                        rerun_status=rerun_status,
+                        rerun_narrative=rerun_narrative,
+                        duration_seconds=_time.perf_counter() - fix_t0,
+                    ))
+                    if rerun_status == "passed":
+                        tr.status = "passed"
+                        tr.error = None
+                        tr.narrative += (
+                            f"\n\n--- after fix (retest attempt {attempt}) ---\n"
+                            + rerun_narrative
+                        )
+                        console.print(
+                            f"    [green]✅ rerun PASS[/green] after attempt {attempt}"
+                        )
+                        break
+                    else:
+                        console.print(
+                            f"    [red]❌ rerun still {rerun_status}:[/red] "
+                            f"{rerun_reason[:80]}"
+                        )
+                        tr.narrative = rerun_narrative
+                        tr.error = rerun_reason
+
+        session.ended_at = _time.time()
+
+        # Write a NEW report (and session JSON) for the retest.
+        # We don't overwrite the original — comparing old vs new
+        # is the user's value-add. Slug gets "-retest" suffix.
+        try:
+            from anthill.core.qa import _session_slug
+            session_for_save = session
+            # Override slug logic by mutating a copy of the first
+            # case name; simplest is to just write to a new file
+            # path manually.
+            from pathlib import Path as _P
+            stamp = _time.strftime(
+                "%Y%m%d-%H%M%S", _time.localtime(session.started_at)
+            )
+            slug = _session_slug(session)
+            d = nd / "test_reports"
+            md_path = d / f"{stamp}-{slug}-retest.md"
+            json_path = d / f"{stamp}-{slug}-retest.json"
+            from anthill.core.qa import format_report
+            d.mkdir(parents=True, exist_ok=True)
+            md_path.write_text(format_report(session), encoding="utf-8")
+            # JSON via write_session_json's payload but to our custom path.
+            # Simpler: directly call write_session_json (it derives the
+            # path from session) but bump started_at by 1ms so the slug
+            # differs from the original. Less hacky: just inline the
+            # serialization here.
+            import json as _json
+            payload = {
+                "id": f"{stamp}-{slug}-retest",
+                "requirement": session.requirement,
+                "nation_name": session.nation_name,
+                "started_at": session.started_at,
+                "ended_at": session.ended_at,
+                "cases": [
+                    {
+                        "id": c.id, "name": c.name,
+                        "prerequisites": c.prerequisites,
+                        "steps": c.steps, "expected": c.expected,
+                        "verification": c.verification,
+                    }
+                    for c in session.cases
+                ],
+                "results": [
+                    {
+                        "case_id": r.case.id,
+                        "status": r.status,
+                        "narrative": r.narrative,
+                        "duration_seconds": r.duration_seconds,
+                        "actions_taken": r.actions_taken,
+                        "evidence": list(r.evidence),
+                        "error": r.error,
+                        "fix_attempts": [
+                            {
+                                "attempt": fa.attempt,
+                                "fix_status": fa.fix_status,
+                                "fix_summary": fa.fix_summary,
+                                "rerun_status": fa.rerun_status,
+                                "rerun_narrative": fa.rerun_narrative,
+                                "duration_seconds": fa.duration_seconds,
+                            }
+                            for fa in r.fix_attempts
+                        ],
+                    }
+                    for r in session.results
+                ],
+            }
+            json_path.write_text(
+                _json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            console.print()
+            console.print(
+                f"  [bold green]✓ retest done.[/bold green] "
+                f"{session.passed}/{session.total} passed · "
+                f"{session.failed} failed."
+            )
+            console.print(
+                f"  [dim]report:[/dim] [cyan]{md_path}[/cyan]"
+            )
+            console.print(
+                f"  [dim]session:[/dim] [cyan]{json_path.stem}[/cyan]"
             )
         except Exception as e:  # noqa: BLE001
             console.print(f"  [red]✗ report write failed: {e}[/red]")
@@ -4434,6 +4766,14 @@ def run_repl(
                 # → run each via agentic citizen → markdown report.
                 # Source: inline text, @file, or http URL.
                 _maybe_async = _handle_test_cmd(rest, nation, config, stats)
+                if _maybe_async is not None:
+                    asyncio.run(_maybe_async)
+            elif cmd == "retest":
+                # 0.2.36 — rerun failures from a past test session.
+                # /retest                → latest session
+                # /retest <id>           → specific session (prefix ok)
+                # /retest [id] --fix N   → also auto-fix failures
+                _maybe_async = _handle_retest_cmd(rest, nation, config, stats)
                 if _maybe_async is not None:
                     asyncio.run(_maybe_async)
             elif cmd == "kanban":

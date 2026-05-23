@@ -469,17 +469,211 @@ def format_report(session: TestSession) -> str:
     return "\n".join(lines)
 
 
-def write_report(session: TestSession, nation_dir: Path) -> Path:
-    """Write the markdown report and return the path."""
-    d = reports_dir(nation_dir)
-    d.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(session.started_at))
-    # Slug from first case name or "test-session".
+def _session_slug(session: "TestSession") -> str:
+    """Filesystem-safe slug derived from the first case name or
+    requirement. Used as suffix on report + json filenames."""
     if session.cases:
         slug_src = session.cases[0].name
     else:
         slug_src = session.requirement[:40] or "test-session"
     slug = re.sub(r"[^\w一-鿿]+", "-", slug_src).strip("-").lower()[:30]
-    path = d / f"{stamp}-{slug or 'session'}.md"
+    return slug or "session"
+
+
+def _session_id(session: "TestSession") -> str:
+    """Stable identifier: '<YYYYMMDD-HHMMSS>-<slug>'."""
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(session.started_at))
+    return f"{stamp}-{_session_slug(session)}"
+
+
+def write_report(session: "TestSession", nation_dir: Path) -> Path:
+    """Write the markdown report and return the path."""
+    d = reports_dir(nation_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{_session_id(session)}.md"
     path.write_text(format_report(session), encoding="utf-8")
     return path
+
+
+# --- 0.2.36 — JSON persistence + rehydration ------------------------
+
+
+def write_session_json(session: "TestSession", nation_dir: Path) -> Path:
+    """Persist the structured session next to the markdown report.
+
+    Markdown is for humans; JSON is so /retest can rehydrate the
+    cases (with their full execution narrative + verdicts) into
+    Python and re-run failures without re-running the whole flow."""
+    d = reports_dir(nation_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{_session_id(session)}.json"
+    payload = {
+        "id": _session_id(session),
+        "requirement": session.requirement,
+        "nation_name": session.nation_name,
+        "started_at": session.started_at,
+        "ended_at": session.ended_at,
+        "cases": [
+            {
+                "id": c.id,
+                "name": c.name,
+                "prerequisites": c.prerequisites,
+                "steps": c.steps,
+                "expected": c.expected,
+                "verification": c.verification,
+            }
+            for c in session.cases
+        ],
+        "results": [
+            {
+                "case_id": r.case.id,
+                "status": r.status,
+                "narrative": r.narrative,
+                "duration_seconds": r.duration_seconds,
+                "actions_taken": r.actions_taken,
+                "evidence": list(r.evidence),
+                "error": r.error,
+                "fix_attempts": [
+                    {
+                        "attempt": fa.attempt,
+                        "fix_status": fa.fix_status,
+                        "fix_summary": fa.fix_summary,
+                        "rerun_status": fa.rerun_status,
+                        "rerun_narrative": fa.rerun_narrative,
+                        "duration_seconds": fa.duration_seconds,
+                    }
+                    for fa in r.fix_attempts
+                ],
+            }
+            for r in session.results
+        ],
+    }
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return path
+
+
+def load_session_json(path: Path) -> "TestSession":
+    """Rehydrate a TestSession from JSON. Raises FileNotFoundError /
+    ValueError on bad input — caller handles."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    cases = [
+        TestCase(
+            id=c["id"],
+            name=c["name"],
+            prerequisites=c.get("prerequisites", ""),
+            steps=list(c.get("steps", [])),
+            expected=c.get("expected", ""),
+            verification=c.get("verification", ""),
+        )
+        for c in data.get("cases", [])
+    ]
+    by_id = {c.id: c for c in cases}
+    results = []
+    for r in data.get("results", []):
+        case = by_id.get(r["case_id"])
+        if case is None:
+            continue
+        results.append(TestResult(
+            case=case,
+            status=r["status"],
+            narrative=r.get("narrative", ""),
+            duration_seconds=r.get("duration_seconds", 0.0),
+            actions_taken=r.get("actions_taken", 0),
+            evidence=list(r.get("evidence", [])),
+            error=r.get("error"),
+            fix_attempts=[
+                FixAttempt(
+                    attempt=fa["attempt"],
+                    fix_status=fa["fix_status"],
+                    fix_summary=fa.get("fix_summary", ""),
+                    rerun_status=fa.get("rerun_status", "unknown"),
+                    rerun_narrative=fa.get("rerun_narrative", ""),
+                    duration_seconds=fa.get("duration_seconds", 0.0),
+                )
+                for fa in r.get("fix_attempts", [])
+            ],
+        ))
+    return TestSession(
+        requirement=data.get("requirement", ""),
+        cases=cases,
+        results=results,
+        started_at=data.get("started_at", time.time()),
+        ended_at=data.get("ended_at"),
+        nation_name=data.get("nation_name", ""),
+    )
+
+
+@dataclass
+class SessionMeta:
+    """Compact descriptor for the /test history listing."""
+
+    id: str           # YYYYMMDD-HHMMSS-slug (filename stem)
+    path: Path        # the .json file
+    started_at: float
+    requirement_preview: str
+    total: int
+    passed: int
+    failed: int
+
+
+def list_sessions(nation_dir: Path, limit: int = 30) -> list[SessionMeta]:
+    """List recent test sessions, newest first. Reads JSON files
+    in reports_dir/ — robust to partial files (skips unparseable)."""
+    d = reports_dir(nation_dir)
+    if not d.exists():
+        return []
+    metas: list[SessionMeta] = []
+    for path in sorted(d.glob("*.json"), reverse=True)[:limit]:
+        try:
+            sess = load_session_json(path)
+        except Exception:  # noqa: BLE001 — skip corrupt files
+            continue
+        metas.append(SessionMeta(
+            id=path.stem,
+            path=path,
+            started_at=sess.started_at,
+            requirement_preview=sess.requirement.strip().splitlines()[0][:80]
+                if sess.requirement.strip() else "(no requirement)",
+            total=len(sess.results),
+            passed=sum(1 for r in sess.results if r.status == "passed"),
+            failed=sum(1 for r in sess.results if r.status == "failed"),
+        ))
+    return metas
+
+
+def resolve_session(
+    nation_dir: Path,
+    selector: Optional[str] = None,
+) -> Optional[Path]:
+    """Find a session JSON to act on.
+
+      - selector=None → most recent session
+      - selector="latest" / "last" → same as None
+      - selector=<id> → exact filename stem match
+      - selector=<prefix> → match by prefix of id (e.g. "20260524")
+
+    Returns the JSON path, or None if no match.
+    """
+    d = reports_dir(nation_dir)
+    if not d.exists():
+        return None
+    sessions = sorted(d.glob("*.json"), reverse=True)
+    if not sessions:
+        return None
+    if selector is None or selector.lower() in ("latest", "last", "recent"):
+        return sessions[0]
+    selector = selector.strip()
+    # Exact match first.
+    for p in sessions:
+        if p.stem == selector:
+            return p
+    # Prefix match.
+    matches = [p for p in sessions if p.stem.startswith(selector)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        return matches[0]  # most recent prefix match
+    return None
