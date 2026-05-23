@@ -308,6 +308,44 @@ _BASH_FENCE_RE = re.compile(
 )
 
 
+def build_interpretation_prompt(
+    user_question: str,
+    runs: list[tuple[str, "ShellResult"]],
+) -> str:
+    """0.2.24 — assemble a prompt asking the model to interpret
+    shell outputs against the user's question.
+
+    `runs` is a list of (command_as_emitted, ShellResult) tuples in
+    execution order. We feed stdout + exit code + stderr (truncated
+    for prompt budget) and ask for a tight 1-2 sentence read.
+    """
+    parts = [f"The user asked: {user_question.strip()}", ""]
+    parts.append("I ran these commands and got these results:")
+    for cmd, res in runs:
+        parts.append("")
+        parts.append(f"$ {res.command}")
+        # Cap stdout to keep the interp prompt cheap.
+        if res.stdout.strip():
+            parts.append(res.stdout[:1500].rstrip())
+        else:
+            parts.append("(no stdout)")
+        if res.stderr.strip():
+            parts.append(f"stderr: {res.stderr[:500].rstrip()}")
+        if res.timed_out:
+            parts.append(f"(TIMED OUT after {res.duration_seconds:.1f}s)")
+        else:
+            parts.append(f"(exit {res.returncode})")
+    parts.append("")
+    parts.append(
+        "Now give a 1-2 sentence interpretation of what these "
+        "results mean FOR THE USER'S QUESTION. Plain prose. No "
+        "markup, no preamble, no 'based on the output above', no "
+        "list of what each command did — just the practical "
+        "answer they were looking for."
+    )
+    return "\n".join(parts)
+
+
 def extract_fence_candidates(text: str) -> list[str]:
     """0.2.23 — find shell-command candidates in `````bash````` fences.
 

@@ -2239,11 +2239,32 @@ async def _handle_ask(
             f"[dim](use [cyan]/history show {sources[0][:8]}[/cyan] to inspect)[/dim]"
         )
     console.print()
-    _print_final_output(
+    shell_runs = _print_final_output(
         result.final_output,
         exec_enabled=not getattr(nation, "_exec_disabled", False),
     )
     console.print()
+
+    # 0.2.24 — when [[bash:]] blocks actually ran, feed the outputs
+    # back to the model for a 1-2 sentence interpretation. The model
+    # writing prose AROUND the marker was prediction; this is real
+    # interpretation of what the command actually produced.
+    if shell_runs and not getattr(nation, "_exec_disabled", False):
+        try:
+            from anthill.core.shell import build_interpretation_prompt
+            interp_prompt = build_interpretation_prompt(request, shell_runs)
+            # Run via nation.run with a dedicated task_type so
+            # pheromone learns "this model interprets shell well."
+            interp_result = await nation.run(
+                task_type="interpret_shell",
+                prompt=interp_prompt,
+            )
+            interp_text = str(interp_result.output).strip()
+            if interp_text:
+                console.print(f"  [bold cyan]💬[/bold cyan] {interp_text}")
+                console.print()
+        except Exception:  # noqa: BLE001 — interp must never break the ask
+            pass
 
     # 0.2.23 — model wrote ```bash``` instead of [[bash:]]? Offer to
     # run the candidate via Enter-to-execute next turn. Don't auto-
@@ -2427,15 +2448,21 @@ def _execute_literal_command(
         pass
 
 
-def _print_final_output(text: str, *, exec_enabled: bool = True) -> None:
+def _print_final_output(text: str, *, exec_enabled: bool = True) -> list[tuple[str, object]]:
     """0.2.4 — render final output as rich Markdown.
     0.2.19 — also detect `[[bash:CMD]]` markers, execute them, and
     interleave the captured output inline with the narration.
+    0.2.24 — return the (cmd, ShellResult) pairs so the caller can
+    feed them back to the model for a one-shot interpretation pass.
 
     `exec_enabled` controls whether markers are RUN. When False, the
     REPL strips the markers and surfaces a one-line nudge ("/noexec
     is on — citizens can't run commands"). Default True for back-
     compat with callers that don't pass the flag.
+
+    Returns: list of (original_command, ShellResult) tuples in
+    execution order. Empty list when no markers ran (no markers
+    found, or exec disabled).
 
     Pre-0.2.4 we printed `result.final_output` as plain text, which
     meant model markdown leaked through verbatim. 0.2.4 added rich
@@ -2455,7 +2482,7 @@ def _print_final_output(text: str, *, exec_enabled: bool = True) -> None:
     that's a graceful degradation, not a regression).
     """
     if not text or not text.strip():
-        return
+        return []
 
     # 0.2.19 — extract bash blocks first.
     try:
@@ -2478,7 +2505,7 @@ def _print_final_output(text: str, *, exec_enabled: bool = True) -> None:
             "  [dim]🐚 shell exec is off (/exec on to enable). "
             f"{len(blocks)} command(s) skipped.[/dim]"
         )
-        return
+        return []
 
     if not blocks:
         # Fast path: no shell markers → just render as before.
@@ -2487,11 +2514,15 @@ def _print_final_output(text: str, *, exec_enabled: bool = True) -> None:
             console.print(Markdown(text))
         except Exception:  # noqa: BLE001
             console.print(text)
-        return
+        return []
 
     # Slow path: interleave prose + shell exec.
     from rich.markdown import Markdown
     from anthill.core.shell import safe_run
+
+    # 0.2.24 — collect (original_cmd, result) for the caller to feed
+    # back to the model for interpretation.
+    runs: list[tuple[str, object]] = []
 
     cursor = 0
     for block in blocks:
@@ -2513,6 +2544,7 @@ def _print_final_output(text: str, *, exec_enabled: bool = True) -> None:
             console.print(f"  [red]✗ exec error: {e}[/red]")
             cursor = block.end
             continue
+        runs.append((block.command, result))
         # Render the result.
         if result.blocked_reason:
             console.print(
@@ -2557,6 +2589,7 @@ def _print_final_output(text: str, *, exec_enabled: bool = True) -> None:
             console.print(Markdown(trailing))
         except Exception:  # noqa: BLE001
             console.print(trailing)
+    return runs
 
 
 def _show_trails(nation: Nation, drill_task: str | None = None) -> None:
