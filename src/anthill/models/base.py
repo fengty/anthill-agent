@@ -15,7 +15,7 @@ existing on every provider without checking capabilities.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 
@@ -48,6 +48,12 @@ class ModelResponse:
     # None for providers that don't report it; callers should treat
     # None as "stop" optimistically.
     finish_reason: str | None = None
+    # 0.2.29 — native tool calling. When the provider's tool_use /
+    # tool_calls path returned structured tool invocations, they live
+    # here. Empty list (NOT None) means "the model didn't call any
+    # tools this turn" — the loop checks `if tool_calls:` to decide
+    # whether to keep looping. Each entry is a tools_protocol.ToolCall.
+    tool_calls: list = field(default_factory=list)  # list[ToolCall]
 
     @property
     def truncated(self) -> bool:
@@ -99,6 +105,60 @@ class ModelProvider(ABC):
         temperature: float = 0.7,
     ) -> ModelResponse:
         """Return the model's completion for a prompt."""
+
+    async def complete_with_messages(
+        self,
+        messages: list,  # list[dict] — provider-specific message shape
+        *,
+        system: str | None = None,
+        tools: list | None = None,  # list[ToolSpec]
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+        temperature: float = 0.7,
+    ) -> ModelResponse:
+        """0.2.29 — multi-turn + tool-call variant.
+
+        `messages` is a list of role/content/tool_calls/tool_call_id
+        dicts (OpenAI-style). The provider is responsible for
+        converting to its native shape.
+
+        `tools` is a list of ToolSpec; the provider serializes via
+        `to_openai_format()` / `to_anthropic_format()`.
+
+        Default implementation: collapse messages to a single prompt
+        string and delegate to `complete()`. Tool calls are NEVER
+        returned by this fallback — providers that want native
+        tool_use must override.
+
+        Concrete provider implementations should:
+          - serialize tools per their wire format
+          - parse `tool_calls` from the response into
+            ModelResponse.tool_calls (list of tools_protocol.ToolCall)
+          - set finish_reason to "tool_calls" / "tool_use" when
+            applicable so the loop knows to keep going
+        """
+        # Fallback: flatten messages to a prompt + use complete().
+        # Lossy but lets sub-providers that don't yet override avoid
+        # crashing. Returns no tool_calls — caller should detect
+        # text-only fallback and continue with the marker path.
+        prompt_lines: list[str] = []
+        for m in messages:
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            if isinstance(content, list):
+                # Anthropic-style content blocks; flatten text only.
+                content = "".join(
+                    b.get("text", "")
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            prompt_lines.append(f"[{role}]\n{content}")
+        prompt = "\n\n".join(prompt_lines)
+        return await self.complete(
+            prompt,
+            system=system,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
 
     async def stream(
         self,

@@ -100,6 +100,105 @@ class OpenAICompatibleProvider(ModelProvider):
             finish_reason=choice.get("finish_reason"),
         )
 
+    async def complete_with_messages(
+        self,
+        messages: list,
+        *,
+        system: str | None = None,
+        tools: list | None = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+    ) -> ModelResponse:
+        """0.2.29 — multi-turn + native tool_use for OpenAI-compatible hosts.
+
+        Wire format (OpenAI / DeepSeek / Minimax / Moonshot / Qwen):
+          - tools as `tools` array of {type: function, function: {...}}
+          - tool calls in response.choices[0].message.tool_calls
+            (each has id, function.name, function.arguments JSON-encoded)
+          - tool results submitted as messages with role="tool",
+            tool_call_id=..., content=...
+
+        Anthropic backend ALSO routes here for now (it supports the
+        OpenAI-compatible chat/completions endpoint via the
+        anthropic-compat layer), but the proper Anthropic
+        Messages-API path is 0.2.30 work — for now Anthropic users
+        fall through to the OpenAI-style call which their endpoint
+        accepts.
+        """
+        from anthill.core.tools_protocol import ToolCall, ToolSpec
+
+        # Always prepend system as the first message when provided.
+        msgs: list[dict[str, Any]] = []
+        if system:
+            msgs.append({"role": "system", "content": system})
+        msgs.extend(messages)
+
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": msgs,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if tools:
+            payload["tools"] = [
+                t.to_openai_format() if isinstance(t, ToolSpec) else t
+                for t in tools
+            ]
+            # Let the model decide whether to call. We don't force
+            # tool use; the brief tool-use-enforcement prompt does
+            # that job at the language level.
+            payload["tool_choice"] = "auto"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        url = f"{self.base_url}/chat/completions"
+
+        start = time.perf_counter()
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+        latency_ms = (time.perf_counter() - start) * 1000
+
+        choice = data["choices"][0]
+        msg = choice.get("message", {}) or {}
+        text = msg.get("content") or ""
+        usage = data.get("usage", {}) or {}
+
+        # Parse tool_calls if present.
+        tool_calls_list: list[ToolCall] = []
+        for tc in (msg.get("tool_calls") or []):
+            try:
+                fn = tc.get("function", {}) or {}
+                raw_args = fn.get("arguments", "") or "{}"
+                # arguments is a JSON-encoded STRING per OpenAI spec.
+                # Some hosts (deepseek) sometimes return a dict; handle both.
+                if isinstance(raw_args, str):
+                    args = json.loads(raw_args) if raw_args.strip() else {}
+                else:
+                    args = dict(raw_args)
+            except (ValueError, TypeError):
+                args = {}
+            tool_calls_list.append(
+                ToolCall(
+                    id=tc.get("id") or f"call_{len(tool_calls_list)}",
+                    name=fn.get("name", ""),
+                    arguments=args,
+                )
+            )
+
+        return ModelResponse(
+            text=text,
+            model=self.model,
+            input_tokens=usage.get("prompt_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0),
+            latency_ms=latency_ms,
+            raw=data,
+            finish_reason=choice.get("finish_reason"),
+            tool_calls=tool_calls_list,
+        )
+
     async def stream(
         self,
         prompt: str,
