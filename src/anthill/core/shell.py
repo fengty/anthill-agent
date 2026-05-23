@@ -308,6 +308,40 @@ _BASH_FENCE_RE = re.compile(
 )
 
 
+def should_interpret_fast_path(result: "ShellResult") -> bool:
+    """0.2.25 — decide whether a fast-path execution warrants an
+    LLM interpretation pass.
+
+    The fast path's whole point is "no LLM". So interp must be rare
+    and earned. Two triggers:
+      - exit code != 0 (or timed out) — something went wrong, model
+        explains what
+      - HUGE stdout (>40 lines or >2500 chars) — needs summarizing
+
+    Trivial-command escape: even with long output, `ls` / `cat` /
+    `find` don't really need interpretation. The shape of those
+    outputs is self-explanatory.
+    """
+    if result.blocked_reason:
+        return False  # already explained by the refusal message
+    if result.timed_out:
+        return True
+    if result.returncode != 0:
+        return True
+    # Success but very long output → summarize.
+    if result.stdout and (
+        result.stdout.count("\n") > 40 or len(result.stdout) > 2500
+    ):
+        # ...unless it's a command whose output is inherently a list.
+        head = result.command.strip().split(maxsplit=1)[0] if result.command else ""
+        head = head.rsplit("/", 1)[-1]
+        list_commands = {"ls", "ll", "la", "find", "grep", "tree", "cat", "less", "more", "head", "tail"}
+        if head in list_commands:
+            return False
+        return True
+    return False
+
+
 def build_interpretation_prompt(
     user_question: str,
     runs: list[tuple[str, "ShellResult"]],
@@ -479,6 +513,13 @@ _KNOWN_COMMANDS: frozenset[str] = frozenset({
     "awk", "sed", "tr", "cut", "sort", "uniq",
     "diff", "cmp", "patch",
     "jq", "yq", "xmllint",
+    # Test runners (0.2.25 — automated test workflows)
+    "pytest", "py.test",
+    "jest", "vitest", "mocha", "ava", "tap",
+    "tox", "nox", "coverage", "pytest-cov",
+    "playwright", "cypress",
+    "phpunit", "rspec",
+    "ctest",
     # Misc
     "echo", "printf", "true", "false",
     "which", "whereis", "type", "command",

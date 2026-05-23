@@ -2424,6 +2424,39 @@ def _execute_literal_command(
             )
             outcome_status = "ok" if result.returncode == 0 else "failed"
 
+    # 0.2.25 — fast-path doesn't normally call the LLM. But when the
+    # command FAILED (non-zero exit, timeout) OR produced a wall of
+    # output, the user usually wants help reading it. One short
+    # interp pass earns its cost in those specific cases.
+    from anthill.core.shell import should_interpret_fast_path
+    if (
+        result.blocked_reason is None
+        and should_interpret_fast_path(result)
+    ):
+        try:
+            import asyncio as _asyncio
+            from anthill.core.shell import build_interpretation_prompt
+
+            interp_prompt = build_interpretation_prompt(
+                f"(user ran shell command directly) {cmd}",
+                [(cmd, result)],
+            )
+
+            async def _do_interp():
+                return await nation.run(
+                    task_type="interpret_shell",
+                    prompt=interp_prompt,
+                )
+
+            interp_result = _asyncio.run(_do_interp())
+            interp_text = str(interp_result.output).strip()
+            if interp_text:
+                console.print(
+                    f"  [bold cyan]💬[/bold cyan] {interp_text}"
+                )
+        except Exception:  # noqa: BLE001 — interp must never break the run
+            pass
+
     # Persist a history entry so the command is discoverable later
     # via /history / /search / wiki. Cheap; no plan or outcomes
     # (this didn't go through Scout). Tagged with kind="shell_exec"
