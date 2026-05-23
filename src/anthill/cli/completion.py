@@ -90,6 +90,7 @@ KNOWN_SLASH_COMMANDS: tuple[str, ...] = (
     "/exec", "/noexec",
     "/agentic",
     "/kanban",
+    "/test",
 )
 
 

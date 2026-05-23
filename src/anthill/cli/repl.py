@@ -3050,6 +3050,205 @@ def _show_usage(
         )
 
 
+def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: SessionStats):
+    """0.2.34 — `/test <source>` orchestrates a QA flow.
+
+    Returns an awaitable (the caller wraps in asyncio.run) or None if
+    we couldn't even start (bad source / empty input). The async work
+    is the actual case execution — we keep the rest sync to surface
+    early errors immediately.
+    """
+    import re
+    import time as _time
+    from anthill.core.persistence import nation_dir as _nd
+    from anthill.core.qa import (
+        TestResult,
+        TestSession,
+        build_execution_prompt,
+        load_requirement,
+        parse_cases_response,
+        parse_verdict,
+        write_report,
+    )
+
+    source = rest.strip()
+    if not source:
+        console.print(
+            "  [yellow]usage:[/yellow] /test <requirement>\n"
+            "    [dim]/test \"login with wrong password shows error\"[/dim]\n"
+            "    [dim]/test @./prd.md[/dim]\n"
+            "    [dim]/test https://wiki/PRD-123[/dim]"
+        )
+        return None
+
+    # Resolve the source to text. http URLs handled by url_attachments.
+    if source.startswith(("http://", "https://")):
+        try:
+            from anthill.core.url_attachments import expand_urls
+            block = expand_urls(source)
+            if not block.fetched:
+                errs = "; ".join(e.reason for e in block.errors) or "no content"
+                console.print(f"  [red]✗ fetch failed:[/red] {errs}")
+                return None
+            requirement = "\n\n".join(f.text for f in block.fetched)
+            source_label = source
+        except Exception as e:  # noqa: BLE001
+            console.print(f"  [red]✗ URL fetch error: {e}[/red]")
+            return None
+    else:
+        from pathlib import Path as _P
+        requirement, source_label = load_requirement(source, cwd=_P.cwd())
+        if not requirement:
+            console.print(f"  [red]✗ couldn't load requirement from:[/red] {source_label}")
+            return None
+
+    if len(requirement.strip()) < 5:
+        console.print(
+            f"  [yellow]requirement too short ({len(requirement)} chars). "
+            f"Give me something to test.[/yellow]"
+        )
+        return None
+
+    console.print(
+        f"  [bold cyan]🧪 QA session[/bold cyan] "
+        f"[dim]from {source_label[:60]} · {len(requirement)} chars[/dim]"
+    )
+
+    async def _run() -> None:
+        # Step 1: generate test cases via citizen.
+        from anthill.core.qa import CASE_GENERATION_PROMPT
+
+        gen_prompt = CASE_GENERATION_PROMPT.replace(
+            "{requirement}", requirement.strip()
+        )
+        console.print("  [dim]🧠 generating test cases...[/dim]")
+        try:
+            gen_result = await nation.run(
+                "qa_plan", gen_prompt,
+            )
+        except Exception as e:  # noqa: BLE001
+            console.print(f"  [red]✗ case generation crashed: {e}[/red]")
+            return
+
+        cases = parse_cases_response(gen_result.output or "")
+        if not cases:
+            console.print(
+                "  [red]✗ couldn't parse test cases from model output.[/red]"
+            )
+            console.print(
+                f"  [dim]raw response (first 400 chars):[/dim]\n"
+                f"  {(gen_result.output or '')[:400]}"
+            )
+            return
+
+        # Step 2: show cases, let user pick.
+        console.print(f"  [bold green]✓[/bold green] {len(cases)} test case(s):")
+        for c in cases:
+            console.print(f"    [cyan]#{c.id}[/cyan] {c.name}")
+            if c.expected:
+                console.print(f"       [dim]expects:[/dim] {c.expected[:80]}")
+
+        try:
+            console.print()
+            choice = input("  Run which? [all/1,3/skip]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            console.print("  [dim]cancelled.[/dim]")
+            return
+
+        if choice.lower() in ("skip", "no", "n", "cancel"):
+            console.print("  [dim]skipped.[/dim]")
+            return
+        if choice.lower() in ("", "all", "a", "yes", "y"):
+            to_run = list(cases)
+        else:
+            picked_ids = set()
+            for tok in re.split(r"[,\s]+", choice):
+                try:
+                    picked_ids.add(int(tok))
+                except ValueError:
+                    pass
+            to_run = [c for c in cases if c.id in picked_ids]
+            if not to_run:
+                console.print(f"  [yellow]no cases match '{choice}'.[/yellow]")
+                return
+
+        # Step 3: run each case.
+        session = TestSession(
+            requirement=requirement,
+            cases=cases,
+            nation_name=nation.name,
+        )
+        for c in to_run:
+            console.print()
+            console.print(
+                f"  [bold]▶ #{c.id} {c.name}[/bold]"
+            )
+            t0 = _time.perf_counter()
+            actions: list[int] = [0]
+
+            def _bump_actions(_tc, _tr=None):
+                actions[0] += 1
+
+            try:
+                exec_prompt = build_execution_prompt(c)
+                run_result = await nation.run(
+                    "qa_execute",
+                    exec_prompt,
+                    on_tool_call=lambda tc: _bump_actions(tc),
+                )
+                narrative = run_result.output or ""
+                status, reason = parse_verdict(narrative)
+                tr = TestResult(
+                    case=c,
+                    status=status,
+                    narrative=narrative,
+                    duration_seconds=_time.perf_counter() - t0,
+                    actions_taken=actions[0],
+                    error=reason if status != "passed" else None,
+                )
+            except Exception as e:  # noqa: BLE001
+                tr = TestResult(
+                    case=c,
+                    status="errored",
+                    duration_seconds=_time.perf_counter() - t0,
+                    error=f"{type(e).__name__}: {e}",
+                )
+            session.results.append(tr)
+
+            # Per-case verdict line.
+            icon = {
+                "passed": "[green]✅ PASS[/green]",
+                "failed": "[red]❌ FAIL[/red]",
+                "errored": "[yellow]⚠️ ERROR[/yellow]",
+                "skipped": "[dim]⏭ SKIP[/dim]",
+            }.get(tr.status, "?")
+            tail = f" — {tr.error}" if tr.error else ""
+            console.print(
+                f"  {icon} [dim]({tr.duration_seconds:.1f}s, "
+                f"{tr.actions_taken} tool call(s))[/dim]{tail}"
+            )
+
+        session.ended_at = _time.time()
+
+        # Step 4: write report.
+        try:
+            report_path = write_report(session, _nd(config.home, nation.name))
+            console.print()
+            console.print(
+                f"  [bold green]✓ done.[/bold green] "
+                f"{session.passed}/{session.total} passed · "
+                f"{session.failed} failed."
+            )
+            console.print(
+                f"  [dim]report:[/dim] [cyan]{report_path}[/cyan]"
+            )
+        except Exception as e:  # noqa: BLE001
+            console.print(f"  [red]✗ report write failed: {e}[/red]")
+
+    return _run()
+
+
 async def _handle_loop_cmd(
     rest: str,
     nation,  # noqa: ANN001 — circular import to type-annotate
@@ -4113,6 +4312,13 @@ def run_repl(
                     )
                     stats.queued_retry_request = composed
                     stats.queued_retry_forbid = None
+            elif cmd == "test":
+                # 0.2.34 — functional QA flow: requirement → test cases
+                # → run each via agentic citizen → markdown report.
+                # Source: inline text, @file, or http URL.
+                _maybe_async = _handle_test_cmd(rest, nation, config, stats)
+                if _maybe_async is not None:
+                    asyncio.run(_maybe_async)
             elif cmd == "kanban":
                 # 0.2.31 — slash surface for the kanban task board.
                 # /kanban                 → list active tasks
