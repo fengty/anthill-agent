@@ -182,18 +182,22 @@ BROWSER_ACTION = ToolSpec(
 def builtin_tools(
     include_browser: bool = False,
     include_kanban: bool = False,
+    include_delegate: bool = False,
 ) -> list[ToolSpec]:
     """The default tool set.
 
     `include_browser` (0.2.30+) registers `browser_action`.
     `include_kanban` (0.2.31+) registers `kanban_*` tools.
+    `include_delegate` (0.2.32+) registers `delegate_task` for
+    multi-agent collaboration.
     """
     tools: list[ToolSpec] = [BASH_RUN]
     if include_browser:
         tools.append(BROWSER_ACTION)
     if include_kanban:
-        # Import here so a citizen run without kanban doesn't pay
-        # the kanban_tools import cost.
         from anthill.core.kanban_tools import KANBAN_TOOLS
         tools.extend(KANBAN_TOOLS)
+    if include_delegate:
+        from anthill.core.delegate import DELEGATE_TASK
+        tools.append(DELEGATE_TASK)
     return tools

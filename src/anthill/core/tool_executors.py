@@ -173,15 +173,28 @@ async def dispatch_tool_call(call: ToolCall) -> ToolResult:
     )
 
 
-def make_dispatch_with_kanban(home, default_assignee: str | None = None):
+def make_dispatch_with_kanban(
+    home,
+    default_assignee: str | None = None,
+    nation=None,
+):
     """0.2.31 — dispatch that knows where the kanban DB lives.
+    0.2.32 — also wires delegate_task if a nation is provided.
 
     Returns an async fn matching the agent_loop executor signature.
     `default_assignee` populates the "actor" identity for kanban
     writes (kanban_create's assignee, kanban_comment's author).
+    `nation` is needed for delegate_task — it's the Nation instance
+    whose router picks the child citizen. When None, delegate is
+    NOT registered (callers without a nation can't safely route).
     """
     from anthill.core.kanban_tools import make_kanban_executors
     kanban_dispatch, _handlers = make_kanban_executors(home, default_assignee)
+
+    delegate_exec = None
+    if nation is not None:
+        from anthill.core.delegate import make_delegate_executor
+        delegate_exec = make_delegate_executor(nation, default_assignee or "")
 
     async def dispatch(call: ToolCall) -> ToolResult:
         name = (call.name or "").strip()
@@ -191,11 +204,13 @@ def make_dispatch_with_kanban(home, default_assignee: str | None = None):
             return await browser_executor(call)
         if name.startswith("kanban_"):
             return await kanban_dispatch(call)
+        if name == "delegate_task" and delegate_exec is not None:
+            return await delegate_exec(call)
         return ToolResult(
             tool_call_id=call.id,
             content=(
                 f"Unknown tool: {name!r}. Available tools: bash_run, "
-                f"browser_action, kanban_*."
+                f"browser_action, kanban_*, delegate_task."
             ),
             is_error=True,
         )

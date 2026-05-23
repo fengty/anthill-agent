@@ -475,8 +475,10 @@ class Nation:
                 is not ModelProvider.complete_with_messages
         )
         # 0.2.31 — wire kanban-aware dispatch when the caller passed
-        # a home dir on the nation. Falls back to default dispatch
-        # (no kanban) when no home is bound — keeps tests / headless
+        # a home dir on the nation. 0.2.32 — also pass `nation=self`
+        # so the dispatch can register delegate_task for multi-agent
+        # collaboration. Falls back to default dispatch (no kanban,
+        # no delegate) when no home is bound — keeps tests / headless
         # callers working without filesystem state.
         agent_executor = None
         if use_loop:
@@ -486,7 +488,9 @@ class Nation:
                     make_dispatch_with_kanban,
                 )
                 agent_executor = make_dispatch_with_kanban(
-                    home, default_assignee=agent.id,
+                    home,
+                    default_assignee=agent.id,
+                    nation=self,  # 0.2.32: enables delegate_task
                 )
         result = await agent.execute(
             task_type,

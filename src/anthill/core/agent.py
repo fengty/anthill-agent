@@ -162,12 +162,11 @@ class Agent:
                 )
 
                 executor = agent_loop_executor or dispatch_tool_call
-                # 0.2.31 — when the caller hasn't bound a custom
-                # executor, include kanban_* in the toolset only when
-                # the caller-passed executor *can* handle kanban
-                # (i.e. it's not the default dispatch_tool_call which
-                # returns errors for kanban_*).
-                include_kanban = (
+                # 0.2.31/32 — when the caller bound a custom executor
+                # (from Nation.run with home + nation), it knows how
+                # to handle kanban_* and delegate_task. Toggle them
+                # on in the toolset so the model SEES them.
+                use_extended_tools = (
                     agent_loop_executor is not None
                     and agent_loop_executor is not dispatch_tool_call
                 )
@@ -177,7 +176,8 @@ class Agent:
                     initial_user_message=prompt,
                     tools=builtin_tools(
                         include_browser=True,
-                        include_kanban=include_kanban,
+                        include_kanban=use_extended_tools,
+                        include_delegate=use_extended_tools,
                     ),
                     executor=executor,
                     on_tool_call=on_tool_call,
