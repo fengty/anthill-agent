@@ -2268,18 +2268,58 @@ async def _handle_ask(
             pass
 
     # 0.2.23 — model wrote ```bash``` instead of [[bash:]]? Offer to
-    # run the candidate via Enter-to-execute next turn. Don't auto-
-    # run; that's a footgun if the model wrote example code that
-    # wasn't meant to run. Queueing is opt-in and easily dismissed.
+    # run the candidate via Enter-to-execute next turn.
+    # 0.2.27 — also catch the failure where the model EXPLICITLY
+    # denied having shell access ("我没有 shell 访问权限") while
+    # giving a code-fence tutorial. That's a worse failure than the
+    # 0.2.23 case (the model contradicted its identity preamble),
+    # so we surface the auto-run nudge with a strong warning and
+    # erode pheromone for the citizen that did it.
     if not getattr(nation, "_exec_disabled", False):
         try:
-            from anthill.core.shell import extract_fence_candidates
+            from anthill.core.shell import (
+                detect_denial,
+                extract_fence_candidates,
+            )
             candidates = extract_fence_candidates(result.final_output or "")
+            denial = detect_denial(result.final_output or "")
         except Exception:  # noqa: BLE001
             candidates = []
-        # Only nudge when exactly ONE candidate — if the model wrote
-        # multiple, ambiguous which to queue, just let the user copy.
-        if len(candidates) == 1:
+            denial = None
+
+        if denial is not None and candidates:
+            # Model regressed to chatbot mode. Strong message, queue
+            # the first candidate, AND erode pheromone for the
+            # citizen(s) that produced this output.
+            cmd = candidates[0]
+            stats.queued_shell_command = cmd
+            console.print(
+                "  [bold red]⚠ citizen 拒绝执行 (违反身份契约):[/bold red] "
+                f"[dim]{denial!r}[/dim]"
+            )
+            console.print(
+                f"  [dim]但已识别命令意图. 直接 Enter 跑 [/dim]"
+                f"[cyan]{cmd}[/cyan]"
+                f"  [dim](或继续问别的)[/dim]"
+            )
+            console.print()
+            # Pheromone penalty: every agent that actually executed
+            # gets a small erosion so router prefers others next time
+            # for similar task_types.
+            try:
+                from anthill.core.pheromone import EROSION_RATE  # noqa: F401
+                for outcome in result.outcomes:
+                    for attempt in outcome.attempts:
+                        nation.pheromones.deposit(
+                            attempt.agent_id,
+                            outcome.subtask.task_type,
+                            success_score=0.0,  # explicit zero = penalty
+                        )
+            except Exception:  # noqa: BLE001
+                pass
+        elif len(candidates) == 1:
+            # 0.2.23 path: model used markdown but didn't deny.
+            # Probably just used the wrong syntax. Soft nudge.
             cmd = candidates[0]
             stats.queued_shell_command = cmd
             console.print(

@@ -33,11 +33,17 @@ def test_directive_applied_with_persona_and_memory() -> None:
     assert "user prefers Chinese" in system
 
 
-def test_directive_lands_first() -> None:
-    """Composition order: brevity FIRST so other parts layer on top.
-    If something starts overriding brevity globally (e.g. a future
-    house_style accidentally prepending) this catches it."""
+def test_brevity_lands_before_persona_and_style() -> None:
+    """0.2.27 changed order: AGENT_IDENTITY_PREAMBLE comes first
+    (identity overrides chatbot defaults), then brevity, THEN
+    persona / memory / style. The relative order of brevity vs.
+    those later sections is what matters — brevity sets length
+    defaults that later sections can override locally."""
     n = Nation(name="t")
     n.agents = [Agent(id="ant-1", model="x", persona="be playful")]
     system = n._compose_system(n.agents[0]) or ""
-    assert system.lstrip().startswith(_BREVITY_DIRECTIVE.strip()[:40])
+    brevity_pos = system.find(_BREVITY_DIRECTIVE.strip()[:40])
+    persona_pos = system.find("be playful")
+    assert brevity_pos >= 0, "brevity directive missing from prompt"
+    assert persona_pos >= 0, "persona missing from prompt"
+    assert brevity_pos < persona_pos, "brevity should come BEFORE persona"

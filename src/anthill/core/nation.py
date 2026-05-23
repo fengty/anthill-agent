@@ -378,6 +378,15 @@ class Nation:
         shouldn't override what the user explicitly asked for.
         """
         parts: list[str] = []
+        # 0.2.27 — identity preamble at the absolute top, BEFORE
+        # brevity. User feedback showed deepseek emitting "我没有
+        # shell 访问权限" despite SHELL_TOOL_INSTRUCTION being in
+        # the prompt. The fix is identity: ANTHILL IS AN AGENT THAT
+        # ACTS. Suppressed only when /noexec is on (no shell/browser
+        # means the "you can act" claim would be a lie).
+        if not getattr(self, "_exec_disabled", False):
+            from anthill.core.shell import AGENT_IDENTITY_PREAMBLE
+            parts.append(AGENT_IDENTITY_PREAMBLE.strip())
         in_loop = bool(getattr(self, "_in_loop_iteration", False))
         if not in_loop:
             parts.append(_BREVITY_DIRECTIVE.strip())

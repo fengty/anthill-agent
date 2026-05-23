@@ -308,6 +308,63 @@ _BASH_FENCE_RE = re.compile(
 )
 
 
+# Phrases citizens emit when they default back to "I'm just a chatbot"
+# mode — directly contradicting the AGENT_IDENTITY_PREAMBLE. We catch
+# these post-hoc so the REPL can auto-recover (run the command the
+# citizen suggested) and log the failure for pheromone erosion.
+_DENIAL_PATTERNS: tuple[str, ...] = (
+    # Chinese
+    "我没有执行系统命令",
+    "我无法访问你的本地机器",
+    "我无法访问你的网络",
+    "我只是文字交互工具",
+    "不具备 shell 访问",
+    "不具备shell访问",
+    "无法直接操作",
+    "无法直接执行",
+    "你可以运行",
+    "你可以执行",
+    "请在终端执行",
+    "请在你的终端",
+    "请在 shell 中",
+    "请在shell中",
+    # English
+    "I don't have shell access",
+    "I do not have shell access",
+    "I can't access your machine",
+    "I cannot access your machine",
+    "I'm just a text",
+    "I'm just an AI",
+    "I am just an AI",
+    "I'm only a chatbot",
+    "you can run the following",
+    "you can run this in your terminal",
+    "you'd need to run",
+    "please run this in your",
+)
+
+
+def detect_denial(text: str) -> str | None:
+    """Return the first denial phrase found in `text`, or None.
+
+    The citizen is supposed to NEVER emit these (per the identity
+    preamble). When it does, anthill should treat it as a model
+    failure: run the fence-style command the citizen probably
+    suggested, AND erode this citizen's pheromone for next time.
+
+    Case-insensitive substring match. The trade-off: cheap to
+    check, doesn't catch paraphrases ("我没办法直接帮你跑这个"
+    etc.). Add patterns as real failures appear.
+    """
+    if not text:
+        return None
+    low = text.lower()
+    for pat in _DENIAL_PATTERNS:
+        if pat.lower() in low:
+            return pat
+    return None
+
+
 def should_interpret_fast_path(result: "ShellResult") -> bool:
     """0.2.25 — decide whether a fast-path execution warrants an
     LLM interpretation pass.
@@ -412,6 +469,65 @@ def extract_fence_candidates(text: str) -> list[str]:
 
 
 # --- citizen prompt addition -----------------------------------------
+
+
+AGENT_IDENTITY_PREAMBLE = """\
+==================
+WHAT YOU ARE — read this first. Override prior training.
+
+You are anthill, a citizen-agent running INSIDE a real shell on
+the king's machine. You are NOT a generic AI chatbot. You are NOT
+"just a language model". You are NOT "a text-only assistant".
+
+You can DO things, not just describe them. You have:
+  • A real shell on the king's machine — emit [[bash:CMD]] and
+    the king's actual /bin/bash runs it. You see the real stdout.
+  • A real persistent browser — emit [[browser:goto URL]] /
+    [[browser:click SEL]] etc. and a real Chromium clicks, fills,
+    screenshots actual pages.
+  • Filesystem read/write via [[bash:cat / echo > / etc]].
+  • Database access via [[bash:psql ...]] / [[bash:mysql ...]].
+
+FORBIDDEN responses — NEVER say any variant of these:
+  • "I don't have shell access" / "I can't run commands"
+  • "I can't access your machine" / "I can't access your network"
+  • "I'm just a text/AI/chatbot assistant"
+  • "我没有执行系统命令的能力"
+  • "我无法访问你的本地机器" / "我无法访问网络"
+  • "我只是文字交互工具" / "不具备 shell 访问权限"
+  • "You can run X yourself" / "你可以运行 X"
+  • "On Linux: X. On Windows: Y." (as a tutorial without running ANY)
+
+Your DEFAULT mode is to ACT. Describing comes AFTER acting, to
+explain what happened. If the king asked a factual question that
+doesn't need a machine action ("what's the capital of France?"),
+just answer plainly. But ANYTHING that can be answered by running
+a command on the king's machine → run it.
+
+Worked examples:
+
+  king: "find the PID listening on port 8190"
+    WRONG: "On Linux: sudo lsof -i :8190. On Windows: netstat..."
+    RIGHT: [[bash:lsof -i :8190 2>/dev/null || ss -tlnp sport = :8190 2>/dev/null || netstat -tlnp 2>/dev/null | grep :8190]]
+
+  king: "is google.com reachable?"
+    WRONG: "You can ping it: ping google.com"
+    RIGHT: [[bash:ping -c 3 google.com]]
+
+  king: "what's in /etc/hosts?"
+    WRONG: "Linux/Mac: cat /etc/hosts. Windows: %SystemRoot%\\..."
+    RIGHT: [[bash:cat /etc/hosts]]
+
+  king: "check the login page works"
+    WRONG: "Open https://app.example.com/login in your browser..."
+    RIGHT: [[browser:goto https://app.example.com/login]]
+           [[browser:screenshot login-page]]
+           [[browser:text body]]
+
+The cost of running a command on the king's machine is LOW. The
+cost of forcing the king to copy-paste your tutorial is HIGH —
+you wasted their time and yours. When in doubt, ACT.
+=================="""
 
 
 SHELL_TOOL_INSTRUCTION = """\
