@@ -133,6 +133,7 @@ def test_print_final_output_returns_runs() -> None:
     """End-to-end: rendering a model output with a [[bash:]] block
     returns the (cmd, result) tuple list that the caller can feed
     to the interpretation step."""
+    import asyncio
     from io import StringIO
 
     from rich.console import Console
@@ -145,7 +146,9 @@ def test_print_final_output_returns_runs() -> None:
     orig = repl_mod.console
     repl_mod.console = fake
     try:
-        runs = repl_mod._print_final_output(sample, exec_enabled=True)
+        runs = asyncio.run(
+            repl_mod._print_final_output(sample, exec_enabled=True)
+        )
     finally:
         repl_mod.console = orig
 
@@ -157,6 +160,7 @@ def test_print_final_output_returns_runs() -> None:
 
 def test_print_final_output_returns_empty_when_no_markers() -> None:
     """Plain text response → no runs to interpret."""
+    import asyncio
     import anthill.cli.repl as repl_mod
     from io import StringIO
     from rich.console import Console
@@ -166,7 +170,9 @@ def test_print_final_output_returns_empty_when_no_markers() -> None:
     orig = repl_mod.console
     repl_mod.console = fake
     try:
-        runs = repl_mod._print_final_output("just prose, no markers")
+        runs = asyncio.run(
+            repl_mod._print_final_output("just prose, no markers")
+        )
     finally:
         repl_mod.console = orig
     assert runs == []

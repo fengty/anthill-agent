@@ -395,6 +395,11 @@ class Nation:
         if not getattr(self, "_exec_disabled", False):
             from anthill.core.shell import SHELL_TOOL_INSTRUCTION
             parts.append(SHELL_TOOL_INSTRUCTION.strip())
+            # 0.2.26 — browser tool for functional UI testing.
+            # Pairs with [[bash:]] — bash for "run a command",
+            # browser for "drive a webpage". Same /noexec gate.
+            from anthill.core.browser_drive import BROWSER_TOOL_INSTRUCTION
+            parts.append(BROWSER_TOOL_INSTRUCTION.strip())
         if in_loop:
             # Import locally to avoid a circular import at module
             # load (loop imports from agent → agent imports from

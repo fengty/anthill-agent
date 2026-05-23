@@ -2239,9 +2239,10 @@ async def _handle_ask(
             f"[dim](use [cyan]/history show {sources[0][:8]}[/cyan] to inspect)[/dim]"
         )
     console.print()
-    shell_runs = _print_final_output(
+    shell_runs = await _print_final_output(
         result.final_output,
         exec_enabled=not getattr(nation, "_exec_disabled", False),
+        nation=nation,
     )
     console.print()
 
@@ -2481,17 +2482,64 @@ def _execute_literal_command(
         pass
 
 
-def _print_final_output(text: str, *, exec_enabled: bool = True) -> list[tuple[str, object]]:
+async def _ensure_browser_session(nation: "Nation | None"):  # noqa: ANN001 — late import
+    """0.2.26 — get or lazy-create the persistent BrowserSession.
+
+    The session lives on the nation so it survives across asks
+    within one REPL run. Caller awaits this; subsequent [[browser:]]
+    actions reuse the same session, preserving cookies, page state,
+    etc.
+
+    Returns None when Playwright isn't installed or the session
+    fails to start. Callers should surface a /setup browser nudge.
+    """
+    if nation is None:
+        return None
+    sess = getattr(nation, "_browser_session", None)
+    if sess is not None:
+        return sess
+    from anthill.core.browser_drive import BrowserSession
+    from anthill.core.persistence import nation_dir
+    # Late import for config home — REPL only.
+    from anthill.cli.config import load_config
+    try:
+        cfg = load_config()
+        state_dir = nation_dir(cfg.home, nation.name)
+    except Exception:  # noqa: BLE001
+        state_dir = None
+    sess = BrowserSession(state_dir=state_dir, headless=False)
+    start_result = await sess.start()
+    if not start_result.ok:
+        # Don't cache a broken session — next time the user might
+        # have installed Playwright.
+        return None
+    nation._browser_session = sess  # type: ignore[attr-defined]
+    return sess
+
+
+async def _print_final_output(
+    text: str,
+    *,
+    exec_enabled: bool = True,
+    nation: "Nation | None" = None,
+) -> list[tuple[str, object]]:
     """0.2.4 — render final output as rich Markdown.
     0.2.19 — also detect `[[bash:CMD]]` markers, execute them, and
     interleave the captured output inline with the narration.
     0.2.24 — return the (cmd, ShellResult) pairs so the caller can
     feed them back to the model for a one-shot interpretation pass.
+    0.2.26 — also handle [[browser:ACTION ARGS]] markers via a
+    persistent Playwright session attached to the nation. Mixed
+    bash + browser markers in one response render in source order.
 
     `exec_enabled` controls whether markers are RUN. When False, the
     REPL strips the markers and surfaces a one-line nudge ("/noexec
     is on — citizens can't run commands"). Default True for back-
     compat with callers that don't pass the flag.
+
+    `nation` is needed for the browser path (the session lives on
+    nation._browser_session). When None, [[browser:]] markers are
+    rendered as plain text — no session to use.
 
     Returns: list of (original_command, ShellResult) tuples in
     execution order. Empty list when no markers ran (no markers
@@ -2517,31 +2565,43 @@ def _print_final_output(text: str, *, exec_enabled: bool = True) -> list[tuple[s
     if not text or not text.strip():
         return []
 
-    # 0.2.19 — extract bash blocks first.
+    # 0.2.19 — bash blocks. 0.2.26 — browser blocks.
     try:
         from anthill.core.shell import extract_bash_blocks, strip_bash_blocks
-        blocks = extract_bash_blocks(text)
+        from anthill.core.browser_drive import extract_browser_blocks
+        bash_blocks = extract_bash_blocks(text)
+        browser_blocks = extract_browser_blocks(text)
     except Exception:  # noqa: BLE001
-        blocks = []
+        bash_blocks = []
+        browser_blocks = []
 
-    # When /noexec is on, the user explicitly said "don't run commands."
-    # Strip markers and surface a one-line nudge so the user knows WHY
-    # the citizen mentioned a command without it running.
-    if blocks and not exec_enabled:
+    # Unified walk order: every block (bash or browser) keyed by
+    # source position so they execute in the order the model wrote
+    # them ("first goto, then click, then bash to grep server log").
+    unified = (
+        [("bash", b) for b in bash_blocks]
+        + [("browser", b) for b in browser_blocks]
+    )
+    unified.sort(key=lambda kv: kv[1].start)
+
+    if unified and not exec_enabled:
         cleaned = strip_bash_blocks(text)
+        # Also strip browser markers when noexec.
+        from anthill.core.browser_drive import _BROWSER_MARKER_RE
+        cleaned = _BROWSER_MARKER_RE.sub("", cleaned).strip()
         try:
             from rich.markdown import Markdown
             console.print(Markdown(cleaned))
         except Exception:  # noqa: BLE001
             console.print(cleaned)
         console.print(
-            "  [dim]🐚 shell exec is off (/exec on to enable). "
-            f"{len(blocks)} command(s) skipped.[/dim]"
+            "  [dim]🐚 exec off (/exec on to enable). "
+            f"{len(unified)} action(s) skipped.[/dim]"
         )
         return []
 
-    if not blocks:
-        # Fast path: no shell markers → just render as before.
+    if not unified:
+        # Fast path: no action markers → just render.
         try:
             from rich.markdown import Markdown
             console.print(Markdown(text))
@@ -2549,16 +2609,14 @@ def _print_final_output(text: str, *, exec_enabled: bool = True) -> list[tuple[s
             console.print(text)
         return []
 
-    # Slow path: interleave prose + shell exec.
+    # Slow path: interleave prose + actions.
     from rich.markdown import Markdown
     from anthill.core.shell import safe_run
 
-    # 0.2.24 — collect (original_cmd, result) for the caller to feed
-    # back to the model for interpretation.
     runs: list[tuple[str, object]] = []
-
     cursor = 0
-    for block in blocks:
+
+    for kind, block in unified:
         # Prose before this marker.
         prose = text[cursor:block.start]
         if prose.strip():
@@ -2566,54 +2624,72 @@ def _print_final_output(text: str, *, exec_enabled: bool = True) -> list[tuple[s
                 console.print(Markdown(prose))
             except Exception:  # noqa: BLE001
                 console.print(prose)
-        # Execute the block.
-        console.print(
-            f"  [bold cyan]🐚 running:[/bold cyan] "
-            f"[magenta]{block.command}[/magenta]"
-        )
-        try:
-            result = safe_run(block.command)
-        except Exception as e:  # noqa: BLE001
-            console.print(f"  [red]✗ exec error: {e}[/red]")
-            cursor = block.end
-            continue
-        runs.append((block.command, result))
-        # Render the result.
-        if result.blocked_reason:
+
+        if kind == "bash":
             console.print(
-                f"  [yellow]⚠ refused:[/yellow] {result.blocked_reason}"
+                f"  [bold cyan]🐚 running:[/bold cyan] "
+                f"[magenta]{block.command}[/magenta]"
             )
-        else:
-            if result.command != block.command:
+            try:
+                result = safe_run(block.command)
+            except Exception as e:  # noqa: BLE001
+                console.print(f"  [red]✗ exec error: {e}[/red]")
+                cursor = block.end
+                continue
+            runs.append((block.command, result))
+            if result.blocked_reason:
                 console.print(
-                    f"  [dim](auto-capped to: {result.command})[/dim]"
-                )
-            if result.stdout.strip():
-                console.print(
-                    f"[dim]┌─ stdout ─────────────────────[/dim]"
-                )
-                console.print(result.stdout.rstrip())
-                console.print(
-                    f"[dim]└──────────────────────────────[/dim]"
-                )
-            if result.stderr.strip():
-                console.print(
-                    f"[dim]┌─ stderr ─────────────────────[/dim]"
-                )
-                console.print(f"[red]{result.stderr.rstrip()}[/red]")
-                console.print(
-                    f"[dim]└──────────────────────────────[/dim]"
-                )
-            if result.timed_out:
-                console.print(
-                    f"  [yellow]⏱ timed out after "
-                    f"{result.duration_seconds:.1f}s[/yellow]"
+                    f"  [yellow]⚠ refused:[/yellow] {result.blocked_reason}"
                 )
             else:
-                status_color = "green" if result.returncode == 0 else "red"
+                if result.command != block.command:
+                    console.print(
+                        f"  [dim](auto-capped to: {result.command})[/dim]"
+                    )
+                if result.stdout.strip():
+                    console.print("[dim]┌─ stdout ─────────────────────[/dim]")
+                    console.print(result.stdout.rstrip())
+                    console.print("[dim]└──────────────────────────────[/dim]")
+                if result.stderr.strip():
+                    console.print("[dim]┌─ stderr ─────────────────────[/dim]")
+                    console.print(f"[red]{result.stderr.rstrip()}[/red]")
+                    console.print("[dim]└──────────────────────────────[/dim]")
+                if result.timed_out:
+                    console.print(
+                        f"  [yellow]⏱ timed out after "
+                        f"{result.duration_seconds:.1f}s[/yellow]"
+                    )
+                else:
+                    status_color = "green" if result.returncode == 0 else "red"
+                    console.print(
+                        f"  [{status_color}]→ {result.short_summary}[/{status_color}]"
+                    )
+
+        elif kind == "browser":
+            # 0.2.26 — get/create persistent session on the nation.
+            session = await _ensure_browser_session(nation)
+            if session is None:
                 console.print(
-                    f"  [{status_color}]→ {result.short_summary}[/{status_color}]"
+                    f"  [yellow]⚠ browser unavailable[/yellow] "
+                    f"[dim](/setup browser to install Playwright)[/dim]"
                 )
+                cursor = block.end
+                continue
+            console.print(
+                f"  [bold cyan]🌐 browser:[/bold cyan] "
+                f"[magenta]{block.action}[/magenta] "
+                f"[dim]{block.args[:80]}[/dim]"
+            )
+            br_result = await session.execute(block.action, block.args)
+            if br_result.ok:
+                console.print(
+                    f"  [green]→ {br_result.short_summary}[/green]"
+                )
+            else:
+                console.print(
+                    f"  [red]→ {br_result.short_summary}[/red]"
+                )
+
         cursor = block.end
     # Any trailing prose after the last marker.
     trailing = text[cursor:]
@@ -2980,10 +3056,26 @@ async def _handle_loop_cmd(
             # ("watch the deploy, see fresh report each tick").
             out = state.prior_outputs[-1] if state.prior_outputs else ""
             if out.strip():
-                _print_final_output(
-                    out,
-                    exec_enabled=not getattr(nation, "_exec_disabled", False),
-                )
+                # _on_progress is sync; we wrap the now-async render
+                # in asyncio.run. We're inside the loop's own sync
+                # callback chain, NOT another event loop, so this
+                # is safe.
+                import asyncio as _asyncio
+                try:
+                    _asyncio.run(_print_final_output(
+                        out,
+                        exec_enabled=not getattr(nation, "_exec_disabled", False),
+                        nation=nation,
+                    ))
+                except RuntimeError:
+                    # If we're already in an event loop, fall back to
+                    # a non-action render (loop output is mostly
+                    # narrative anyway).
+                    from rich.markdown import Markdown
+                    try:
+                        console.print(Markdown(out))
+                    except Exception:  # noqa: BLE001
+                        console.print(out)
 
     console_.print(
         f"[bold]Starting loop[/bold] [dim]({mode_tag}, "

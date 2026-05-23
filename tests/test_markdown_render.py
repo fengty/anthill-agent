@@ -24,13 +24,14 @@ def _render_with(text: str) -> str:
     """Run _print_final_output against a fresh string-capturing console
     and return what it would have shown. Patches the module-level
     `console` so our helper writes there."""
+    import asyncio
     import anthill.cli.repl as repl_mod
     buf = StringIO()
     fake_console = Console(file=buf, force_terminal=False, width=80)
     original = repl_mod.console
     repl_mod.console = fake_console
     try:
-        repl_mod._print_final_output(text)
+        asyncio.run(repl_mod._print_final_output(text))
     finally:
         repl_mod.console = original
     return buf.getvalue()
