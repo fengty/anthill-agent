@@ -644,6 +644,143 @@ def list_sessions(nation_dir: Path, limit: int = 30) -> list[SessionMeta]:
     return metas
 
 
+# --- 0.2.37 — cross-session trend aggregation -------------------------
+
+
+@dataclass
+class CaseStats:
+    """Stability stats for one case (matched by name) across sessions."""
+
+    name: str
+    runs: int                  # how many sessions ran this case
+    passed: int                # how many of those passed
+    last_status: str           # status of the most recent run
+    last_seen: float           # most recent session timestamp
+    last_error: Optional[str] = None  # error from the most recent failure
+    first_failure_at: Optional[float] = None  # when we first saw this fail
+
+    @property
+    def pass_rate(self) -> float:
+        return self.passed / self.runs if self.runs else 0.0
+
+    @property
+    def flakiness(self) -> str:
+        """Categorize: reliable / flaky / broken.
+
+        - reliable: 100% pass over ≥2 runs
+        - flaky: 1 ≤ passed < runs (sometimes passes, sometimes doesn't)
+        - broken: 0 passes despite ≥2 runs
+        - new: only 1 run so far (not enough signal)
+        """
+        if self.runs < 2:
+            return "new"
+        if self.passed == self.runs:
+            return "reliable"
+        if self.passed == 0:
+            return "broken"
+        return "flaky"
+
+
+@dataclass
+class HistoryTrends:
+    """Aggregate view across all test sessions in a nation."""
+
+    total_sessions: int
+    total_case_runs: int
+    overall_pass_rate: float
+    by_case: dict[str, CaseStats] = field(default_factory=dict)
+    recent_failures: list[tuple[str, str, str]] = field(default_factory=list)
+    # ↑ list of (session_id, case_name, error_summary) — most recent first
+
+    @property
+    def reliable(self) -> list[CaseStats]:
+        return sorted(
+            (c for c in self.by_case.values() if c.flakiness == "reliable"),
+            key=lambda c: -c.last_seen,
+        )
+
+    @property
+    def flaky(self) -> list[CaseStats]:
+        return sorted(
+            (c for c in self.by_case.values() if c.flakiness == "flaky"),
+            key=lambda c: c.pass_rate,
+        )
+
+    @property
+    def broken(self) -> list[CaseStats]:
+        return sorted(
+            (c for c in self.by_case.values() if c.flakiness == "broken"),
+            key=lambda c: -c.last_seen,
+        )
+
+    @property
+    def fresh(self) -> list[CaseStats]:
+        return sorted(
+            (c for c in self.by_case.values() if c.flakiness == "new"),
+            key=lambda c: -c.last_seen,
+        )
+
+
+def aggregate_trends(
+    nation_dir: Path, *, limit: int = 100
+) -> HistoryTrends:
+    """Walk recent sessions, build cross-case stability stats.
+
+    Matches cases by NAME (since per-session ids are local). A case
+    renamed across sessions counts as two different cases — that's
+    a deliberate choice: cases SHOULD be stable; renaming them mid-
+    project usually means a real change in scope.
+
+    `limit` caps the number of sessions to read; default 100 keeps
+    the aggregation fast even with months of history.
+    """
+    metas = list_sessions(nation_dir, limit=limit)
+    trends = HistoryTrends(
+        total_sessions=0, total_case_runs=0, overall_pass_rate=0.0,
+    )
+    total_passes = 0
+    recent: list[tuple[str, str, str]] = []
+    for m in metas:
+        try:
+            sess = load_session_json(m.path)
+        except Exception:  # noqa: BLE001
+            continue
+        trends.total_sessions += 1
+        for r in sess.results:
+            name = r.case.name
+            trends.total_case_runs += 1
+            if r.status == "passed":
+                total_passes += 1
+            entry = trends.by_case.get(name)
+            if entry is None:
+                entry = CaseStats(
+                    name=name, runs=0, passed=0,
+                    last_status=r.status, last_seen=sess.started_at,
+                )
+                trends.by_case[name] = entry
+            entry.runs += 1
+            if r.status == "passed":
+                entry.passed += 1
+            # Track latest-seen (sessions iterate newest-first so the
+            # FIRST observation of each case is the newest one).
+            if sess.started_at >= entry.last_seen:
+                entry.last_seen = sess.started_at
+                entry.last_status = r.status
+                entry.last_error = r.error
+            if r.status in ("failed", "errored"):
+                if entry.first_failure_at is None or sess.started_at < entry.first_failure_at:
+                    entry.first_failure_at = sess.started_at
+                # Recent failures list — preserve session order.
+                recent.append((
+                    m.id, name, (r.error or r.status)[:80],
+                ))
+    trends.overall_pass_rate = (
+        total_passes / trends.total_case_runs if trends.total_case_runs else 0.0
+    )
+    trends.recent_failures = recent[:20]
+    return trends
+
+
 def resolve_session(
     nation_dir: Path,
     selector: Optional[str] = None,

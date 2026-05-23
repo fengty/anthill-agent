@@ -3088,6 +3088,80 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
         # Strip the flag from source.
         raw = re.sub(r"\s*--fix(?:\s+\d+)?\b", "", raw).strip()
 
+    # 0.2.37 — `/test trends` aggregates across all sessions.
+    if raw == "trends" or raw == "stats" or raw.startswith("trends ") or raw.startswith("stats "):
+        from anthill.core.qa import aggregate_trends
+        trends = aggregate_trends(_nd(config.home, nation.name))
+        if trends.total_sessions == 0:
+            console.print(
+                "  [dim]no test sessions yet. run [cyan]/test \"...\"[/cyan] first.[/dim]"
+            )
+            return None
+        console.print(
+            f"  [bold]📊 trends[/bold] across "
+            f"[cyan]{trends.total_sessions}[/cyan] session(s), "
+            f"[cyan]{trends.total_case_runs}[/cyan] case run(s)"
+        )
+        pass_pct = trends.overall_pass_rate * 100
+        bar_color = "green" if pass_pct >= 90 else "yellow" if pass_pct >= 60 else "red"
+        console.print(
+            f"  [bold]overall pass rate:[/bold] "
+            f"[{bar_color}]{pass_pct:.1f}%[/{bar_color}]"
+        )
+        if trends.broken:
+            console.print()
+            console.print(
+                f"  [bold red]🔴 broken[/bold red] [dim](≥2 runs, 0 passes)[/dim]"
+            )
+            for c in trends.broken[:8]:
+                console.print(
+                    f"    [red]✗[/red] {c.name} "
+                    f"[dim]({c.passed}/{c.runs})[/dim]"
+                )
+                if c.last_error:
+                    console.print(f"       [dim]└ {c.last_error[:80]}[/dim]")
+        if trends.flaky:
+            console.print()
+            console.print(
+                f"  [bold yellow]⚡ flaky[/bold yellow] [dim](sometimes pass)[/dim]"
+            )
+            for c in trends.flaky[:8]:
+                console.print(
+                    f"    [yellow]~[/yellow] {c.name} "
+                    f"[dim]({c.passed}/{c.runs} = "
+                    f"{c.pass_rate * 100:.0f}%)[/dim]"
+                )
+        if trends.reliable:
+            console.print()
+            console.print(
+                f"  [bold green]✅ reliable[/bold green] "
+                f"[dim]({len(trends.reliable)} case(s) 100% pass)[/dim]"
+            )
+            for c in trends.reliable[:5]:
+                console.print(
+                    f"    [green]✓[/green] {c.name} "
+                    f"[dim]({c.runs} runs)[/dim]"
+                )
+            if len(trends.reliable) > 5:
+                console.print(
+                    f"    [dim]… +{len(trends.reliable) - 5} more[/dim]"
+                )
+        if trends.fresh:
+            console.print()
+            console.print(
+                f"  [dim]🆕 new[/dim] [dim]({len(trends.fresh)} "
+                "case(s) only run once — not enough signal yet)[/dim]"
+            )
+        if trends.recent_failures:
+            console.print()
+            console.print("  [bold]recent failures[/bold]")
+            for sid, name, err in trends.recent_failures[:6]:
+                console.print(
+                    f"    [dim]{sid[:17]}[/dim] [yellow]✗[/yellow] {name}"
+                )
+                console.print(f"       [dim]{err}[/dim]")
+        return None
+
     # 0.2.36 — `/test history` lists past sessions; doesn't run anything.
     if raw == "history" or raw.startswith("history "):
         limit_token = raw[8:].strip() if raw.startswith("history ") else ""
