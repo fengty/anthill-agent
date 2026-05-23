@@ -131,6 +131,17 @@ def self_context_block(
 
     n_models = _model_count(user_cfg)
 
+    # 0.2.22 — surface external CLIs on the king's $PATH. When the
+    # user has lark-cli / gh / docker / etc. installed, citizens
+    # can [[bash:lark-cli ...]] instead of saying "I have no
+    # built-in feishu integration". Empty when no curated tools
+    # were detected — don't waste prompt budget on a header.
+    try:
+        from anthill.core.tool_detect import detect_tools, format_tools_block
+        external_tools_section = format_tools_block(detect_tools())
+    except Exception:  # noqa: BLE001 — never block self-context on detection
+        external_tools_section = ""
+
     return f"""<anthill_self>
 You are running INSIDE anthill (v{anthill_version}), a multi-model AI
 agent system. When the user says "你" / "this tool" / "this agent",
@@ -159,6 +170,8 @@ Show what to type, in one code block, then STOP. End with
 # Built-in plugins
 web_fetch, web_search, file_read/write/list, shell, code_exec,
 pdf_read, docx_read, xlsx_read, browser_render, browser_screenshot
+
+{external_tools_section}
 
 # Common commands
 - CLI REPL: `anthill`
