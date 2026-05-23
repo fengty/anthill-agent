@@ -388,6 +388,13 @@ class Nation:
         style = self.culture.house_style.strip() if self.culture.house_style else ""
         if style:
             parts.append("Nation house style:\n" + style)
+        # 0.2.19 — shell tool. Every citizen sees the [[bash:CMD]]
+        # marker contract so they emit commands when the king asks
+        # for actual local action instead of explaining what to type.
+        # Suppressed when `_exec_disabled` is True (set by /noexec).
+        if not getattr(self, "_exec_disabled", False):
+            from anthill.core.shell import SHELL_TOOL_INSTRUCTION
+            parts.append(SHELL_TOOL_INSTRUCTION.strip())
         if in_loop:
             # Import locally to avoid a circular import at module
             # load (loop imports from agent → agent imports from

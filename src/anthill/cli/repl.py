@@ -772,6 +772,8 @@ HELP_TEXT = """[bold]anthill REPL[/bold] — just type a question to send it to 
     Browser plugin missing    anthill offers to install Playwright when needed
     Long conversation         /compress trims the middle; head/tail preserved
     Stale skills              flagged on startup with one-line nudge
+    Shell action requests     citizens emit [[bash:CMD]]; REPL runs and shows
+                              output inline. /noexec to turn off.
 
   [dim]Full reference: docs/commands.md[/dim]
 
@@ -2232,7 +2234,10 @@ async def _handle_ask(
             f"[dim](use [cyan]/history show {sources[0][:8]}[/cyan] to inspect)[/dim]"
         )
     console.print()
-    _print_final_output(result.final_output)
+    _print_final_output(
+        result.final_output,
+        exec_enabled=not getattr(nation, "_exec_disabled", False),
+    )
     console.print()
 
     # 0.2.17 — terse follow-up hints. Pure rule-based, no LLM call.
@@ -2302,33 +2307,136 @@ def _print_plan_overview(plan, nation) -> None:  # noqa: ANN001
     )
 
 
-def _print_final_output(text: str) -> None:
+def _print_final_output(text: str, *, exec_enabled: bool = True) -> None:
     """0.2.4 — render final output as rich Markdown.
+    0.2.19 — also detect `[[bash:CMD]]` markers, execute them, and
+    interleave the captured output inline with the narration.
+
+    `exec_enabled` controls whether markers are RUN. When False, the
+    REPL strips the markers and surfaces a one-line nudge ("/noexec
+    is on — citizens can't run commands"). Default True for back-
+    compat with callers that don't pass the flag.
 
     Pre-0.2.4 we printed `result.final_output` as plain text, which
-    meant model markdown leaked through verbatim: ## headers,
-    ASCII-art tables, ``` code fences, bullet markers all just
-    sat there as wall-of-text. Real user feedback from the live
-    session: "好丑啊".
+    meant model markdown leaked through verbatim. 0.2.4 added rich
+    Markdown rendering. 0.2.19 adds shell execution: when the model
+    emits `[[bash:ping -c 5 X]]` we actually run it and show the
+    result right where the marker was.
 
-    Rich's Markdown widget formats them properly:
-      - Headers get bold + color hierarchy
-      - Tables render as actual tables (with the same data, way
-        less visual noise)
-      - Code fences become syntax-highlighted blocks
-      - Bullets indent
+    The split-and-render flow:
+      - Walk the text marker-by-marker
+      - Render the prose BEFORE each marker as Markdown
+      - For each [[bash:CMD]]: print "🐚 running: CMD", execute,
+        render stdout/stderr in a panel, print returncode line
+      - After the last marker, render any remaining prose
 
-    We fall back to plain text on rendering failure (some models
+    Fall back to plain text on rendering failure (some models
     produce truly weird output that trips Markdown parsing —
     that's a graceful degradation, not a regression).
     """
     if not text or not text.strip():
         return
+
+    # 0.2.19 — extract bash blocks first.
     try:
-        from rich.markdown import Markdown
-        console.print(Markdown(text))
-    except Exception:  # noqa: BLE001 — never break the REPL on a render hiccup
-        console.print(text)
+        from anthill.core.shell import extract_bash_blocks, strip_bash_blocks
+        blocks = extract_bash_blocks(text)
+    except Exception:  # noqa: BLE001
+        blocks = []
+
+    # When /noexec is on, the user explicitly said "don't run commands."
+    # Strip markers and surface a one-line nudge so the user knows WHY
+    # the citizen mentioned a command without it running.
+    if blocks and not exec_enabled:
+        cleaned = strip_bash_blocks(text)
+        try:
+            from rich.markdown import Markdown
+            console.print(Markdown(cleaned))
+        except Exception:  # noqa: BLE001
+            console.print(cleaned)
+        console.print(
+            "  [dim]🐚 shell exec is off (/exec on to enable). "
+            f"{len(blocks)} command(s) skipped.[/dim]"
+        )
+        return
+
+    if not blocks:
+        # Fast path: no shell markers → just render as before.
+        try:
+            from rich.markdown import Markdown
+            console.print(Markdown(text))
+        except Exception:  # noqa: BLE001
+            console.print(text)
+        return
+
+    # Slow path: interleave prose + shell exec.
+    from rich.markdown import Markdown
+    from anthill.core.shell import safe_run
+
+    cursor = 0
+    for block in blocks:
+        # Prose before this marker.
+        prose = text[cursor:block.start]
+        if prose.strip():
+            try:
+                console.print(Markdown(prose))
+            except Exception:  # noqa: BLE001
+                console.print(prose)
+        # Execute the block.
+        console.print(
+            f"  [bold cyan]🐚 running:[/bold cyan] "
+            f"[magenta]{block.command}[/magenta]"
+        )
+        try:
+            result = safe_run(block.command)
+        except Exception as e:  # noqa: BLE001
+            console.print(f"  [red]✗ exec error: {e}[/red]")
+            cursor = block.end
+            continue
+        # Render the result.
+        if result.blocked_reason:
+            console.print(
+                f"  [yellow]⚠ refused:[/yellow] {result.blocked_reason}"
+            )
+        else:
+            if result.command != block.command:
+                console.print(
+                    f"  [dim](auto-capped to: {result.command})[/dim]"
+                )
+            if result.stdout.strip():
+                console.print(
+                    f"[dim]┌─ stdout ─────────────────────[/dim]"
+                )
+                console.print(result.stdout.rstrip())
+                console.print(
+                    f"[dim]└──────────────────────────────[/dim]"
+                )
+            if result.stderr.strip():
+                console.print(
+                    f"[dim]┌─ stderr ─────────────────────[/dim]"
+                )
+                console.print(f"[red]{result.stderr.rstrip()}[/red]")
+                console.print(
+                    f"[dim]└──────────────────────────────[/dim]"
+                )
+            if result.timed_out:
+                console.print(
+                    f"  [yellow]⏱ timed out after "
+                    f"{result.duration_seconds:.1f}s[/yellow]"
+                )
+            else:
+                status_color = "green" if result.returncode == 0 else "red"
+                console.print(
+                    f"  [{status_color}]→ {result.short_summary}[/{status_color}]"
+                )
+        cursor = block.end
+    # Any trailing prose after the last marker.
+    trailing = text[cursor:]
+    if trailing.strip():
+        try:
+            console.print(Markdown(trailing))
+        except Exception:  # noqa: BLE001
+            console.print(trailing)
 
 
 def _show_trails(nation: Nation, drill_task: str | None = None) -> None:
@@ -2686,7 +2794,10 @@ async def _handle_loop_cmd(
             # ("watch the deploy, see fresh report each tick").
             out = state.prior_outputs[-1] if state.prior_outputs else ""
             if out.strip():
-                _print_final_output(out)
+                _print_final_output(
+                    out,
+                    exec_enabled=not getattr(nation, "_exec_disabled", False),
+                )
 
     console_.print(
         f"[bold]Starting loop[/bold] [dim]({mode_tag}, "
@@ -3602,6 +3713,33 @@ def run_repl(
                     )
                     stats.queued_retry_request = composed
                     stats.queued_retry_forbid = None
+            elif cmd in ("noexec", "exec"):
+                # 0.2.19 — toggle shell execution. By default citizens
+                # can emit [[bash:CMD]] and the REPL runs it. `/noexec`
+                # turns this off (the model still might emit markers
+                # because it doesn't know — we just don't run them).
+                # `/exec` turns it back on. `/exec on` / `/exec off`
+                # also work for explicit verbs.
+                target = rest.strip().lower()
+                if cmd == "noexec":
+                    new_state = True  # disabled
+                elif target in ("off", "0", "false", "no"):
+                    new_state = True
+                elif target in ("on", "1", "true", "yes", ""):
+                    new_state = False
+                else:
+                    console.print(
+                        f"  [yellow]usage:[/yellow] /exec [on|off] · /noexec"
+                    )
+                    new_state = getattr(nation, "_exec_disabled", False)
+                nation._exec_disabled = new_state  # type: ignore[attr-defined]
+                label = "off" if new_state else "on"
+                console.print(
+                    f"  [dim]🐚 shell exec[/dim] [cyan]{label}[/cyan] "
+                    f"[dim]· "
+                    f"{'citizens 不能跑命令, 只会描述' if new_state else 'citizens 可以跑 [[bash:CMD]] 标记'}"
+                    f"[/dim]"
+                )
             elif cmd == "compress":
                 # 0.1.62 — head-tail conversation compression.
                 # Collapses the middle of the rolling window when it
