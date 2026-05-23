@@ -716,6 +716,154 @@ def list_sessions(nation_dir: Path, limit: int = 30) -> list[SessionMeta]:
     return metas
 
 
+# --- 0.2.39 — data-driven test cases (template × rows) ---------------
+
+
+_PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+
+
+@dataclass
+class CaseTemplate:
+    """A test case with {placeholder} slots, expanded over N data rows."""
+
+    __test__ = False  # not a pytest test class
+
+    name: str          # e.g. "{scenario}: login with {email}"
+    prerequisites: str = ""
+    steps: list[str] = field(default_factory=list)
+    expected: str = ""
+    verification: str = ""
+
+    def required_placeholders(self) -> set[str]:
+        """All distinct {placeholder} names referenced by this template."""
+        keys: set[str] = set()
+        for txt in [self.name, self.prerequisites, self.expected,
+                    self.verification, *self.steps]:
+            keys.update(_PLACEHOLDER_RE.findall(txt or ""))
+        return keys
+
+
+@dataclass
+class DataTable:
+    """A template + a list of data rows to expand it across."""
+
+    __test__ = False
+
+    template: CaseTemplate
+    rows: list[dict[str, str]]
+
+
+def load_data_table(path: Path) -> DataTable:
+    """Parse a YAML / JSON file into (template, rows).
+
+    Schema (YAML or JSON):
+      template:
+        name:          "{scenario}: login with {email}"
+        prerequisites: "user account exists"
+        steps:
+          - "open /login"
+          - "type {email} into #email"
+          - "type {password} into #password"
+          - "click submit"
+        expected:      "{expected_outcome}"
+        verification:  "{verify_step}"
+      rows:
+        - scenario: "正确密码"
+          email: "user@x.com"
+          ...
+        - ...
+
+    Raises ValueError on schema problems with a specific message.
+    """
+    p = Path(path)
+    raw = p.read_text(encoding="utf-8")
+    suffix = p.suffix.lower()
+    if suffix in (".yaml", ".yml"):
+        try:
+            import yaml  # type: ignore[import-not-found]
+        except ImportError as e:
+            raise ValueError(
+                f"YAML file ({p.name}) requires PyYAML. Install with "
+                f"`pip install pyyaml`, or use JSON."
+            ) from e
+        data = yaml.safe_load(raw)
+    elif suffix == ".json":
+        data = json.loads(raw)
+    else:
+        raise ValueError(
+            f"unknown data file format: {p.suffix!r}. Use .yaml/.yml/.json."
+        )
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"{p.name}: top-level must be a mapping with `template:` and `rows:`"
+        )
+    tpl_data = data.get("template")
+    rows_data = data.get("rows")
+    if not isinstance(tpl_data, dict):
+        raise ValueError(f"{p.name}: missing or invalid `template:` block")
+    if not isinstance(rows_data, list) or not rows_data:
+        raise ValueError(
+            f"{p.name}: `rows:` must be a non-empty list"
+        )
+    template = CaseTemplate(
+        name=str(tpl_data.get("name", "")).strip(),
+        prerequisites=str(tpl_data.get("prerequisites", "")).strip(),
+        steps=[str(s).strip() for s in (tpl_data.get("steps") or []) if s],
+        expected=str(tpl_data.get("expected", "")).strip(),
+        verification=str(tpl_data.get("verification", "")).strip(),
+    )
+    if not template.name:
+        raise ValueError(f"{p.name}: template.name is required")
+
+    rows: list[dict[str, str]] = []
+    for i, r in enumerate(rows_data, start=1):
+        if not isinstance(r, dict):
+            raise ValueError(
+                f"{p.name}: row {i} must be a mapping, got {type(r).__name__}"
+            )
+        rows.append({str(k): str(v) for k, v in r.items()})
+
+    # Validate that every placeholder in template has a key in EVERY row.
+    needed = template.required_placeholders()
+    for i, row in enumerate(rows, start=1):
+        missing = needed - set(row.keys())
+        if missing:
+            raise ValueError(
+                f"{p.name}: row {i} missing keys: {sorted(missing)}"
+            )
+
+    return DataTable(template=template, rows=rows)
+
+
+def expand_data_cases(table: DataTable) -> list[TestCase]:
+    """Materialize template × rows into concrete TestCase instances.
+
+    Substitution uses str.format(**row) so {placeholder} fills with
+    row values. IDs are assigned 1-based, in row order. Missing
+    placeholders should already have been caught by load_data_table;
+    here we raise KeyError if they slip through (programmer error).
+    """
+    cases: list[TestCase] = []
+    for i, row in enumerate(table.rows, start=1):
+        try:
+            c = TestCase(
+                id=i,
+                name=table.template.name.format(**row),
+                prerequisites=table.template.prerequisites.format(**row),
+                steps=[s.format(**row) for s in table.template.steps],
+                expected=table.template.expected.format(**row),
+                verification=table.template.verification.format(**row),
+            )
+        except KeyError as e:
+            raise ValueError(
+                f"row {i}: missing placeholder {e!s}. "
+                f"row keys={sorted(row.keys())}, "
+                f"template needs={sorted(table.template.required_placeholders())}"
+            ) from e
+        cases.append(c)
+    return cases
+
+
 # --- 0.2.37 — cross-session trend aggregation -------------------------
 
 

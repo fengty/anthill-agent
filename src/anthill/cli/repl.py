@@ -3070,7 +3070,9 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
         TestSession,
         build_execution_prompt,
         build_fix_prompt,
+        expand_data_cases,
         list_sessions,
+        load_data_table,
         load_requirement,
         load_session_json,
         parse_cases_response,
@@ -3090,6 +3092,15 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
         fix_max_attempts = int(fix_match.group(1)) if fix_match.group(1) else 2
         # Strip the flag from source.
         raw = re.sub(r"\s*--fix(?:\s+\d+)?\b", "", raw).strip()
+
+    # 0.2.39 — `--data @cases.yaml` skips case generation, uses the
+    # template × rows expansion instead. Mutually exclusive with
+    # inline requirement text (user provides ONE source).
+    data_path: str | None = None
+    data_match = re.search(r"\s--data\s+(\S+)", " " + raw + " ")
+    if data_match:
+        data_path = data_match.group(1)
+        raw = re.sub(r"\s*--data\s+\S+", "", raw).strip()
 
     # 0.2.37 — `/test trends` aggregates across all sessions.
     if raw == "trends" or raw == "stats" or raw.startswith("trends ") or raw.startswith("stats "):
@@ -3200,14 +3211,113 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
         )
         return None
 
+    # 0.2.39 — `--data @file.yaml` short-circuits source resolution.
+    # The data file IS the requirement: a template + N rows.
+    if data_path is not None:
+        # Strip the leading @ if present (consistent with /test @file).
+        clean = data_path[1:] if data_path.startswith("@") else data_path
+        from pathlib import Path as _P
+        dp = _P(clean).expanduser()
+        if not dp.is_absolute():
+            dp = _P.cwd() / dp
+        try:
+            table = load_data_table(dp)
+        except (FileNotFoundError, ValueError) as e:
+            console.print(f"  [red]✗ data load failed:[/red] {e}")
+            return None
+        try:
+            cases = expand_data_cases(table)
+        except ValueError as e:
+            console.print(f"  [red]✗ data expansion failed:[/red] {e}")
+            return None
+        console.print(
+            f"  [bold cyan]🧪 QA session (data-driven)[/bold cyan] "
+            f"[dim]from {dp.name} · {len(cases)} case(s) "
+            f"from {len(table.rows)} row(s)[/dim]"
+        )
+
+        async def _run_data() -> None:
+            session = TestSession(
+                requirement=(
+                    f"Data-driven: {dp.name}\n"
+                    f"Template: {table.template.name}\n"
+                    f"Rows: {len(table.rows)}"
+                ),
+                cases=cases,
+                nation_name=nation.name,
+            )
+            for c in cases:
+                console.print()
+                console.print(f"  [bold]▶ #{c.id} {c.name}[/bold]")
+                t0 = _time.perf_counter()
+                actions = [0]
+                try:
+                    exec_prompt = build_execution_prompt(c)
+                    run_result = await nation.run(
+                        "qa_execute", exec_prompt,
+                        on_tool_call=lambda _tc: actions.__setitem__(
+                            0, actions[0] + 1
+                        ),
+                    )
+                    narrative = run_result.output or ""
+                    status, reason = parse_verdict(narrative)
+                    tr = TestResult(
+                        case=c, status=status, narrative=narrative,
+                        duration_seconds=_time.perf_counter() - t0,
+                        actions_taken=actions[0],
+                        error=reason if status != "passed" else None,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    tr = TestResult(
+                        case=c, status="errored",
+                        duration_seconds=_time.perf_counter() - t0,
+                        error=f"{type(e).__name__}: {e}",
+                    )
+                session.results.append(tr)
+                icon = {
+                    "passed": "[green]✅ PASS[/green]",
+                    "failed": "[red]❌ FAIL[/red]",
+                    "errored": "[yellow]⚠️ ERROR[/yellow]",
+                }.get(tr.status, "?")
+                tail = f" — {tr.error}" if tr.error else ""
+                console.print(
+                    f"  {icon} [dim]({tr.duration_seconds:.1f}s, "
+                    f"{tr.actions_taken} tool call(s))[/dim]{tail}"
+                )
+
+            session.ended_at = _time.time()
+            try:
+                nd = _nd(config.home, nation.name)
+                md_path = write_report(session, nd)
+                json_path = write_session_json(session, nd)
+                console.print()
+                console.print(
+                    f"  [bold green]✓ done.[/bold green] "
+                    f"{session.passed}/{session.total} passed · "
+                    f"{session.failed} failed."
+                )
+                console.print(
+                    f"  [dim]report:[/dim] [cyan]{md_path}[/cyan]"
+                )
+                console.print(
+                    f"  [dim]session:[/dim] [cyan]{json_path.stem}[/cyan]"
+                )
+            except Exception as e:  # noqa: BLE001
+                console.print(f"  [red]✗ report write failed: {e}[/red]")
+
+        return _run_data()
+
     source = raw
     if not source:
         console.print(
-            "  [yellow]usage:[/yellow] /test [--fix [N]] <requirement>\n"
+            "  [yellow]usage:[/yellow] /test [--fix [N]] [--data @file] <requirement>\n"
             "    [dim]/test \"login with wrong password shows error\"[/dim]\n"
             "    [dim]/test @./prd.md[/dim]\n"
             "    [dim]/test https://wiki/PRD-123[/dim]\n"
-            "    [dim]/test --fix 3 \"...\"  — auto-fix failures, up to 3 attempts[/dim]"
+            "    [dim]/test --fix 3 \"...\"      — auto-fix failures, 3 attempts[/dim]\n"
+            "    [dim]/test --data @cases.yaml — data-driven: template × N rows[/dim]\n"
+            "    [dim]/test history            — list past sessions[/dim]\n"
+            "    [dim]/test trends             — pass-rate / flaky / broken[/dim]"
         )
         return None
 

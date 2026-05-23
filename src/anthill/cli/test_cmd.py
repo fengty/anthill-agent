@@ -33,7 +33,11 @@ from anthill.core.persistence import load_nation, nation_dir as _nd
 
 
 @click.command()
-@click.argument("source")
+@click.argument("source", required=False)
+@click.option(
+    "--data", "data_file", type=click.Path(),
+    help="Data-driven mode: YAML/JSON file with template + rows.",
+)
 @click.option(
     "--nation", "nation_name", default="default",
     help="Nation to run the test against.",
@@ -63,7 +67,8 @@ from anthill.core.persistence import load_nation, nation_dir as _nd
     help="Suppress per-step narration. Final summary only.",
 )
 def test(
-    source: str,
+    source: str | None,
+    data_file: str | None,
     nation_name: str,
     headless: bool,
     fix_attempts: int,
@@ -90,8 +95,10 @@ def test(
         TestSession,
         build_execution_prompt,
         build_fix_prompt,
+        expand_data_cases,
         format_junit_xml,
         format_report,
+        load_data_table,
         load_requirement,
         parse_cases_response,
         parse_fix_verdict,
@@ -100,6 +107,13 @@ def test(
         write_report,
         write_session_json,
     )
+
+    if not source and not data_file:
+        click.echo(
+            "anthill test: provide SOURCE or --data <file>.",
+            err=True,
+        )
+        sys.exit(2)
 
     config = AnthillConfig.load()
     config.ensure_home()
@@ -115,6 +129,31 @@ def test(
     # Wire flags onto the nation so per-call code paths see them.
     nation._anthill_home = config.home  # type: ignore[attr-defined]
     nation._browser_headless = headless  # type: ignore[attr-defined]
+
+    # 0.2.39 — data-driven mode bypasses the LLM case-generation step.
+    if data_file:
+        try:
+            dt = load_data_table(Path(data_file))
+            pre_built_cases = expand_data_cases(dt)
+        except (FileNotFoundError, ValueError) as e:
+            click.echo(f"anthill test: data load failed: {e}", err=True)
+            sys.exit(2)
+        if not quiet:
+            click.echo(
+                f"🧪 anthill test (data-driven) — {data_file} · "
+                f"{len(pre_built_cases)} case(s) from {len(dt.rows)} row(s)"
+            )
+        exit_code = asyncio.run(_run_with_cases(
+            nation=nation,
+            config=config,
+            requirement=f"Data-driven: {data_file}",
+            cases=pre_built_cases,
+            fix_attempts=fix_attempts,
+            junit_xml=junit_xml,
+            report_path=report_path,
+            quiet=quiet,
+        ))
+        sys.exit(exit_code)
 
     # Resolve the requirement.
     if source.startswith(("http://", "https://")):
@@ -167,21 +206,10 @@ async def _run(
     max_cases: int,
     quiet: bool,
 ) -> int:
+    """LLM-driven path: generate cases from requirement, then run."""
     from anthill.core.qa import (
-        FixAttempt,
-        TestResult,
-        TestSession,
-        build_execution_prompt,
-        build_fix_prompt,
         CASE_GENERATION_PROMPT,
-        format_junit_xml,
-        format_report,
         parse_cases_response,
-        parse_fix_verdict,
-        parse_verdict,
-        write_junit_xml,
-        write_report,
-        write_session_json,
     )
 
     # Step 1 — generate cases.
@@ -202,6 +230,45 @@ async def _run(
 
     if not quiet:
         click.echo(f"  generated {len(cases)} case(s)")
+
+    return await _run_with_cases(
+        nation=nation,
+        config=config,
+        requirement=requirement,
+        cases=cases,
+        fix_attempts=fix_attempts,
+        junit_xml=junit_xml,
+        report_path=report_path,
+        quiet=quiet,
+    )
+
+
+async def _run_with_cases(
+    *,
+    nation,
+    config: AnthillConfig,
+    requirement: str,
+    cases: list,
+    fix_attempts: int,
+    junit_xml: str | None,
+    report_path: str | None,
+    quiet: bool,
+) -> int:
+    """Shared executor: given pre-built TestCases, run them all + artifacts."""
+    from anthill.core.qa import (
+        FixAttempt,
+        TestResult,
+        TestSession,
+        build_execution_prompt,
+        build_fix_prompt,
+        format_junit_xml,
+        format_report,
+        parse_fix_verdict,
+        parse_verdict,
+        write_junit_xml,
+        write_report,
+        write_session_json,
+    )
 
     # Step 2 — run all.
     session = TestSession(
