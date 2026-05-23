@@ -3669,6 +3669,8 @@ def _handle_nation_switch(
         console.print(f"[green]Founded nation '{target}'.[/green]")
     else:
         console.print(f"[green]Switched to nation '{target}'.[/green]")
+    # 0.2.31 — re-bind home (the new nation doesn't inherit it).
+    refreshed._anthill_home = config.home  # type: ignore[attr-defined]
     return refreshed
 
 
@@ -3691,6 +3693,9 @@ def run_repl(
     config = AnthillConfig.load()
     config.ensure_home()
     nation = _ensure_nation(config, nation_name)
+    # 0.2.31 — bind home onto nation so Nation.run can spin up the
+    # kanban-aware dispatch for agentic_mode tool calls.
+    nation._anthill_home = config.home  # type: ignore[attr-defined]
     stats = SessionStats()
 
     # 0.1.35 — resolve which session to use (resume vs new). The
@@ -4048,6 +4053,126 @@ def run_repl(
                     )
                     stats.queued_retry_request = composed
                     stats.queued_retry_forbid = None
+            elif cmd == "kanban":
+                # 0.2.31 — slash surface for the kanban task board.
+                # /kanban                 → list active tasks
+                # /kanban show <id>       → one task with comments
+                # /kanban create <title>  → file a new task
+                # /kanban complete <id> <summary>
+                # /kanban block <id> <reason>
+                from anthill.core.kanban import (
+                    create_task as _kb_create,
+                    list_tasks as _kb_list,
+                    list_comments as _kb_list_comments,
+                    show_task as _kb_show,
+                    update_status as _kb_update,
+                )
+
+                parts_kb = rest.strip().split(maxsplit=2)
+                sub = parts_kb[0].lower() if parts_kb else ""
+
+                if sub == "" or sub == "list":
+                    tasks = _kb_list(config.home, limit=30)
+                    if not tasks:
+                        console.print("  [dim]no active tasks on the board.[/dim]")
+                        console.print(
+                            "  [dim]create one: [cyan]/kanban create <title>[/cyan][/dim]"
+                        )
+                    else:
+                        for t in tasks:
+                            marker = {
+                                "pending": "[dim]·[/dim]",
+                                "in_progress": "[cyan]▶[/cyan]",
+                                "blocked": "[yellow]✋[/yellow]",
+                                "completed": "[green]✓[/green]",
+                                "cancelled": "[red]✗[/red]",
+                            }.get(t.status, "?")
+                            assignee = f" [dim]({t.assignee})[/dim]" if t.assignee else ""
+                            console.print(
+                                f"  {marker} [cyan]#{t.id}[/cyan] {t.title}{assignee}"
+                            )
+                elif sub == "show" and len(parts_kb) >= 2:
+                    try:
+                        tid = int(parts_kb[1])
+                    except ValueError:
+                        console.print("  [yellow]id must be an integer[/yellow]")
+                    else:
+                        task = _kb_show(config.home, tid)
+                        if task is None:
+                            console.print(f"  [yellow]no task #{tid}[/yellow]")
+                        else:
+                            comments = _kb_list_comments(config.home, tid)
+                            console.print(
+                                f"  [cyan]#{task.id}[/cyan] [{task.status}] "
+                                f"{task.title}"
+                            )
+                            if task.assignee:
+                                console.print(
+                                    f"  [dim]assignee:[/dim] {task.assignee}"
+                                )
+                            if task.body:
+                                console.print()
+                                console.print(task.body)
+                            if task.summary:
+                                console.print()
+                                console.print(f"[bold]summary:[/bold] {task.summary}")
+                            if comments:
+                                console.print()
+                                console.print("[bold]comments:[/bold]")
+                                for c in comments:
+                                    who = c.author or "user"
+                                    console.print(f"  [dim][{who}][/dim] {c.text}")
+                elif sub == "create" and len(parts_kb) >= 2:
+                    title = parts_kb[1]
+                    if len(parts_kb) >= 3:
+                        title = f"{title} {parts_kb[2]}"
+                    try:
+                        new_id = _kb_create(config.home, title=title.strip())
+                        console.print(
+                            f"  [green]✓[/green] created [cyan]#{new_id}[/cyan]: {title.strip()}"
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        console.print(f"  [red]create failed:[/red] {e}")
+                elif sub == "complete" and len(parts_kb) >= 2:
+                    try:
+                        tid = int(parts_kb[1])
+                    except ValueError:
+                        console.print("  [yellow]id must be an integer[/yellow]")
+                    else:
+                        summary = parts_kb[2] if len(parts_kb) >= 3 else "done"
+                        ok = _kb_update(
+                            config.home, tid, "completed", summary=summary
+                        )
+                        if ok:
+                            console.print(
+                                f"  [green]✓[/green] task [cyan]#{tid}[/cyan] completed"
+                            )
+                        else:
+                            console.print(f"  [yellow]no task #{tid}[/yellow]")
+                elif sub == "block" and len(parts_kb) >= 2:
+                    try:
+                        tid = int(parts_kb[1])
+                    except ValueError:
+                        console.print("  [yellow]id must be an integer[/yellow]")
+                    else:
+                        reason = parts_kb[2] if len(parts_kb) >= 3 else "blocked"
+                        ok = _kb_update(
+                            config.home, tid, "blocked", summary=f"BLOCKED: {reason}"
+                        )
+                        if ok:
+                            console.print(
+                                f"  [yellow]✋ task #{tid} blocked:[/yellow] {reason}"
+                            )
+                        else:
+                            console.print(f"  [yellow]no task #{tid}[/yellow]")
+                else:
+                    console.print(
+                        "  [dim]usage:[/dim] [cyan]/kanban[/cyan] · "
+                        "[cyan]/kanban show <id>[/cyan] · "
+                        "[cyan]/kanban create <title>[/cyan] · "
+                        "[cyan]/kanban complete <id> <summary>[/cyan] · "
+                        "[cyan]/kanban block <id> <reason>[/cyan]"
+                    )
             elif cmd == "agentic":
                 # 0.2.30 — flip native tool_use multi-turn mode.
                 # Off (default for now): citizens run single-shot

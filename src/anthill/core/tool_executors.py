@@ -137,23 +137,67 @@ async def browser_executor(call: ToolCall) -> ToolResult:
 
 
 # Dispatch by tool name. Used as the `executor` arg to run_agent_loop.
-# New tools (kanban_*, delegate, etc.) register here in 0.2.31+.
+# 0.2.31 — registers kanban_* tools when an anthill home is bound.
 async def dispatch_tool_call(call: ToolCall) -> ToolResult:
     """Look up the right executor for `call.name` and run it.
 
     Unknown tool name → ToolResult with is_error=True telling the
     model "no such tool" so it can correct and retry.
+
+    For kanban_*: this default dispatch returns an error because
+    no home dir is bound. The REPL uses `make_dispatch_with_kanban`
+    to get a flavor of dispatch that knows where the board lives.
     """
     name = (call.name or "").strip()
     if name == "bash_run":
         return await bash_executor(call)
     if name == "browser_action":
         return await browser_executor(call)
+    if name.startswith("kanban_"):
+        return ToolResult(
+            tool_call_id=call.id,
+            content=(
+                "kanban_* tools need a bound anthill home dir. "
+                "Use make_dispatch_with_kanban() instead of the "
+                "default dispatch."
+            ),
+            is_error=True,
+        )
     return ToolResult(
         tool_call_id=call.id,
         content=(
             f"Unknown tool: {name!r}. Available tools: bash_run, "
-            f"browser_action. Use bash_run for shell commands."
+            f"browser_action, kanban_*. Use bash_run for shell commands."
         ),
         is_error=True,
     )
+
+
+def make_dispatch_with_kanban(home, default_assignee: str | None = None):
+    """0.2.31 — dispatch that knows where the kanban DB lives.
+
+    Returns an async fn matching the agent_loop executor signature.
+    `default_assignee` populates the "actor" identity for kanban
+    writes (kanban_create's assignee, kanban_comment's author).
+    """
+    from anthill.core.kanban_tools import make_kanban_executors
+    kanban_dispatch, _handlers = make_kanban_executors(home, default_assignee)
+
+    async def dispatch(call: ToolCall) -> ToolResult:
+        name = (call.name or "").strip()
+        if name == "bash_run":
+            return await bash_executor(call)
+        if name == "browser_action":
+            return await browser_executor(call)
+        if name.startswith("kanban_"):
+            return await kanban_dispatch(call)
+        return ToolResult(
+            tool_call_id=call.id,
+            content=(
+                f"Unknown tool: {name!r}. Available tools: bash_run, "
+                f"browser_action, kanban_*."
+            ),
+            is_error=True,
+        )
+
+    return dispatch

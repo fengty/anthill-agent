@@ -162,13 +162,23 @@ class Agent:
                 )
 
                 executor = agent_loop_executor or dispatch_tool_call
+                # 0.2.31 — when the caller hasn't bound a custom
+                # executor, include kanban_* in the toolset only when
+                # the caller-passed executor *can* handle kanban
+                # (i.e. it's not the default dispatch_tool_call which
+                # returns errors for kanban_*).
+                include_kanban = (
+                    agent_loop_executor is not None
+                    and agent_loop_executor is not dispatch_tool_call
+                )
                 loop_result = await run_agent_loop(
                     provider,
                     system=effective_system,
                     initial_user_message=prompt,
-                    # 0.2.30 — include browser tool natively now that
-                    # the executor is wired.
-                    tools=builtin_tools(include_browser=True),
+                    tools=builtin_tools(
+                        include_browser=True,
+                        include_kanban=include_kanban,
+                    ),
                     executor=executor,
                     on_tool_call=on_tool_call,
                     on_tool_result=on_tool_result,

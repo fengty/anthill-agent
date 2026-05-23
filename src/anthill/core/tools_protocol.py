@@ -179,9 +179,21 @@ BROWSER_ACTION = ToolSpec(
 )
 
 
-def builtin_tools(include_browser: bool = False) -> list[ToolSpec]:
-    """The default tool set. Browser opt-in for 0.2.29 (wired in 0.2.30)."""
+def builtin_tools(
+    include_browser: bool = False,
+    include_kanban: bool = False,
+) -> list[ToolSpec]:
+    """The default tool set.
+
+    `include_browser` (0.2.30+) registers `browser_action`.
+    `include_kanban` (0.2.31+) registers `kanban_*` tools.
+    """
     tools: list[ToolSpec] = [BASH_RUN]
     if include_browser:
         tools.append(BROWSER_ACTION)
+    if include_kanban:
+        # Import here so a citizen run without kanban doesn't pay
+        # the kanban_tools import cost.
+        from anthill.core.kanban_tools import KANBAN_TOOLS
+        tools.extend(KANBAN_TOOLS)
     return tools

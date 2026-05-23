@@ -474,12 +474,27 @@ class Nation:
             and type(agent._get_provider()).complete_with_messages
                 is not ModelProvider.complete_with_messages
         )
+        # 0.2.31 — wire kanban-aware dispatch when the caller passed
+        # a home dir on the nation. Falls back to default dispatch
+        # (no kanban) when no home is bound — keeps tests / headless
+        # callers working without filesystem state.
+        agent_executor = None
+        if use_loop:
+            home = getattr(self, "_anthill_home", None)
+            if home is not None:
+                from anthill.core.tool_executors import (
+                    make_dispatch_with_kanban,
+                )
+                agent_executor = make_dispatch_with_kanban(
+                    home, default_assignee=agent.id,
+                )
         result = await agent.execute(
             task_type,
             prompt,
             system=self._compose_system(agent),
             on_token=on_token,
             use_agent_loop=use_loop,
+            agent_loop_executor=agent_executor,
             on_tool_call=on_tool_call,
             on_tool_result=on_tool_result,
         )
