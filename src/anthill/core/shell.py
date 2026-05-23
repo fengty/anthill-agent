@@ -301,29 +301,203 @@ def strip_bash_blocks(text: str) -> str:
 
 SHELL_TOOL_INSTRUCTION = """\
 ==================
-SHELL TOOL: when the king asks you to actually DO something on
-their machine (ping a host, check git status, look at a file, list
-processes, curl an endpoint, etc.), do NOT explain what to type.
-Instead, emit a marker:
+SHELL TOOL — READ THIS CAREFULLY:
 
-  [[bash:CMD]]
+When the king asks you to actually DO something on their machine
+(ping a host, check git status, look at a file, list processes,
+curl an endpoint, etc.), you have TWO choices:
 
-anthill will run CMD on the king's local shell and show them the
-output. Examples:
+  ✓ CORRECT — emit a runnable marker:
+    [[bash:ping -c 5 192.168.1.149]]
 
-  [[bash:ping -c 5 192.168.1.149]]
-  [[bash:git status]]
-  [[bash:df -h]]
-  [[bash:curl -s https://api.example.com/health]]
+  ✗ WRONG — emit a markdown code fence:
+    ```bash
+    ping -c 5 192.168.1.149
+    ```
 
-Multiple blocks in one response are fine — they run in order. The
-output appears in the REPL right where the marker was, so you can
-narrate around them ("let me check connectivity: [[bash:ping...]] —
+The CORRECT form ACTUALLY EXECUTES on the king's shell and shows
+real output. The WRONG form is just static text the king has to
+copy-paste themselves — useless when they asked you to do it for
+them. ALWAYS prefer [[bash:CMD]] when the king wants action.
+
+When the king types a literal shell command (e.g. "ping
+192.168.1.149", "git status", "df -h"), they ALREADY know what to
+type — they want to SEE THE RESULT. Run it: [[bash:ping
+192.168.1.149]]. Don't restate the command in prose, don't add
+explanation about flags, don't offer "想展开告诉我" — they want
+output, not tutorials.
+
+Examples:
+  King: ping 192.168.1.149
+  You:  [[bash:ping -c 10 192.168.1.149]]
+
+  King: git 当前 branch?
+  You:  [[bash:git branch --show-current]]
+
+  King: 磁盘还剩多少
+  You:  [[bash:df -h]]
+
+Multiple blocks in one response are fine — they run in order. You
+CAN narrate around them ("checking connectivity: [[bash:ping...]] —
 if 0% loss we're good").
 
-Don't emit [[bash:...]] for destructive commands (rm, dd, format,
-sudo install, etc.) without first asking the king to confirm.
+DON'T emit [[bash:...]] for destructive commands (rm -rf, dd, mkfs,
+sudo destructive things) without first asking the king to confirm.
 
 If a 30s timeout would be too short, ALSO say so in plain text so
 the king knows to /loop or /retry with a different cap.
 =================="""
+
+
+# --- fast-path: literal shell command detection -----------------------
+#
+# When the king types a string that is OBVIOUSLY a shell command
+# (`ping 192.168.1.149`, `git status`, `df -h`), there's no reason
+# to send it through Scout + a citizen + the marker dance. We just
+# run it. Zero LLM cost, sub-second response.
+#
+# The KNOWN_COMMANDS list is intentionally conservative — we'd
+# rather miss a fast-path opportunity than mis-execute a question.
+# A user can always force fast-path by prefixing with `!` or `$`.
+
+_KNOWN_COMMANDS: frozenset[str] = frozenset({
+    # Networking
+    "ping", "ping6", "traceroute", "tracepath", "tracert", "mtr",
+    "dig", "nslookup", "host", "whois",
+    "netstat", "ss", "ifconfig", "ip", "route", "arp",
+    "curl", "wget", "http", "httpie",
+    "telnet", "nc", "ncat", "nmap",
+    # File / dir inspection (read-only-ish)
+    "ls", "ll", "la", "tree", "find", "locate",
+    "cat", "less", "more", "head", "tail",
+    "stat", "file", "wc", "du", "df", "mount", "lsblk",
+    # Process / system
+    "ps", "top", "htop", "btop", "free", "uptime", "w", "who",
+    "lsof", "kill",  # kill needs args; user is explicit
+    "uname", "hostname", "whoami", "id", "groups",
+    "date", "cal", "tty",
+    # Version control
+    "git", "hg", "svn",
+    # Build / package
+    "make", "cmake", "ninja",
+    "npm", "yarn", "pnpm", "bun",
+    "pip", "pip3", "poetry", "uv",
+    "cargo", "rustup",
+    "go",
+    "mvn", "gradle",
+    "brew", "apt", "apt-get", "yum", "dnf", "pacman",
+    # Container / cloud
+    "docker", "podman",
+    "kubectl", "helm",
+    "terraform",
+    "gh", "glab",
+    # Languages (REPL-friendly one-liners)
+    "python", "python3", "node", "deno", "ruby", "perl", "php", "lua",
+    # Text processing
+    "grep", "egrep", "fgrep", "rg", "ack", "ag",
+    "awk", "sed", "tr", "cut", "sort", "uniq",
+    "diff", "cmp", "patch",
+    "jq", "yq", "xmllint",
+    # Misc
+    "echo", "printf", "true", "false",
+    "which", "whereis", "type", "command",
+    "env", "printenv", "export",  # export rarely useful as one-shot
+    "history",  # shell history, not our /history
+    "man", "info", "tldr",
+    "tar", "gzip", "gunzip", "zip", "unzip", "xz",
+    "base64", "md5", "md5sum", "sha1sum", "sha256sum",
+    "openssl",
+    "ssh", "scp", "rsync",  # ssh blocks interactively; warn handled elsewhere
+})
+
+
+# Patterns that suggest a question, not a command. If ANY appear, we
+# refuse the fast path and let the LLM handle it (the user might be
+# asking "ping 192.168.1.149 通吗？" which DOES need explanation).
+_QUESTION_MARKERS = (
+    "?", "？",
+    "怎么", "如何", "为什么", "什么是", "是什么", "为啥",
+    "how do", "how to", "what is", "what's", "why", "should i",
+    "通吗", "好不好", "可以吗", "对不对",
+)
+
+
+def looks_like_shell_command(text: str) -> str | None:
+    """Detect input that is a literal shell command.
+
+    Returns the cleaned command (stripped of wrappers) if it's a
+    direct command we can fast-path. Returns None if it's prose, a
+    question, or anything we should send through the LLM.
+
+    Heuristics, in order:
+      1. Strip wrappers: backticks, `$ ` prefix, `! ` prefix, code
+         fence with one bash line inside
+      2. Reject anything multi-paragraph or > 200 chars
+      3. Reject if it contains question particles ("?", "怎么", ...)
+      4. Accept if first token is in _KNOWN_COMMANDS
+      5. Accept if input starts with `!` (explicit user opt-in:
+         `! anyrandomcmd here` always runs)
+
+    The `!` opt-in is the escape hatch: power users who want to run
+    something we don't have in KNOWN_COMMANDS just prefix it.
+    """
+    if not text:
+        return None
+    s = text.strip()
+    if not s:
+        return None
+
+    # 1a. Explicit opt-in: `!cmd args` or `! cmd args` always runs.
+    if s.startswith("!"):
+        return s[1:].lstrip() or None
+
+    # 1b. Strip a `$` prompt-style prefix.
+    if s.startswith("$ "):
+        s = s[2:]
+    elif s.startswith("$") and len(s) > 1 and s[1] != "{":
+        s = s[1:].lstrip()
+
+    # 1c. Code fence first (so we don't eat the outer triples as
+    # individual backticks below). Single-line bash/sh fence:
+    # ```bash\ncmd\n```
+    if s.startswith("```"):
+        lines = s.splitlines()
+        if len(lines) >= 2 and lines[-1].strip().startswith("```"):
+            body = "\n".join(lines[1:-1]).strip()
+            if body and "\n" not in body:
+                s = body
+
+    # 1d. Inline backtick wrappers (single backtick each side).
+    if (
+        s.startswith("`")
+        and s.endswith("`")
+        and not s.startswith("```")
+        and len(s) >= 2
+    ):
+        s = s[1:-1].strip()
+
+    if not s:
+        return None
+
+    # 2. Length / paragraph cap. Real commands are short and one-line.
+    if len(s) > 200 or "\n" in s:
+        return None
+
+    # 3. Question particles.
+    low = s.lower()
+    if any(q in low for q in _QUESTION_MARKERS):
+        return None
+
+    # 4. First token must be a known command.
+    first = s.split(maxsplit=1)[0]
+    # Strip optional leading "sudo" — we treat it as a transparent
+    # wrapper; the actual command is the next token.
+    if first == "sudo":
+        tokens = s.split(maxsplit=2)
+        if len(tokens) >= 2 and tokens[1] in _KNOWN_COMMANDS:
+            return s
+        return None
+    if first in _KNOWN_COMMANDS:
+        return s
+
+    return None

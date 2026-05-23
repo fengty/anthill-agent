@@ -2307,6 +2307,99 @@ def _print_plan_overview(plan, nation) -> None:  # noqa: ANN001
     )
 
 
+def _execute_literal_command(
+    cmd: str,
+    nation: Nation,
+    config: AnthillConfig,
+    stats: SessionStats,
+) -> None:
+    """0.2.20 — fast-path execution for literal shell commands.
+
+    The user typed `ping 192.168.1.149` (or any string that
+    `looks_like_shell_command` accepted). Skip Scout / Citizens /
+    LLM entirely and just run it. Output rendered inline, history
+    record appended so /history still shows the command.
+
+    Zero token cost. Sub-second turnaround (modulo the command's
+    own runtime). This is the "用户是国王 — 国王说什么就做什么"
+    operationalized at the cheapest possible level.
+    """
+    import time as _time
+    from anthill.core.history import HistoryEntry, append_history
+    from anthill.core.persistence import nation_dir as _nd
+    from anthill.core.shell import safe_run
+
+    # Stat: count it as an ask so /status / /usage reflect reality,
+    # even though the LLM never ran.
+    stats.increment_ask()
+
+    console.print(
+        f"  [bold cyan]🐚 running:[/bold cyan] "
+        f"[magenta]{cmd}[/magenta] "
+        f"[dim](direct exec — no LLM)[/dim]"
+    )
+    result = safe_run(cmd)
+
+    if result.blocked_reason:
+        console.print(
+            f"  [yellow]⚠ refused:[/yellow] {result.blocked_reason}"
+        )
+        console.print(
+            f"  [dim](typed verbatim into bash this would be the result. "
+            f"force with [cyan]! {cmd}[/cyan].)[/dim]"
+        )
+        outcome_status = "failed"
+    else:
+        if result.command != cmd:
+            console.print(
+                f"  [dim](auto-capped to: {result.command})[/dim]"
+            )
+        if result.stdout.strip():
+            console.print("[dim]┌─ stdout ─────────────────────[/dim]")
+            console.print(result.stdout.rstrip())
+            console.print("[dim]└──────────────────────────────[/dim]")
+        if result.stderr.strip():
+            console.print("[dim]┌─ stderr ─────────────────────[/dim]")
+            console.print(f"[red]{result.stderr.rstrip()}[/red]")
+            console.print("[dim]└──────────────────────────────[/dim]")
+        if result.timed_out:
+            console.print(
+                f"  [yellow]⏱ timed out after "
+                f"{result.duration_seconds:.1f}s[/yellow]"
+            )
+            outcome_status = "failed"
+        else:
+            status_color = "green" if result.returncode == 0 else "red"
+            console.print(
+                f"  [{status_color}]→ {result.short_summary}"
+                f"[/{status_color}]"
+            )
+            outcome_status = "ok" if result.returncode == 0 else "failed"
+
+    # Persist a history entry so the command is discoverable later
+    # via /history / /search / wiki. Cheap; no plan or outcomes
+    # (this didn't go through Scout). Tagged with kind="shell_exec"
+    # in the outcomes payload so consumers can distinguish.
+    try:
+        entry = HistoryEntry(
+            id=f"shell-{int(_time.time() * 1000):x}",
+            timestamp=_time.time(),
+            request=cmd,
+            plan=[],
+            outcomes=[{
+                "status": outcome_status,
+                "kind": "shell_exec",
+                "returncode": result.returncode,
+                "duration_seconds": round(result.duration_seconds, 3),
+                "stdout_chars": len(result.stdout),
+                "stderr_chars": len(result.stderr),
+            }],
+        )
+        append_history(entry, _nd(config.home, nation.name))
+    except Exception:  # noqa: BLE001 — history failure must not fail the run
+        pass
+
+
 def _print_final_output(text: str, *, exec_enabled: bool = True) -> None:
     """0.2.4 — render final output as rich Markdown.
     0.2.19 — also detect `[[bash:CMD]]` markers, execute them, and
@@ -4630,6 +4723,26 @@ def run_repl(
                 "[cyan]/quit[/cyan] to exit."
             )
             continue
+
+        # 0.2.20 — FAST-PATH: when the user typed a literal shell
+        # command (`ping 192.168.1.149`, `git status`, `df -h`,
+        # `! anyrandomcmd`), skip Scout + LLM entirely. Just run it.
+        # Zero token cost, sub-second response. Real session data
+        # showed `ping 192.168.1.149` burning 4.6s on minimax for
+        # the model to suggest the user run the very command they
+        # already typed.
+        if not getattr(nation, "_exec_disabled", False):
+            from anthill.core.shell import looks_like_shell_command
+            fast_cmd = looks_like_shell_command(line)
+            if fast_cmd is not None:
+                _execute_literal_command(fast_cmd, nation, config, stats)
+                # Reload nation so any state writes in _execute_literal_command
+                # are visible to the next turn.
+                refreshed = load_nation(nation.name, config.home)
+                if refreshed is not None:
+                    nation = refreshed
+                _print_status_bar(nation, stats)
+                continue
 
         # Ask path. Ctrl+C during an ask used to just print
         # "(cancelled)" and return to the prompt. 0.1.36 turns it
