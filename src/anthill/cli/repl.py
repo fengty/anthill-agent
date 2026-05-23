@@ -827,6 +827,11 @@ class SessionStats:
         # citizen handles it next time. None when no retry queued.
         self.queued_retry_request: str | None = None
         self.queued_retry_forbid: set[str] | None = None
+        # 0.2.23 — when the model wrote ```bash``` instead of [[bash:]],
+        # we extract the command and queue it. Next REPL iteration, an
+        # empty input (just Enter) runs it via the shell fast path.
+        # Cleared on any non-empty input so the user can ignore it.
+        self.queued_shell_command: str | None = None
 
     def add(self, input_tokens: int, output_tokens: int, cost: float) -> None:
         self.tokens_in += input_tokens
@@ -2239,6 +2244,28 @@ async def _handle_ask(
         exec_enabled=not getattr(nation, "_exec_disabled", False),
     )
     console.print()
+
+    # 0.2.23 — model wrote ```bash``` instead of [[bash:]]? Offer to
+    # run the candidate via Enter-to-execute next turn. Don't auto-
+    # run; that's a footgun if the model wrote example code that
+    # wasn't meant to run. Queueing is opt-in and easily dismissed.
+    if not getattr(nation, "_exec_disabled", False):
+        try:
+            from anthill.core.shell import extract_fence_candidates
+            candidates = extract_fence_candidates(result.final_output or "")
+        except Exception:  # noqa: BLE001
+            candidates = []
+        # Only nudge when exactly ONE candidate — if the model wrote
+        # multiple, ambiguous which to queue, just let the user copy.
+        if len(candidates) == 1:
+            cmd = candidates[0]
+            stats.queued_shell_command = cmd
+            console.print(
+                f"  [dim]💡 模型写了 markdown 代码块. "
+                f"直接 Enter 跑 [/dim][cyan]{cmd}[/cyan]"
+                f"  [dim](或继续问别的)[/dim]"
+            )
+            console.print()
 
     # 0.2.17 — terse follow-up hints. Pure rule-based, no LLM call.
     # When `suggest_followups` returns nothing, nothing is printed —
@@ -3671,7 +3698,24 @@ def run_repl(
                 return 0
 
         if not line:
+            # 0.2.23 — empty input after a fence-candidate nudge runs
+            # the queued shell command. Single Enter = "yes, do it";
+            # any other input clears the queue (handled below where
+            # we consume `line`).
+            if stats.queued_shell_command is not None:
+                queued = stats.queued_shell_command
+                stats.queued_shell_command = None
+                _execute_literal_command(queued, nation, config, stats)
+                refreshed = load_nation(nation.name, config.home)
+                if refreshed is not None:
+                    nation = refreshed
+                _print_status_bar(nation, stats)
             continue
+
+        # Any non-empty input clears a stale queued shell command —
+        # the user is asking something else, ignore the prior nudge.
+        if stats.queued_shell_command is not None:
+            stats.queued_shell_command = None
 
         if line.startswith("/"):
             cmd, _, rest = line[1:].partition(" ")

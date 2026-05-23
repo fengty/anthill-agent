@@ -299,6 +299,46 @@ def strip_bash_blocks(text: str) -> str:
     return _BASH_MARKER_RE.sub("", text).strip()
 
 
+# Markdown bash fence: ```bash\nCMD\n``` (also accepts ```sh /
+# ```shell, or no lang). Multi-line bodies match; the caller decides
+# what to do with them.
+_BASH_FENCE_RE = re.compile(
+    r"```(?:bash|sh|shell)?\s*\n(?P<body>.*?)\n```",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def extract_fence_candidates(text: str) -> list[str]:
+    """0.2.23 — find shell-command candidates in `````bash````` fences.
+
+    Called when the model wrote markdown fences instead of using the
+    [[bash:CMD]] marker — common LLM regression we can recover from.
+    Returns the inner commands trimmed; multi-line bodies skipped
+    (those are more likely tutorial code than 'run this').
+
+    Empty list when:
+      - No fences found
+      - The output already has [[bash:]] markers (model did the
+        right thing somewhere; assume it was deliberate elsewhere)
+      - All fence bodies are multi-line / empty / too long
+    """
+    # If the output uses the proper marker anywhere, don't second-
+    # guess — assume the fence was intentional explanation.
+    if extract_bash_blocks(text):
+        return []
+    candidates: list[str] = []
+    for m in _BASH_FENCE_RE.finditer(text):
+        body = m.group("body").strip()
+        if not body:
+            continue
+        if "\n" in body:
+            continue  # multi-line: likely a script, not a one-shot
+        if len(body) > 200:
+            continue
+        candidates.append(body)
+    return candidates
+
+
 # --- citizen prompt addition -----------------------------------------
 
 
