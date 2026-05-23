@@ -65,6 +65,18 @@ class TestCase:
 
 
 @dataclass
+class FixAttempt:
+    """One fix-then-rerun cycle for a failed test (0.2.35)."""
+
+    attempt: int               # 1-based attempt counter
+    fix_status: str            # fixed / unfixable / unknown
+    fix_summary: str           # what the citizen claims they did
+    rerun_status: str          # passed / failed / errored (after fix)
+    rerun_narrative: str = ""
+    duration_seconds: float = 0.0
+
+
+@dataclass
 class TestResult:
     """Outcome of running one TestCase."""
 
@@ -77,6 +89,7 @@ class TestResult:
     actions_taken: int = 0     # bash + browser calls count
     evidence: list[str] = field(default_factory=list)  # screenshot paths, etc
     error: Optional[str] = None
+    fix_attempts: list[FixAttempt] = field(default_factory=list)  # 0.2.35
 
 
 @dataclass
@@ -140,6 +153,78 @@ REQUIREMENT:
 {requirement}
 =========================
 """
+
+
+# Fix-loop prompt. After a test FAILED, this is what we send a
+# citizen to try and fix the underlying issue. The citizen must
+# diagnose, edit code, AND signal completion. We don't re-run the
+# test in this prompt — the orchestrator does that separately.
+CASE_FIX_PROMPT = """\
+A functional test just FAILED on the king's system. Your job is to
+diagnose the ROOT CAUSE and fix it.
+
+Failed test case #{case_id}: {name}
+Expected: {expected}
+Failure reason: {failure_reason}
+
+Failing test's narrative (what the test tried):
+=========================
+{narrative}
+=========================
+
+Your task:
+  1. Read the narrative to understand what the test tried
+  2. Use bash_run to inspect the relevant code / config / data
+  3. Apply a concrete fix (edit file via bash, restart service,
+     migrate data, whatever)
+  4. End your response with exactly one of:
+        FIXED: <one-line summary of what you changed>
+        UNFIXABLE: <one-line reason>
+
+DO NOT re-run the test yourself — the orchestrator will do that
+after you finish. Focus on diagnosis and fix. Use [[bash:]] tools
+to make CONCRETE changes; don't just describe what you would do.
+"""
+
+
+FIX_VERDICT_RE = re.compile(
+    # Allow the verdict to appear anywhere — start of line OR mid-
+    # sentence — since real model output sometimes drops it in flow
+    # ("...investigation done. FIXED: small patch."). Word-boundary
+    # at the start prevents matching "PREFIXED" etc.
+    r"\b(?P<verdict>FIXED|UNFIXABLE)\s*:\s*(?P<reason>[^\n]+)",
+    re.IGNORECASE,
+)
+
+
+def build_fix_prompt(result: "TestResult") -> str:
+    """Render the fix-loop prompt for a failed TestResult."""
+    return CASE_FIX_PROMPT.format(
+        case_id=result.case.id,
+        name=result.case.name,
+        expected=result.case.expected or "(unspecified)",
+        failure_reason=result.error or "unknown",
+        narrative=(result.narrative or "(no narrative)").strip(),
+    )
+
+
+def parse_fix_verdict(text: str) -> tuple[str, str]:
+    """Extract FIXED / UNFIXABLE + summary from citizen output.
+
+    Returns (status, summary). status ∈ {"fixed", "unfixable", "unknown"}.
+    Last match wins (same reason as parse_verdict).
+    """
+    if not text:
+        return ("unknown", "no output")
+    matches = list(FIX_VERDICT_RE.finditer(text))
+    if not matches:
+        return ("unknown", "no FIXED/UNFIXABLE line found")
+    m = matches[-1]
+    v = m.group("verdict").upper()
+    reason = (m.group("reason") or "").strip()
+    if v == "FIXED":
+        return ("fixed", reason)
+    return ("unfixable", reason)
 
 
 # Per-case execution prompt. Citizens see this when running a single
@@ -362,6 +447,23 @@ def format_report(session: TestSession) -> str:
             lines.append("**Narrative:**")
             lines.append("")
             lines.append(r.narrative.strip())
+        # 0.2.35 — fix-loop trace.
+        if r.fix_attempts:
+            lines.append("")
+            lines.append("**Fix attempts:**")
+            lines.append("")
+            for fa in r.fix_attempts:
+                fix_icon = {"fixed": "🔧", "unfixable": "🚫", "unknown": "❓"}.get(
+                    fa.fix_status, "?"
+                )
+                rerun_icon = {"passed": "✅", "failed": "❌", "errored": "⚠️"}.get(
+                    fa.rerun_status, "?"
+                )
+                lines.append(
+                    f"- attempt {fa.attempt}: {fix_icon} {fa.fix_status} "
+                    f"({fa.fix_summary[:80]}) → rerun {rerun_icon} "
+                    f"{fa.rerun_status}"
+                )
         lines.append("")
 
     return "\n".join(lines)

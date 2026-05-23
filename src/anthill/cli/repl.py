@@ -3062,22 +3062,36 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
     import time as _time
     from anthill.core.persistence import nation_dir as _nd
     from anthill.core.qa import (
+        FixAttempt,
         TestResult,
         TestSession,
         build_execution_prompt,
+        build_fix_prompt,
         load_requirement,
         parse_cases_response,
+        parse_fix_verdict,
         parse_verdict,
         write_report,
     )
 
-    source = rest.strip()
+    # 0.2.35 — `--fix [N]` flag parses out before source resolution.
+    # Default N=2 when --fix present without a number.
+    fix_max_attempts = 0
+    raw = rest.strip()
+    fix_match = re.search(r"\s--fix(?:\s+(\d+))?\b", " " + raw + " ")
+    if fix_match:
+        fix_max_attempts = int(fix_match.group(1)) if fix_match.group(1) else 2
+        # Strip the flag from source.
+        raw = re.sub(r"\s*--fix(?:\s+\d+)?\b", "", raw).strip()
+
+    source = raw
     if not source:
         console.print(
-            "  [yellow]usage:[/yellow] /test <requirement>\n"
+            "  [yellow]usage:[/yellow] /test [--fix [N]] <requirement>\n"
             "    [dim]/test \"login with wrong password shows error\"[/dim]\n"
             "    [dim]/test @./prd.md[/dim]\n"
-            "    [dim]/test https://wiki/PRD-123[/dim]"
+            "    [dim]/test https://wiki/PRD-123[/dim]\n"
+            "    [dim]/test --fix 3 \"...\"  — auto-fix failures, up to 3 attempts[/dim]"
         )
         return None
 
@@ -3228,6 +3242,109 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
                 f"  {icon} [dim]({tr.duration_seconds:.1f}s, "
                 f"{tr.actions_taken} tool call(s))[/dim]{tail}"
             )
+
+        # Step 3.5 — 0.2.35: fix loop for failures, if --fix was set.
+        if fix_max_attempts > 0:
+            for tr in session.results:
+                if tr.status not in ("failed", "errored"):
+                    continue
+                console.print()
+                console.print(
+                    f"  [bold yellow]🔧 fix-loop[/bold yellow] for "
+                    f"[cyan]#{tr.case.id} {tr.case.name}[/cyan]"
+                )
+                for attempt in range(1, fix_max_attempts + 1):
+                    console.print(
+                        f"    [dim]attempt {attempt}/{fix_max_attempts}[/dim]"
+                    )
+                    fix_t0 = _time.perf_counter()
+                    try:
+                        fix_prompt = build_fix_prompt(tr)
+                        fix_run = await nation.run("qa_fix", fix_prompt)
+                        fix_status, fix_summary = parse_fix_verdict(
+                            fix_run.output or ""
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        fix_status = "unknown"
+                        fix_summary = f"{type(e).__name__}: {e}"
+
+                    if fix_status == "unfixable":
+                        console.print(
+                            f"    [red]🚫 unfixable:[/red] {fix_summary[:80]}"
+                        )
+                        tr.fix_attempts.append(FixAttempt(
+                            attempt=attempt,
+                            fix_status="unfixable",
+                            fix_summary=fix_summary,
+                            rerun_status="skipped",
+                            duration_seconds=_time.perf_counter() - fix_t0,
+                        ))
+                        break
+
+                    if fix_status == "unknown":
+                        console.print(
+                            f"    [yellow]❓ no FIXED line:[/yellow] "
+                            f"{fix_summary[:80]}"
+                        )
+                        tr.fix_attempts.append(FixAttempt(
+                            attempt=attempt,
+                            fix_status="unknown",
+                            fix_summary=fix_summary,
+                            rerun_status="skipped",
+                            duration_seconds=_time.perf_counter() - fix_t0,
+                        ))
+                        continue  # try again
+
+                    console.print(
+                        f"    [green]🔧 fixed:[/green] {fix_summary[:80]}"
+                    )
+                    # Re-run the test case.
+                    console.print(f"    [dim]rerunning #{tr.case.id}...[/dim]")
+                    try:
+                        rerun_prompt = build_execution_prompt(tr.case)
+                        rerun_run = await nation.run(
+                            "qa_execute", rerun_prompt,
+                        )
+                        rerun_narrative = rerun_run.output or ""
+                        rerun_status, rerun_reason = parse_verdict(
+                            rerun_narrative
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        rerun_status = "errored"
+                        rerun_reason = f"{type(e).__name__}: {e}"
+                        rerun_narrative = ""
+
+                    tr.fix_attempts.append(FixAttempt(
+                        attempt=attempt,
+                        fix_status="fixed",
+                        fix_summary=fix_summary,
+                        rerun_status=rerun_status,
+                        rerun_narrative=rerun_narrative,
+                        duration_seconds=_time.perf_counter() - fix_t0,
+                    ))
+
+                    if rerun_status == "passed":
+                        # Upgrade the test result to passed.
+                        tr.status = "passed"
+                        tr.error = None
+                        tr.narrative += (
+                            f"\n\n--- after fix (attempt {attempt}) ---\n"
+                            + rerun_narrative
+                        )
+                        console.print(
+                            f"    [green]✅ rerun PASS[/green] "
+                            f"after attempt {attempt}"
+                        )
+                        break
+                    else:
+                        console.print(
+                            f"    [red]❌ rerun still {rerun_status}:[/red] "
+                            f"{rerun_reason[:80]}"
+                        )
+                        # Update narrative so the next attempt sees
+                        # the latest failure mode.
+                        tr.narrative = rerun_narrative
+                        tr.error = rerun_reason
 
         session.ended_at = _time.time()
 
