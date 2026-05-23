@@ -173,6 +173,13 @@ def doctor() -> None:
     raise SystemExit(run_doctor())
 
 
+# 0.2.38 — `anthill test` for CI / non-interactive functional testing.
+# Imported here so it registers with the same `cli` group.
+from anthill.cli.test_cmd import test as _test_command  # noqa: E402
+
+cli.add_command(_test_command)
+
+
 # 'anthill nation ...' subcommand group.
 from anthill.cli.nation_cmd import nation as _nation_group  # noqa: E402
 

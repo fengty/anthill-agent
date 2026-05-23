@@ -2607,7 +2607,10 @@ async def _ensure_browser_session(nation: "Nation | None"):  # noqa: ANN001 — 
         state_dir = nation_dir(cfg.home, nation.name)
     except Exception:  # noqa: BLE001
         state_dir = None
-    sess = BrowserSession(state_dir=state_dir, headless=False)
+    # 0.2.38 — CI mode flips headless. Nation carries the flag set by
+    # `anthill test --headless`; defaults to False (REPL = visible).
+    headless = bool(getattr(nation, "_browser_headless", False))
+    sess = BrowserSession(state_dir=state_dir, headless=headless)
     start_result = await sess.start()
     if not start_result.ok:
         # Don't cache a broken session — next time the user might

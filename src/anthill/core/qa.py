@@ -486,6 +486,78 @@ def _session_id(session: "TestSession") -> str:
     return f"{stamp}-{_session_slug(session)}"
 
 
+# --- 0.2.38 — JUnit XML for CI integration ---------------------------
+
+
+def format_junit_xml(session: "TestSession") -> str:
+    """Render a TestSession as JUnit XML so CI tools (GitHub Actions,
+    GitLab CI, Jenkins, etc.) can ingest the results natively.
+
+    Schema: testsuite with N testcase children.
+      - passed case → bare <testcase/>
+      - failed case → <testcase><failure message="..."/></testcase>
+      - errored case → <testcase><error message="..."/></testcase>
+      - skipped case → <testcase><skipped/></testcase>
+    """
+    from xml.sax.saxutils import escape, quoteattr
+
+    failures = sum(1 for r in session.results if r.status == "failed")
+    errors = sum(1 for r in session.results if r.status == "errored")
+    skipped = sum(1 for r in session.results if r.status == "skipped")
+    total = len(session.results)
+    duration = (session.ended_at or time.time()) - session.started_at
+
+    when = time.strftime(
+        "%Y-%m-%dT%H:%M:%S", time.localtime(session.started_at)
+    )
+    suite_name = "anthill.qa"
+    if session.nation_name:
+        suite_name = f"anthill.{session.nation_name}"
+
+    out: list[str] = ['<?xml version="1.0" encoding="UTF-8"?>']
+    out.append(
+        f'<testsuite name={quoteattr(suite_name)} '
+        f'tests="{total}" failures="{failures}" errors="{errors}" '
+        f'skipped="{skipped}" time="{duration:.3f}" timestamp="{when}">'
+    )
+    for r in session.results:
+        c = r.case
+        case_name = escape(c.name)
+        classname = escape(suite_name)
+        time_s = r.duration_seconds
+        out.append(
+            f'  <testcase classname={quoteattr(classname)} '
+            f'name={quoteattr(c.name)} time="{time_s:.3f}">'
+        )
+        if r.status == "failed":
+            msg = (r.error or "test failed").replace("\n", " ")[:300]
+            body = (r.narrative or "")[:5000]
+            out.append(
+                f'    <failure message={quoteattr(msg)} type="AssertionError">'
+                f'{escape(body)}</failure>'
+            )
+        elif r.status == "errored":
+            msg = (r.error or "executor errored").replace("\n", " ")[:300]
+            body = (r.narrative or "")[:5000]
+            out.append(
+                f'    <error message={quoteattr(msg)} type="ExecutionError">'
+                f'{escape(body)}</error>'
+            )
+        elif r.status == "skipped":
+            out.append('    <skipped/>')
+        out.append('  </testcase>')
+    out.append('</testsuite>')
+    return "\n".join(out)
+
+
+def write_junit_xml(session: "TestSession", path: Path) -> Path:
+    """Write the JUnit XML to `path`. Caller picks the path (CI tools
+    expect specific filenames like `junit.xml` or `test-results.xml`)."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(format_junit_xml(session), encoding="utf-8")
+    return Path(path)
+
+
 def write_report(session: "TestSession", nation_dir: Path) -> Path:
     """Write the markdown report and return the path."""
     d = reports_dir(nation_dir)
