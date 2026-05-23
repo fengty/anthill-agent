@@ -254,11 +254,14 @@ def safe_run(
 # --- marker extraction ------------------------------------------------
 
 
-# Match [[bash:CMD]] including newlines inside the command. The
-# command captures GREEDILY-up-to-]] so multi-line bash blocks work
-# (heredocs, escaped newlines, etc.). We allow optional whitespace.
+# Match [[bash:CMD]] including newlines inside the command.
+# We use `.*?` (NOT `.+?`) so an empty body `[[bash:]]` matches
+# zero chars and the regex stops there. With `.+?` the regex would
+# backtrack and greedy-extend across the next REAL marker, eating
+# everything in between. Empty bodies are then filtered in
+# extract_bash_blocks (you can't run nothing).
 _BASH_MARKER_RE = re.compile(
-    r"\[\[\s*bash\s*:\s*(?P<cmd>.+?)\s*\]\]",
+    r"\[\[\s*bash\s*:\s*(?P<cmd>.*?)\s*\]\]",
     re.IGNORECASE | re.DOTALL,
 )
 

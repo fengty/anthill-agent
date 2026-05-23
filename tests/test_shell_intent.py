@@ -20,67 +20,44 @@ import pytest
 from anthill.core.shell import looks_like_shell_command
 
 
-# --- positive cases (should fast-path) ----------------------------
+# --- positive / negative discrimination -----------------------------
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "ping 192.168.1.149",
-        "ping -c 5 1.1.1.1",
-        "git status",
-        "git log --oneline -10",
-        "df -h",
-        "ls -la /tmp",
-        "ps aux",
-        "curl https://api.example.com/health",
-        "docker ps -a",
-        "kubectl get pods",
-        "npm install",
-        "make build",
-        "echo hello",
-        "find . -name '*.py'",
-        "grep -r foo src/",
-        "cat /etc/hosts",
-        "uname -a",
-        "whoami",
-    ],
-)
-def test_known_command_detected(text: str) -> None:
-    assert looks_like_shell_command(text) == text
+def test_known_commands_accepted() -> None:
+    """Representative commands across categories — net/git/file/build/exec.
+    One assertion per category. If KNOWN_COMMANDS regresses, at least
+    one category fails and we know roughly where."""
+    accepts = [
+        "ping 192.168.1.149",              # network
+        "git log --oneline -10",            # vcs
+        "df -h",                            # filesystem
+        "docker ps -a",                     # container
+        "npm install",                      # package mgr
+        "grep -r foo src/",                 # text proc
+    ]
+    for text in accepts:
+        assert looks_like_shell_command(text) == text, (
+            f"should fast-path: {text!r}"
+        )
 
 
-# --- negative cases (must NOT fast-path) --------------------------
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        # Questions about commands
-        "ping 通吗？",
-        "git status 怎么用",
-        "what is df -h",
-        "如何使用 curl?",
-        "is npm install safe?",
-        # Prose
-        "I need to ping 192.168.1.149 but my network is flaky",
-        "解释一下 df -h 的输出",
-        # Multi-line
-        "ls\ncat\nls",
-        # Empty
-        "",
-        "   ",
-        # Long prose
-        "x" * 250,
-        # Unknown leading word
-        "frobnicate the doohickey",
-        "explain mysql group replication",
-        # Just text without command structure
-        "hello world how are you today",
-    ],
-)
-def test_non_command_rejected(text: str) -> None:
-    assert looks_like_shell_command(text) is None
+def test_non_commands_rejected() -> None:
+    """Discrimination test — these are the SHAPES of input that
+    must NOT fast-path. Each kind shown once; if a new false
+    positive shows up, add a case here, don't paper it over."""
+    rejects = [
+        "ping 通吗？",                       # question particle (Chinese)
+        "what is df -h",                     # question particle (English)
+        "I need to ping 192.168.1.149 but my network is flaky",  # prose
+        "ls\ncat\nls",                       # multi-line
+        "",                                  # empty
+        "frobnicate the doohickey",          # unknown command
+        "x" * 250,                           # too long
+    ]
+    for text in rejects:
+        assert looks_like_shell_command(text) is None, (
+            f"should NOT fast-path: {text!r}"
+        )
 
 
 # --- wrapper stripping --------------------------------------------

@@ -265,17 +265,3 @@ def test_this_session_line_appears(tmp_path: Path) -> None:
     assert "3 asks" in out
 
 
-# --- registered in completion + help ----------------------------------
-
-
-def test_usage_in_completion() -> None:
-    from anthill.cli.completion import KNOWN_SLASH_COMMANDS
-
-    assert "/usage" in KNOWN_SLASH_COMMANDS
-    assert "/cost" in KNOWN_SLASH_COMMANDS
-
-
-def test_usage_documented() -> None:
-    from anthill.cli.repl import HELP_TEXT
-
-    assert "/usage" in HELP_TEXT

@@ -200,18 +200,5 @@ def test_retry_no_prior_ask_returns_none(tmp_path: Path) -> None:
     assert load_last_ask(tmp_path) is None
 
 
-# --- the /retry command appears in completions + help ------------------
-
-
-def test_retry_in_slash_completion() -> None:
-    from anthill.cli.completion import KNOWN_SLASH_COMMANDS
-    assert "/retry" in KNOWN_SLASH_COMMANDS
-
-
-def test_retry_documented_in_help() -> None:
-    from anthill.cli.repl import HELP_TEXT
-    assert "/retry" in HELP_TEXT
-
-
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

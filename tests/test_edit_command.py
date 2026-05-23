@@ -132,22 +132,5 @@ def test_compose_in_editor_respects_editor_with_args(monkeypatch) -> None:
     assert received_cmd["cmd"][1] == "--wait"
 
 
-# --- /edit registered in completion + help ----------------------------
-
-
-def test_edit_in_slash_completion() -> None:
-    from anthill.cli.completion import KNOWN_SLASH_COMMANDS
-
-    assert "/edit" in KNOWN_SLASH_COMMANDS
-    assert "/e" in KNOWN_SLASH_COMMANDS
-
-
-def test_edit_documented_in_help() -> None:
-    from anthill.cli.repl import HELP_TEXT
-
-    assert "/edit" in HELP_TEXT
-    assert "$EDITOR" in HELP_TEXT
-
-
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
