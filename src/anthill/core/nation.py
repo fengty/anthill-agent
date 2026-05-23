@@ -487,10 +487,20 @@ class Nation:
                 from anthill.core.tool_executors import (
                     make_dispatch_with_kanban,
                 )
+                # 0.2.40 — vision provider for visual_check tool.
+                # Looked up from nation._vision_provider, set by CLI/
+                # REPL bootstrap when a vision_model config is present.
+                # When None, visual_check is REGISTERED in the toolset
+                # (so the model knows about it) but calls return a
+                # "no vision model configured" error.
+                vision_provider = getattr(self, "_vision_provider", None)
+                vision_model_name = getattr(self, "_vision_model_name", "")
                 agent_executor = make_dispatch_with_kanban(
                     home,
                     default_assignee=agent.id,
                     nation=self,  # 0.2.32: enables delegate_task
+                    vision_provider=vision_provider,
+                    vision_model_name=vision_model_name,
                 )
         result = await agent.execute(
             task_type,

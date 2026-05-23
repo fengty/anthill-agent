@@ -183,6 +183,7 @@ def builtin_tools(
     include_browser: bool = False,
     include_kanban: bool = False,
     include_delegate: bool = False,
+    include_vision: bool = False,
 ) -> list[ToolSpec]:
     """The default tool set.
 
@@ -190,6 +191,8 @@ def builtin_tools(
     `include_kanban` (0.2.31+) registers `kanban_*` tools.
     `include_delegate` (0.2.32+) registers `delegate_task` for
     multi-agent collaboration.
+    `include_vision` (0.2.40+) registers `visual_check` for
+    multimodal screenshot verification.
     """
     tools: list[ToolSpec] = [BASH_RUN]
     if include_browser:
@@ -200,4 +203,7 @@ def builtin_tools(
     if include_delegate:
         from anthill.core.delegate import DELEGATE_TASK
         tools.append(DELEGATE_TASK)
+    if include_vision:
+        from anthill.core.vision import VISUAL_CHECK
+        tools.append(VISUAL_CHECK)
     return tools

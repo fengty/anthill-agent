@@ -178,6 +178,7 @@ class Agent:
                         include_browser=True,
                         include_kanban=use_extended_tools,
                         include_delegate=use_extended_tools,
+                        include_vision=use_extended_tools,
                     ),
                     executor=executor,
                     on_tool_call=on_tool_call,

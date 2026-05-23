@@ -177,16 +177,14 @@ def make_dispatch_with_kanban(
     home,
     default_assignee: str | None = None,
     nation=None,
+    vision_provider=None,
+    vision_model_name: str = "",
 ):
     """0.2.31 — dispatch that knows where the kanban DB lives.
     0.2.32 — also wires delegate_task if a nation is provided.
+    0.2.40 — also wires visual_check if a vision_provider is given.
 
     Returns an async fn matching the agent_loop executor signature.
-    `default_assignee` populates the "actor" identity for kanban
-    writes (kanban_create's assignee, kanban_comment's author).
-    `nation` is needed for delegate_task — it's the Nation instance
-    whose router picks the child citizen. When None, delegate is
-    NOT registered (callers without a nation can't safely route).
     """
     from anthill.core.kanban_tools import make_kanban_executors
     kanban_dispatch, _handlers = make_kanban_executors(home, default_assignee)
@@ -195,6 +193,14 @@ def make_dispatch_with_kanban(
     if nation is not None:
         from anthill.core.delegate import make_delegate_executor
         delegate_exec = make_delegate_executor(nation, default_assignee or "")
+
+    visual_exec = None
+    if vision_provider is not None:
+        from anthill.core.vision import make_visual_check_executor
+        visual_exec = make_visual_check_executor(
+            vision_provider=vision_provider,
+            vision_model_name=vision_model_name,
+        )
 
     async def dispatch(call: ToolCall) -> ToolResult:
         name = (call.name or "").strip()
@@ -206,11 +212,24 @@ def make_dispatch_with_kanban(
             return await kanban_dispatch(call)
         if name == "delegate_task" and delegate_exec is not None:
             return await delegate_exec(call)
+        if name == "visual_check" and visual_exec is not None:
+            return await visual_exec(call)
+        if name == "visual_check":
+            # Registered as a tool but no vision provider — give the
+            # citizen a clear path forward instead of "unknown tool."
+            return ToolResult(
+                tool_call_id=call.id,
+                content=(
+                    "visual_check needs a vision model. Run:\n"
+                    "  anthill values set vision_model <model>"
+                ),
+                is_error=True,
+            )
         return ToolResult(
             tool_call_id=call.id,
             content=(
                 f"Unknown tool: {name!r}. Available tools: bash_run, "
-                f"browser_action, kanban_*, delegate_task."
+                f"browser_action, kanban_*, delegate_task, visual_check."
             ),
             is_error=True,
         )
