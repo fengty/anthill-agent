@@ -1301,12 +1301,15 @@ async def _handle_ask(
         pass
 
     # 0.2.0 — short-circuit: if the request was JUST a URL (or URL +
-    # tiny prose) AND we couldn't get content AND user declined the
-    # inline auth prompt → do NOT run subtasks. They'd just burn 3
-    # refusal-retry rounds producing variants of "please paste the
-    # content". Surface a clear "here's what you can do" message
-    # instead. This is the consolidation fix for the live-session
-    # waste pattern.
+    # tiny prose) AND we couldn't get content → don't run subtasks
+    # that'd just produce "please paste the content."
+    # 0.2.41 — when the user typed MORE than just a URL (creds, a
+    # task, instructions) AND playwright is available, DON'T bail.
+    # Instead pass through with a browser-driving hint so citizens
+    # use [[browser:goto URL]] directly. Real-session screenshot
+    # showed: user pastes "URL,admin/admin,先整理菜单", anthill
+    # 502s on httpx, gives up. Citizen with browser tool could
+    # have just navigated and done the task.
     if (
         url_fetch_was_skipped
         and not url_block.fetched
@@ -1324,6 +1327,37 @@ async def _handle_ask(
             "[cyan]/setup browser[/cyan] enables Playwright fallback."
         )
         return
+
+    # 0.2.41 — URL fetch failed but the user has substantive content
+    # AND Playwright is installed → annotate the prompt so citizens
+    # know to use the browser tool directly.
+    if url_fetch_was_skipped and not url_block.fetched:
+        try:
+            from anthill.core.browser_setup import detect_state
+            browser_ready = detect_state().ready
+        except Exception:  # noqa: BLE001
+            browser_ready = False
+        if browser_ready:
+            # Pull failed URLs out so we can name them.
+            failed_urls = [e.url for e in url_block.errors[:3]]
+            urls_line = ", ".join(failed_urls) if failed_urls else "(URL above)"
+            hint = (
+                f"\n\n[anthill note] httpx fetch of {urls_line} failed "
+                f"({url_block.errors[0].reason[:120] if url_block.errors else 'unknown'}). "
+                f"DO NOT skip the request. Use the browser tool to drive "
+                f"the page directly:\n"
+                f"  [[browser:goto <URL>]]\n"
+                f"  [[browser:fill <selector> <value>]]  # if login form\n"
+                f"  [[browser:click <selector>]]\n"
+                f"  [[browser:text <selector>]]          # read content\n"
+                f"If the user provided credentials inline (e.g. 'admin/admin'),"
+                f" use them on the login form.\n"
+            )
+            effective_request = effective_request + hint
+            console.print(
+                "  [dim]↳ httpx 502/timeout; pushing through with browser "
+                "tool hint (citizen will drive Playwright directly).[/dim]"
+            )
 
     # 0.1.28 — conversation memory injection. When the current ask
     # looks like a follow-up ("我说的是 2026 年的", "tell me more",
@@ -4062,8 +4096,61 @@ async def _handle_loop_cmd(
         raise
 
 
+def _suggest_nearest_slash(
+    typed: str, known: "tuple[str, ...] | list[str]",
+) -> str | None:
+    """0.2.41 — fuzzy match an unknown /command to the nearest known.
+
+    User typed `/step browser` (the real bug from production); we
+    want to suggest `/setup browser`. Approach:
+
+      1. Levenshtein distance to each known command
+      2. Threshold: distance ≤ 2 AND not more than half the typed length
+      3. Tie-breaker: prefer shared-prefix matches
+      4. Return None if nothing close
+
+    Built without external deps — anthill stays light. Uses a
+    classic O(n·m) DP for distance; the candidate set is ~30 names
+    and the strings are ~10 chars each, so it's microseconds.
+    """
+    typed_l = typed.lower()
+    if not typed_l or not known:
+        return None
+
+    def _dist(a: str, b: str) -> int:
+        if a == b:
+            return 0
+        # Build DP table.
+        prev = list(range(len(b) + 1))
+        for i, ca in enumerate(a, 1):
+            cur = [i]
+            for j, cb in enumerate(b, 1):
+                ins = cur[j - 1] + 1
+                dele = prev[j] + 1
+                sub = prev[j - 1] + (0 if ca == cb else 1)
+                cur.append(min(ins, dele, sub))
+            prev = cur
+        return prev[-1]
+
+    best: tuple[int, str] | None = None
+    for k in known:
+        d = _dist(typed_l, k.lower())
+        if d == 0:
+            continue  # already matched somewhere upstream
+        # Threshold: small absolute distance + relative tightness.
+        if d > 2 or d * 2 > len(typed_l):
+            continue
+        # Prefer same-prefix matches when distances tie.
+        prefix_bonus = 0 if typed_l[:2] == k.lower()[:2] else 1
+        score = d + prefix_bonus
+        if best is None or score < best[0]:
+            best = (score, k)
+    return best[1] if best else None
+
+
 def _request_is_essentially_just_url(request: str) -> bool:
     """0.2.0 — does this request reduce to "look at this URL, please"?
+    0.2.41 — fixed false-positive on "URL,creds,task" patterns.
 
     Used to short-circuit asks where URL fetch failed AND there's no
     real content for citizens to work with. Heuristic:
@@ -4071,17 +4158,25 @@ def _request_is_essentially_just_url(request: str) -> bool:
       - after stripping the URL + common verbs (analyze/分析/查看/
         summarize/解读/...), what remains is < 20 chars
 
-    The point isn't perfect classification — it's catching the common
-    "贴 URL，问个问题" pattern that costs 3 refusal-retry rounds with
-    no chance of useful output.
+    The 0.2.41 fix: the old `https?://\\S+` regex ate everything
+    until a whitespace. Real users paste "URL,admin/admin,中文任务"
+    inline (no spaces) — that whole string got eaten and the
+    Chinese task text after was lost, causing a false short-circuit
+    to "skipped, citizens have no content." Now we stop at common
+    separators (`,` `;` `，` `；`) and Chinese punctuation so the
+    task text survives the strip and survives the < 20 check.
     """
     import re as _re
 
     text = request.strip()
     if not text:
         return False
-    # Strip URLs.
-    text = _re.sub(r"https?://\S+", "", text)
+    # 0.2.41 — URL pattern stops at commas and Chinese-style
+    # separators, NOT just whitespace. RFC 3986 allows `;` in path
+    # (SPA matrix params like `;module=X;view=Y` are common!), so
+    # we KEEP semicolons inside the URL. Real users separate
+    # "URL,creds,task" with commas — that's the cut point.
+    text = _re.sub(r"https?://[^\s,，\"<>]+", "", text)
     # Strip common URL-action verbs / particles.
     for w in (
         "分析下", "分析", "解析", "查看", "看看", "看下", "解读",
@@ -4091,7 +4186,26 @@ def _request_is_essentially_just_url(request: str) -> bool:
         text = text.replace(w, " ")
     # Collapse whitespace.
     text = " ".join(text.split())
-    return len(text) < 20
+    # 0.2.41 — CJK chars are ~2× info-dense vs ASCII. Count them
+    # double so a 10-char Chinese task ("先整理出来由哪些菜单")
+    # counts as 20+ "information units" and survives the < 20
+    # threshold. Pre-fix, "10 Chinese chars" looked like "10 chars"
+    # and tripped the short-circuit incorrectly.
+    info_chars = sum(2 if _is_cjk(ch) else 1 for ch in text)
+    return info_chars < 20
+
+
+def _is_cjk(ch: str) -> bool:
+    """True for CJK Unified, Japanese kana, Hangul — i.e. characters
+    that pack way more info per glyph than ASCII."""
+    cp = ord(ch)
+    return (
+        0x4E00 <= cp <= 0x9FFF       # CJK Unified Ideographs
+        or 0x3400 <= cp <= 0x4DBF    # CJK Extension A
+        or 0x3040 <= cp <= 0x309F    # Hiragana
+        or 0x30A0 <= cp <= 0x30FF    # Katakana
+        or 0xAC00 <= cp <= 0xD7AF    # Hangul Syllables
+    )
 
 
 def _maybe_install_browser_interactively(request, url_block):
@@ -6015,7 +6129,21 @@ def run_repl(
                     f"[dim](Scout's plan will be reviewed before execution)[/dim]"
                 )
             else:
-                console.print(f"[yellow]Unknown command: /{cmd}.[/yellow] Try /help.")
+                # 0.2.41 — fuzzy match: real-session showed user typing
+                # "/step browser" expecting "/setup browser". Suggest
+                # nearest known command rather than just "Try /help."
+                from anthill.cli.completion import KNOWN_SLASH_COMMANDS
+                suggestion = _suggest_nearest_slash(f"/{cmd}", KNOWN_SLASH_COMMANDS)
+                if suggestion:
+                    console.print(
+                        f"[yellow]Unknown command: /{cmd}.[/yellow] "
+                        f"did you mean [cyan]{suggestion}[/cyan]? "
+                        f"[dim](or /help to see all)[/dim]"
+                    )
+                else:
+                    console.print(
+                        f"[yellow]Unknown command: /{cmd}.[/yellow] Try /help."
+                    )
             continue
 
         # 0.1.5+ — refuse to call into a misconfigured nation. Without
