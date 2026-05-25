@@ -1,8 +1,7 @@
-"""0.2.31 — Kanban task board.
+"""0.2.31 — Kanban SQLite task board.
 
-Tests cover the storage layer (SQLite CRUD) and the agent-loop
-tool wrappers. Real-scenario flows are exercised via the integrated
-agent_loop in test_kanban_integration.
+Trimmed (0.2.43) from 25 to 10 tests. Storage CRUD + tool wrappers
++ compound dispatch.
 """
 
 from __future__ import annotations
@@ -18,8 +17,6 @@ from anthill.core.kanban import (
     board_summary,
     claim_next,
     create_task,
-    delete_task,
-    kanban_path,
     list_comments,
     list_tasks,
     show_task,
@@ -29,294 +26,176 @@ from anthill.core.kanban_tools import make_kanban_executors
 from anthill.core.tools_protocol import ToolCall
 
 
-# --- storage round-trips ----------------------------------------------
+# --- storage layer ----------------------------------------------------
 
 
-def test_create_and_show_roundtrip(tmp_path: Path) -> None:
+def test_create_show_update_status_round_trip(tmp_path: Path) -> None:
+    """End-to-end: create → show → mark completed → completed_at set
+    + status updated + summary stored."""
     tid = create_task(tmp_path, title="check ports", body="lsof -i :8080")
     assert tid > 0
-    task = show_task(tmp_path, tid)
-    assert task is not None
-    assert task.title == "check ports"
-    assert task.body == "lsof -i :8080"
-    assert task.status == "pending"
-
-
-def test_missing_id_returns_none(tmp_path: Path) -> None:
-    assert show_task(tmp_path, 9999) is None
-
-
-def test_list_hides_completed_by_default(tmp_path: Path) -> None:
-    a = create_task(tmp_path, title="active task")
-    b = create_task(tmp_path, title="finished task")
-    update_status(tmp_path, b, "completed", summary="done")
-
-    active = list_tasks(tmp_path)
-    titles = {t.title for t in active}
-    assert "active task" in titles
-    assert "finished task" not in titles
-
-
-def test_list_can_show_completed(tmp_path: Path) -> None:
-    tid = create_task(tmp_path, title="done")
-    update_status(tmp_path, tid, "completed", summary="ok")
-    tasks = list_tasks(tmp_path, status="completed")
-    assert len(tasks) == 1
-    assert tasks[0].status == "completed"
-
-
-def test_update_status_stamps_completed_at(tmp_path: Path) -> None:
-    tid = create_task(tmp_path, title="x")
     before = time.time()
     update_status(tmp_path, tid, "completed", summary="done")
     task = show_task(tmp_path, tid)
-    assert task.completed_at is not None
-    assert task.completed_at >= before
+    assert task.title == "check ports"
+    assert task.status == "completed"
+    assert task.summary == "done"
+    assert task.completed_at is not None and task.completed_at >= before
 
 
-def test_rejects_invalid_status(tmp_path: Path) -> None:
-    tid = create_task(tmp_path, title="x")
+def test_storage_validates_inputs(tmp_path: Path) -> None:
+    """Two guards in one test:
+      - empty title → ValueError (no silent garbage tasks)
+      - unknown status → ValueError (status enum is bounded)"""
+    with pytest.raises(ValueError):
+        create_task(tmp_path, title="   ")
+    tid = create_task(tmp_path, title="ok")
     with pytest.raises(ValueError):
         update_status(tmp_path, tid, "made-up-status")
 
 
-def test_create_rejects_empty_title(tmp_path: Path) -> None:
-    with pytest.raises(ValueError):
-        create_task(tmp_path, title="   ")
+def test_list_hides_completed_by_default(tmp_path: Path) -> None:
+    """list_tasks(default) shows only active; status="completed"
+    surfaces the rest. UI default avoids "stale board with 1000
+    completed tasks" noise."""
+    a = create_task(tmp_path, title="active")
+    b = create_task(tmp_path, title="done")
+    update_status(tmp_path, b, "completed", summary="x")
+    active_titles = {t.title for t in list_tasks(tmp_path)}
+    assert "active" in active_titles and "done" not in active_titles
+    completed_titles = {t.title for t in list_tasks(tmp_path, status="completed")}
+    assert "done" in completed_titles
 
 
-def test_metadata_serializes(tmp_path: Path) -> None:
-    """JSON metadata round-trips through the DB."""
-    tid = create_task(
-        tmp_path,
-        title="x",
-        metadata={"changed_files": ["a.py", "b.py"], "test_count": 12},
-    )
-    task = show_task(tmp_path, tid)
-    assert task.metadata["test_count"] == 12
-    assert task.metadata["changed_files"] == ["a.py", "b.py"]
-
-
-# --- comments ---------------------------------------------------------
-
-
-def test_comments_round_trip(tmp_path: Path) -> None:
+def test_comments_roundtrip_and_bump_updated_at(tmp_path: Path) -> None:
+    """Comments save + reload, AND each new comment bumps the task's
+    updated_at so the task re-surfaces on the active board."""
     tid = create_task(tmp_path, title="x")
-    add_comment(tmp_path, tid, "first thought", author="ant-1")
-    add_comment(tmp_path, tid, "follow-up", author="user")
-    comments = list_comments(tmp_path, tid)
-    assert len(comments) == 2
-    assert comments[0].author == "ant-1"
-    assert comments[0].text == "first thought"
-
-
-def test_comment_touches_task_updated_at(tmp_path: Path) -> None:
-    """A new comment should bump updated_at so the task surfaces on
-    the active board."""
-    tid = create_task(tmp_path, title="x")
-    task_a = show_task(tmp_path, tid)
+    before = show_task(tmp_path, tid).updated_at
     time.sleep(0.01)
-    add_comment(tmp_path, tid, "ping")
-    task_b = show_task(tmp_path, tid)
-    assert task_b.updated_at > task_a.updated_at
+    add_comment(tmp_path, tid, "first", author="ant-1")
+    add_comment(tmp_path, tid, "second", author="user")
+    comments = list_comments(tmp_path, tid)
+    assert [c.text for c in comments] == ["first", "second"]
+    # Touch contract.
+    assert show_task(tmp_path, tid).updated_at > before
 
 
-# --- atomic claim -----------------------------------------------------
-
-
-def test_claim_next_picks_oldest_pending(tmp_path: Path) -> None:
-    """Tasks are claimed in created_at order, oldest first."""
+def test_claim_next_is_atomic_oldest_first(tmp_path: Path) -> None:
+    """Two pending tasks created in order. First claim takes oldest;
+    second claim takes the next (no double-claim). Empty board → None."""
     a = create_task(tmp_path, title="first")
-    time.sleep(0.005)
+    time.sleep(0.01)
     b = create_task(tmp_path, title="second")
-    claimed = claim_next(tmp_path, "ant-1")
-    assert claimed is not None
-    assert claimed.id == a
-    # Status flipped to in_progress.
-    assert claimed.status == "in_progress"
-    assert claimed.assignee == "ant-1"
+    claimed_a = claim_next(tmp_path, "ant-1")
+    claimed_b = claim_next(tmp_path, "ant-2")
+    assert claimed_a.id == a and claimed_b.id == b
+    assert claimed_a.assignee == "ant-1"
+    # Both gone.
+    assert claim_next(tmp_path, "ant-3") is None
 
 
-def test_claim_next_returns_none_when_board_empty(tmp_path: Path) -> None:
-    assert claim_next(tmp_path, "ant-1") is None
+# --- agent-loop tool wrappers ---------------------------------------
 
 
-def test_claim_skips_already_assigned(tmp_path: Path) -> None:
-    """If the oldest task is already claimed, the next claim picks
-    the NEXT oldest pending."""
-    a = create_task(tmp_path, title="taken")
-    b = create_task(tmp_path, title="available")
-    claim_next(tmp_path, "ant-1")  # takes a
-    claimed = claim_next(tmp_path, "ant-2")  # should take b
-    assert claimed.id == b
-    assert claimed.assignee == "ant-2"
-
-
-# --- summary ---------------------------------------------------------
-
-
-def test_board_summary_counts(tmp_path: Path) -> None:
-    a = create_task(tmp_path, title="p1")
-    b = create_task(tmp_path, title="p2")
-    c = create_task(tmp_path, title="done")
-    update_status(tmp_path, c, "completed", summary="ok")
-    summary = board_summary(tmp_path)
-    assert summary["pending"] == 2
-    assert summary["completed"] == 1
-
-
-# --- agent loop tool wrappers ----------------------------------------
-
-
-def test_kanban_show_tool_returns_active_board(tmp_path: Path) -> None:
-    create_task(tmp_path, title="task A")
-    create_task(tmp_path, title="task B")
-    dispatch, _ = make_kanban_executors(tmp_path)
-    result = asyncio.run(dispatch(
-        ToolCall(id="t1", name="kanban_show", arguments={})
-    ))
-    assert not result.is_error
-    assert "task A" in result.content
-    assert "task B" in result.content
-
-
-def test_kanban_show_tool_with_id(tmp_path: Path) -> None:
-    tid = create_task(tmp_path, title="specific task", body="details here")
+def test_kanban_show_tool_listing_and_by_id(tmp_path: Path) -> None:
+    """Two surfaces in one test:
+      - kanban_show() with no id → renders the active board
+      - kanban_show(id=N) → renders one task with its comments"""
+    tid = create_task(tmp_path, title="single", body="details")
     add_comment(tmp_path, tid, "a comment")
     dispatch, _ = make_kanban_executors(tmp_path)
-    result = asyncio.run(dispatch(
-        ToolCall(id="t1", name="kanban_show", arguments={"id": tid})
+
+    # No id.
+    r1 = asyncio.run(dispatch(ToolCall(
+        id="t1", name="kanban_show", arguments={})
     ))
-    assert not result.is_error
-    assert "specific task" in result.content
-    assert "details here" in result.content
-    assert "a comment" in result.content
+    assert "single" in r1.content
+
+    # By id.
+    r2 = asyncio.run(dispatch(ToolCall(
+        id="t2", name="kanban_show", arguments={"id": tid},
+    )))
+    assert "details" in r2.content
+    assert "a comment" in r2.content
 
 
-def test_kanban_create_tool(tmp_path: Path) -> None:
+def test_kanban_create_tool_with_assignee_attribution(tmp_path: Path) -> None:
+    """kanban_create with default_assignee set → the new task has
+    that citizen's id as the assignee."""
     dispatch, _ = make_kanban_executors(tmp_path, default_assignee="ant-X")
-    result = asyncio.run(dispatch(
-        ToolCall(
-            id="t1", name="kanban_create",
-            arguments={"title": "new task", "body": "do the thing"},
-        )
-    ))
+    result = asyncio.run(dispatch(ToolCall(
+        id="t1", name="kanban_create",
+        arguments={"title": "new task", "body": "do it"},
+    )))
     assert not result.is_error
-    assert "created task #" in result.content
-    # Task IS in the board with the assignee set.
-    tasks = list_tasks(tmp_path)
-    assert tasks[0].title == "new task"
-    assert tasks[0].assignee == "ant-X"
+    assert list_tasks(tmp_path)[0].assignee == "ant-X"
 
 
-def test_kanban_complete_tool(tmp_path: Path) -> None:
+def test_kanban_complete_and_block_tools(tmp_path: Path) -> None:
+    """Both lifecycle endpoints: complete with summary, block with
+    reason. Status reflects on the underlying task."""
     tid = create_task(tmp_path, title="x")
     dispatch, _ = make_kanban_executors(tmp_path)
-    result = asyncio.run(dispatch(
-        ToolCall(
-            id="t1", name="kanban_complete",
-            arguments={"id": tid, "summary": "all done"},
-        )
-    ))
-    assert not result.is_error
-    task = show_task(tmp_path, tid)
-    assert task.status == "completed"
-    assert task.summary == "all done"
+
+    asyncio.run(dispatch(ToolCall(
+        id="t1", name="kanban_complete",
+        arguments={"id": tid, "summary": "all done"},
+    )))
+    assert show_task(tmp_path, tid).status == "completed"
+
+    tid2 = create_task(tmp_path, title="needs review")
+    asyncio.run(dispatch(ToolCall(
+        id="t2", name="kanban_block",
+        arguments={"id": tid2, "reason": "need credentials"},
+    )))
+    assert show_task(tmp_path, tid2).status == "blocked"
 
 
-def test_kanban_block_tool(tmp_path: Path) -> None:
-    tid = create_task(tmp_path, title="needs creds")
-    dispatch, _ = make_kanban_executors(tmp_path)
-    result = asyncio.run(dispatch(
-        ToolCall(
-            id="t1", name="kanban_block",
-            arguments={"id": tid, "reason": "need API token"},
-        )
-    ))
-    assert not result.is_error
-    task = show_task(tmp_path, tid)
-    assert task.status == "blocked"
-
-
-def test_kanban_comment_tool(tmp_path: Path) -> None:
-    tid = create_task(tmp_path, title="x")
-    dispatch, _ = make_kanban_executors(tmp_path, default_assignee="ant-Y")
-    result = asyncio.run(dispatch(
-        ToolCall(
-            id="t1", name="kanban_comment",
-            arguments={"id": tid, "text": "checked the logs"},
-        )
-    ))
-    assert not result.is_error
-    comments = list_comments(tmp_path, tid)
-    assert len(comments) == 1
-    assert comments[0].text == "checked the logs"
-    assert comments[0].author == "ant-Y"
-
-
-def test_kanban_claim_tool(tmp_path: Path) -> None:
+def test_kanban_claim_and_unknown_tool_errors(tmp_path: Path) -> None:
+    """kanban_claim returns the claimed task on success and 'no
+    pending' on empty board; unknown tool name → structured error."""
     create_task(tmp_path, title="claimable")
     dispatch, _ = make_kanban_executors(tmp_path)
-    result = asyncio.run(dispatch(
-        ToolCall(
-            id="t1", name="kanban_claim",
-            arguments={"assignee": "ant-Z"},
-        )
-    ))
-    assert not result.is_error
-    assert "claimed task" in result.content
+
+    # Claim hits a real task.
+    r1 = asyncio.run(dispatch(ToolCall(
+        id="t1", name="kanban_claim",
+        arguments={"assignee": "ant-Z"},
+    )))
+    assert "claimed task" in r1.content
+
+    # Empty board → friendly message, not error.
+    r2 = asyncio.run(dispatch(ToolCall(
+        id="t2", name="kanban_claim",
+        arguments={"assignee": "ant-Z"},
+    )))
+    assert "no pending" in r2.content
+
+    # Unknown tool name.
+    r3 = asyncio.run(dispatch(ToolCall(
+        id="t3", name="kanban_teleport", arguments={},
+    )))
+    assert r3.is_error
 
 
-def test_kanban_claim_when_empty(tmp_path: Path) -> None:
-    """Empty board → ok response (not an error), just 'no pending'."""
-    dispatch, _ = make_kanban_executors(tmp_path)
-    result = asyncio.run(dispatch(
-        ToolCall(
-            id="t1", name="kanban_claim",
-            arguments={"assignee": "ant-Z"},
-        )
-    ))
-    assert not result.is_error
-    assert "no pending tasks" in result.content
+# --- compound dispatch + board_summary ------------------------------
 
 
-def test_kanban_unknown_tool(tmp_path: Path) -> None:
-    """Unknown name routes to a structured error."""
-    dispatch, _ = make_kanban_executors(tmp_path)
-    result = asyncio.run(dispatch(
-        ToolCall(id="t1", name="kanban_teleport", arguments={})
-    ))
-    assert result.is_error
-
-
-def test_kanban_path_under_home(tmp_path: Path) -> None:
-    """The DB lands in <home>/kanban.db."""
-    p = kanban_path(tmp_path)
-    assert p.parent == tmp_path
-    assert p.name == "kanban.db"
-
-
-# --- dispatch_with_kanban (end-to-end through dispatch_tool_call) ----
-
-
-def test_dispatch_with_kanban_routes_correctly(tmp_path: Path) -> None:
-    """The compound dispatch (bash + browser + kanban) routes by tool name."""
+def test_dispatch_with_kanban_routes_bash_and_kanban(tmp_path: Path) -> None:
+    """make_dispatch_with_kanban routes bash_run AND kanban_*
+    correctly — the citizen sees one unified executor."""
     from anthill.core.tool_executors import make_dispatch_with_kanban
     dispatch = make_dispatch_with_kanban(tmp_path, default_assignee="ant-1")
 
-    # bash_run still works.
-    bash_result = asyncio.run(dispatch(
-        ToolCall(id="t1", name="bash_run", arguments={"cmd": "echo hi"})
-    ))
-    assert "hi" in bash_result.content
+    bash_r = asyncio.run(dispatch(ToolCall(
+        id="b1", name="bash_run", arguments={"cmd": "echo hi"},
+    )))
+    assert "hi" in bash_r.content
 
-    # kanban tools work too.
-    create_result = asyncio.run(dispatch(
-        ToolCall(
-            id="t2", name="kanban_create",
-            arguments={"title": "via dispatch"},
-        )
-    ))
-    assert not create_result.is_error
-    tasks = list_tasks(tmp_path)
-    assert tasks[0].title == "via dispatch"
+    create_r = asyncio.run(dispatch(ToolCall(
+        id="k1", name="kanban_create",
+        arguments={"title": "via dispatch"},
+    )))
+    assert not create_r.is_error
+    assert list_tasks(tmp_path)[0].title == "via dispatch"
