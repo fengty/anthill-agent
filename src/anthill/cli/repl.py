@@ -3087,6 +3087,41 @@ def _show_usage(
         )
 
 
+def _agentic_scope(nation: Nation):
+    """0.2.42 — context manager: temporarily flip nation.agentic_mode on.
+
+    Real bug from production: /test scheduled citizens but agentic_mode
+    was False (default), so citizens received the qa_execute prompt
+    without ANY tool access. They could only narrate "I would run X..."
+    and never produce a real VERDICT. Tests "ran" but exercised
+    nothing.
+
+    /test, /retest, and `anthill test` CLI all need tool access to do
+    their job. Forcing agentic mode for the SESSION (not permanently)
+    is the minimum-surprise fix: REPL state outside the test flow stays
+    on whatever the user picked via /agentic.
+
+    Usage:
+        async def some_test_flow():
+            with _agentic_scope(nation):
+                await nation.run(...)
+    """
+    class _Scope:
+        def __enter__(self_):
+            self_.prev_mode = getattr(nation, "agentic_mode", False)
+            nation.agentic_mode = True  # type: ignore[attr-defined]
+            if not self_.prev_mode:
+                console.print(
+                    "  [dim]🤖 agentic mode auto-enabled for this run "
+                    "(citizens get bash + browser + kanban + delegate tools)[/dim]"
+                )
+            return self_
+        def __exit__(self_, *exc):
+            nation.agentic_mode = self_.prev_mode  # type: ignore[attr-defined]
+            return False
+    return _Scope()
+
+
 def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: SessionStats):
     """0.2.34 — `/test <source>` orchestrates a QA flow.
 
@@ -3271,6 +3306,19 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
         )
 
         async def _run_data() -> None:
+            # 0.2.42 — force agentic mode so citizens have tool access.
+            prev_agentic = getattr(nation, "agentic_mode", False)
+            nation.agentic_mode = True  # type: ignore[attr-defined]
+            if not prev_agentic:
+                console.print(
+                    "  [dim]🤖 agentic mode auto-enabled for this run[/dim]"
+                )
+            try:
+                await _run_data_inner()
+            finally:
+                nation.agentic_mode = prev_agentic  # type: ignore[attr-defined]
+
+        async def _run_data_inner() -> None:
             session = TestSession(
                 requirement=(
                     f"Data-driven: {dp.name}\n"
@@ -3389,6 +3437,23 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
     )
 
     async def _run() -> None:
+        # 0.2.42 — force agentic mode so citizens running qa_execute
+        # have native tool access (bash + browser + kanban + delegate
+        # + visual_check). Without it the case-execution citizens
+        # could only NARRATE, never actually run anything — that's
+        # the "测试场景完全无法触发" production bug.
+        prev_agentic = getattr(nation, "agentic_mode", False)
+        nation.agentic_mode = True  # type: ignore[attr-defined]
+        if not prev_agentic:
+            console.print(
+                "  [dim]🤖 agentic mode auto-enabled for this run[/dim]"
+            )
+        try:
+            await _run_inner()
+        finally:
+            nation.agentic_mode = prev_agentic  # type: ignore[attr-defined]
+
+    async def _run_inner() -> None:
         # Step 1: generate test cases via citizen.
         from anthill.core.qa import CASE_GENERATION_PROMPT
 
@@ -3716,6 +3781,19 @@ def _handle_retest_cmd(
     )
 
     async def _run() -> None:
+        # 0.2.42 — see _handle_test_cmd: tools are required.
+        prev_agentic = getattr(nation, "agentic_mode", False)
+        nation.agentic_mode = True  # type: ignore[attr-defined]
+        if not prev_agentic:
+            console.print(
+                "  [dim]🤖 agentic mode auto-enabled for this run[/dim]"
+            )
+        try:
+            await _run_inner()
+        finally:
+            nation.agentic_mode = prev_agentic  # type: ignore[attr-defined]
+
+    async def _run_inner() -> None:
         for tr in to_rerun:
             c = tr.case
             console.print()

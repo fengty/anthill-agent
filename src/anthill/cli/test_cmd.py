@@ -212,6 +212,11 @@ async def _run(
         parse_cases_response,
     )
 
+    # 0.2.42 — force agentic mode so citizens have tools. Without
+    # it the case-execution step has no shell/browser access — the
+    # whole `anthill test` flow becomes a no-op narration.
+    nation.agentic_mode = True  # type: ignore[attr-defined]
+
     # Step 1 — generate cases.
     gen_prompt = CASE_GENERATION_PROMPT.replace(
         "{requirement}", requirement.strip()
@@ -255,6 +260,9 @@ async def _run_with_cases(
     quiet: bool,
 ) -> int:
     """Shared executor: given pre-built TestCases, run them all + artifacts."""
+    # 0.2.42 — both code paths into _run_with_cases need agentic mode
+    # (data-driven entry skips _run entirely, so set here too).
+    nation.agentic_mode = True  # type: ignore[attr-defined]
     from anthill.core.qa import (
         FixAttempt,
         TestResult,
