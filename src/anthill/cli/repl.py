@@ -3171,6 +3171,77 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
         data_path = data_match.group(1)
         raw = re.sub(r"\s*--data\s+\S+", "", raw).strip()
 
+    # 0.2.44 — `/test record [URL]` launches Playwright codegen so the
+    # user can drive the flow once; we convert it to a [[browser:]]
+    # YAML the user can replay via /test --data.
+    if raw == "record" or raw.startswith("record ") or raw.startswith("record\t"):
+        url = raw[6:].strip() if raw.startswith("record") else ""
+        if not url:
+            console.print(
+                "  [yellow]usage:[/yellow] /test record <starting-url>\n"
+                "  [dim]starts Playwright codegen; drive the flow yourself,[/dim]\n"
+                "  [dim]then close the inspector — anthill generates a YAML you can[/dim]\n"
+                "  [dim]replay with /test --data @<path>[/dim]"
+            )
+            return None
+        from anthill.core.test_recorder import (
+            codegen_available,
+            parse_codegen_script,
+            record_with_codegen,
+            to_test_case_yaml,
+        )
+        if not codegen_available():
+            console.print(
+                "  [red]✗ Playwright not installed.[/red] "
+                "[dim]Run [cyan]/setup browser[/cyan] first.[/dim]"
+            )
+            return None
+        console.print(
+            "  [bold cyan]🎬 launching Playwright codegen[/bold cyan] "
+            f"at [magenta]{url}[/magenta]"
+        )
+        console.print(
+            "  [dim]drive the flow in the browser; close the inspector "
+            "(or hit Ctrl+C) when done.[/dim]"
+        )
+        result = record_with_codegen(url)
+        if not result.ok:
+            console.print(f"  [red]✗ {result.error}[/red]")
+            return None
+        flow = parse_codegen_script(result.script)
+        if not flow.actions:
+            console.print(
+                "  [yellow]⚠ no actions captured.[/yellow] "
+                "[dim]did you actually interact with the page?[/dim]"
+            )
+            return None
+        console.print(
+            f"  [green]✓[/green] captured {len(flow.actions)} action(s) "
+            f"in {result.duration_seconds:.0f}s"
+        )
+        # Auto-named output path.
+        slug = re.sub(r"[^a-zA-Z0-9一-鿿]+", "-", url).strip("-").lower()[:30]
+        out_dir = _nd(config.home, nation.name) / "test_recordings"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{_time.strftime('%Y%m%d-%H%M%S')}-{slug}.yaml"
+        case_name = url.split("/")[-1][:40] or "recorded flow"
+        yaml_text = to_test_case_yaml(flow, case_name=case_name)
+        out_path.write_text(yaml_text, encoding="utf-8")
+        console.print(
+            f"  [bold green]✓ saved:[/bold green] [cyan]{out_path}[/cyan]"
+        )
+        if flow.suggested_params:
+            console.print(
+                "  [dim]suggested parameters (edit in the YAML "
+                "to add more rows):[/dim]"
+            )
+            for k, v in flow.suggested_params.items():
+                console.print(f"    [cyan]{{{k}}}[/cyan] = {v!r}")
+        console.print(
+            f"  [dim]replay:[/dim] [cyan]/test --data @{out_path}[/cyan]"
+        )
+        return None
+
     # 0.2.37 — `/test trends` aggregates across all sessions.
     if raw == "trends" or raw == "stats" or raw.startswith("trends ") or raw.startswith("stats "):
         from anthill.core.qa import aggregate_trends
@@ -3395,9 +3466,9 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
             "  [yellow]usage:[/yellow] /test [--fix [N]] [--data @file] <requirement>\n"
             "    [dim]/test \"login with wrong password shows error\"[/dim]\n"
             "    [dim]/test @./prd.md[/dim]\n"
-            "    [dim]/test https://wiki/PRD-123[/dim]\n"
             "    [dim]/test --fix 3 \"...\"      — auto-fix failures, 3 attempts[/dim]\n"
             "    [dim]/test --data @cases.yaml — data-driven: template × N rows[/dim]\n"
+            "    [dim]/test record <url>       — drive once, anthill generates YAML[/dim]\n"
             "    [dim]/test history            — list past sessions[/dim]\n"
             "    [dim]/test trends             — pass-rate / flaky / broken[/dim]"
         )
