@@ -124,6 +124,76 @@ class TestSession:
 # The case-generation prompt. STRICT instructions to output JSON — no
 # preamble, no markdown wrapper. Models love to violate this; we
 # parse defensively (see parse_cases_response).
+# 0.2.45 — exploration prompt for sparse-requirement-with-URL cases.
+# Real bug: user typed `/test 我需要进行测试 http://localhost:3000/`,
+# model couldn't see localhost (it's on the LLM provider, not the
+# user's machine), returned `[]`. Now anthill first asks a citizen
+# to USE the browser tool to inspect the URL, captures the report,
+# and prepends it to the requirement so case-gen has context.
+EXPLORE_FOR_QA_PROMPT = """\
+You are a QA scout. The king wants to test {url} but hasn't
+described what's on it. Your job: USE the browser tool to LOOK at
+the page, then report what you see in compact form so a downstream
+QA planner can write meaningful test cases.
+
+Do this:
+  1. [[browser:goto {url}]]
+  2. [[browser:text body]]                   # or specific selectors
+  3. (optional) [[browser:screenshot home]]  # visual reference
+
+Then write a structured report covering:
+  - PAGE TITLE: ...
+  - VISIBLE NAV / MENU: ... (top nav items, sidebar, etc.)
+  - PRIMARY FORMS / INPUTS: ... (login form? search? CRUD?)
+  - PRIMARY BUTTONS / CTAs: ...
+  - APPARENT USER FLOWS: 1-3 likely user journeys
+  - AUTH NEEDED: yes/no, what credentials field names if visible
+  - LIKELY TEST SCENARIOS: 3-5 candidates (don't write the cases —
+    just list the headlines)
+
+Keep the report under 500 words. Be CONCRETE, name actual UI
+labels you saw, not generic guesses.
+"""
+
+
+def is_sparse_requirement_with_url(text: str) -> Optional[str]:
+    """0.2.45 — detect "vague intent + URL" shape that needs exploration.
+
+    Returns the URL if the requirement is sparse (≤ 30 substantive
+    chars beyond the URL) and contains an http(s) link. Returns None
+    when the user provided a rich requirement OR no URL.
+
+    Examples that trigger:
+      - "test http://localhost:3000/"
+      - "http://x.com 帮我测试一下"
+      - "我需要进行测试 http://localhost:3000/"
+
+    Examples that don't:
+      - "test the login flow on http://x.com: try wrong password,
+         expect 'invalid credentials' visible"  (rich, no exploration needed)
+      - "test the search feature"  (no URL, can't auto-explore)
+    """
+    if not text:
+        return None
+    # Extract URL.
+    url_match = re.search(r"https?://[^\s,，\"<>]+", text)
+    if not url_match:
+        return None
+    url = url_match.group(0).rstrip(".,;:!?）)")
+    # Sparseness: strip URL + common verbs, see how much actual
+    # specification is left.
+    rest = text.replace(url_match.group(0), "")
+    for verb in (
+        "test", "测试", "检查", "看看", "看下", "进行", "我需要",
+        "please", "帮我", "请",
+    ):
+        rest = rest.replace(verb, "")
+    rest = "".join(rest.split())  # collapse whitespace
+    # CJK chars count double (same as 0.2.41 info-density).
+    info_len = sum(2 if 0x4E00 <= ord(c) <= 0x9FFF else 1 for c in rest)
+    return url if info_len < 30 else None
+
+
 CASE_GENERATION_PROMPT = """\
 You are a senior functional QA engineer. Given the requirement
 below, design 3-7 concrete, executable test cases.

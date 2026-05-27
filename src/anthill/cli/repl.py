@@ -3134,12 +3134,14 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
     import time as _time
     from anthill.core.persistence import nation_dir as _nd
     from anthill.core.qa import (
+        EXPLORE_FOR_QA_PROMPT,
         FixAttempt,
         TestResult,
         TestSession,
         build_execution_prompt,
         build_fix_prompt,
         expand_data_cases,
+        is_sparse_requirement_with_url,
         list_sessions,
         load_data_table,
         load_requirement,
@@ -3528,8 +3530,51 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
         # Step 1: generate test cases via citizen.
         from anthill.core.qa import CASE_GENERATION_PROMPT
 
+        # 0.2.45 — sparse requirement + URL? Explore the page first
+        # so the case-generator has actual context. Real bug: vague
+        # "/test 测试 localhost:3000" produced empty cases because
+        # the LLM had no clue what was on that URL.
+        augmented_requirement = requirement.strip()
+        sparse_url = is_sparse_requirement_with_url(augmented_requirement)
+        if sparse_url:
+            console.print(
+                f"  [dim]🔭 requirement sparse — exploring "
+                f"[cyan]{sparse_url}[/cyan] first...[/dim]"
+            )
+            try:
+                explore_prompt = EXPLORE_FOR_QA_PROMPT.replace(
+                    "{url}", sparse_url
+                )
+                explore_result = await nation.run(
+                    "qa_explore", explore_prompt,
+                )
+                page_report = (explore_result.output or "").strip()
+                if page_report:
+                    augmented_requirement = (
+                        f"{requirement.strip()}\n\n"
+                        f"=== PAGE INSPECTION REPORT ({sparse_url}) ===\n"
+                        f"{page_report}\n"
+                        f"=== END REPORT ===\n\n"
+                        f"Use the inspection report above to write "
+                        f"concrete test cases against THIS specific page."
+                    )
+                    console.print(
+                        "  [dim]✓ inspection captured, "
+                        f"{len(page_report)} chars[/dim]"
+                    )
+                else:
+                    console.print(
+                        "  [yellow]⚠ inspection returned empty.[/yellow] "
+                        "[dim]falling back to generic case generation.[/dim]"
+                    )
+            except Exception as e:  # noqa: BLE001
+                console.print(
+                    f"  [yellow]⚠ inspection failed:[/yellow] {e}\n"
+                    f"  [dim]continuing with raw requirement.[/dim]"
+                )
+
         gen_prompt = CASE_GENERATION_PROMPT.replace(
-            "{requirement}", requirement.strip()
+            "{requirement}", augmented_requirement
         )
         console.print("  [dim]🧠 generating test cases...[/dim]")
         try:
@@ -3543,11 +3588,21 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
         cases = parse_cases_response(gen_result.output or "")
         if not cases:
             console.print(
-                "  [red]✗ couldn't parse test cases from model output.[/red]"
+                "  [red]✗ couldn't generate test cases.[/red]"
             )
             console.print(
-                f"  [dim]raw response (first 400 chars):[/dim]\n"
+                f"  [dim]raw model response (first 400 chars):[/dim]\n"
                 f"  {(gen_result.output or '')[:400]}"
+            )
+            # 0.2.45 — actionable next-steps, not just "we failed."
+            console.print(
+                "\n  [bold]try one of these:[/bold]\n"
+                "    [cyan]/test record <url>[/cyan]   "
+                "[dim]drive the flow once, anthill auto-generates YAML[/dim]\n"
+                "    [cyan]/test \"<more detail>\"[/cyan]   "
+                "[dim]describe what to test (steps, expected outcome)[/dim]\n"
+                "    [cyan]/test --data @cases.yaml[/cyan]   "
+                "[dim]bring your own pre-built cases[/dim]"
             )
             return
 
