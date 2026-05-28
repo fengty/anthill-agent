@@ -2660,6 +2660,12 @@ def _execute_literal_command(
                 console.print(
                     f"  [bold cyan]💬[/bold cyan] {interp_text}"
                 )
+        except KeyboardInterrupt:
+            # 0.2.49 — Ctrl+C during shell-fail interp: skip the
+            # interp, keep the raw output the user already saw.
+            console.print(
+                "  [dim]⏹ interpretation skipped (Ctrl+C)[/dim]"
+            )
         except Exception:  # noqa: BLE001 — interp must never break the run
             pass
 
@@ -4911,7 +4917,11 @@ def _handle_model_cmd(rest: str) -> None:
             return
         import asyncio
         console.print(f"  Testing [cyan]{entry.name}[/cyan]... ", end="")
-        result = asyncio.run(_probe_model(entry, api_key))
+        try:
+            result = asyncio.run(_probe_model(entry, api_key))
+        except KeyboardInterrupt:
+            console.print("[yellow]⏹ cancelled[/yellow]")
+            return
         if result["ok"]:
             console.print(
                 f"[green]✓ ok[/green] [dim]"
@@ -5382,18 +5392,31 @@ def run_repl(
             elif cmd == "test":
                 # 0.2.34 — functional QA flow: requirement → test cases
                 # → run each via agentic citizen → markdown report.
-                # Source: inline text, @file, or http URL.
+                # 0.2.49 — wrap in Ctrl+C handler so interrupting a
+                # long /test brings back the prompt instead of killing
+                # the whole REPL.
                 _maybe_async = _handle_test_cmd(rest, nation, config, stats)
                 if _maybe_async is not None:
-                    asyncio.run(_maybe_async)
+                    try:
+                        asyncio.run(_maybe_async)
+                    except (KeyboardInterrupt, asyncio.CancelledError):
+                        console.print()
+                        console.print(
+                            "  [yellow]⏹ /test cancelled.[/yellow] "
+                            "[dim](partial work saved if any cases ran)[/dim]"
+                        )
             elif cmd == "retest":
                 # 0.2.36 — rerun failures from a past test session.
-                # /retest                → latest session
-                # /retest <id>           → specific session (prefix ok)
-                # /retest [id] --fix N   → also auto-fix failures
+                # 0.2.49 — same Ctrl+C wrap as /test.
                 _maybe_async = _handle_retest_cmd(rest, nation, config, stats)
                 if _maybe_async is not None:
-                    asyncio.run(_maybe_async)
+                    try:
+                        asyncio.run(_maybe_async)
+                    except (KeyboardInterrupt, asyncio.CancelledError):
+                        console.print()
+                        console.print(
+                            "  [yellow]⏹ /retest cancelled.[/yellow]"
+                        )
             elif cmd == "kanban":
                 # 0.2.31 — slash surface for the kanban task board.
                 # /kanban                 → list active tasks
@@ -6331,14 +6354,20 @@ def run_repl(
                                         return str(result.output or "")
 
                                     import asyncio as _asyncio
-                                    new_template = _asyncio.run(
-                                        refine_template(
-                                            recipe,
-                                            recent_request=recent_request,
-                                            recent_output=recent_output,
-                                            refine_fn=_refine_call,
+                                    try:
+                                        new_template = _asyncio.run(
+                                            refine_template(
+                                                recipe,
+                                                recent_request=recent_request,
+                                                recent_output=recent_output,
+                                                refine_fn=_refine_call,
+                                            )
                                         )
-                                    )
+                                    except KeyboardInterrupt:
+                                        console.print(
+                                            "  [yellow]⏹ refine cancelled[/yellow]"
+                                        )
+                                        return
                                     if new_template:
                                         console.print(
                                             "  [bold]Proposed new template:[/bold]"
