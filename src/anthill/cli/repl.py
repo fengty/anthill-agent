@@ -3205,7 +3205,6 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
     import time as _time
     from anthill.core.persistence import nation_dir as _nd
     from anthill.core.qa import (
-        EXPLORE_FOR_QA_PROMPT,
         FixAttempt,
         TestResult,
         TestSession,
@@ -3601,46 +3600,47 @@ def _handle_test_cmd(rest: str, nation: Nation, config: AnthillConfig, stats: Se
         # Step 1: generate test cases via citizen.
         from anthill.core.qa import CASE_GENERATION_PROMPT
 
-        # 0.2.45 — sparse requirement + URL? Explore the page first
-        # so the case-generator has actual context. Real bug: vague
-        # "/test 测试 localhost:3000" produced empty cases because
-        # the LLM had no clue what was on that URL.
+        # 0.2.45 → 0.2.48 — sparse requirement + URL: don't ask an
+        # LLM to explore (3-dependency chain that fails too often).
+        # Anthill itself opens the URL via Playwright/httpx, extracts
+        # title + forms + buttons + links + text, and prepends THAT
+        # to the case-gen prompt. Model has ground truth.
         augmented_requirement = requirement.strip()
         sparse_url = is_sparse_requirement_with_url(augmented_requirement)
         if sparse_url:
             console.print(
-                f"  [dim]🔭 requirement sparse — exploring "
-                f"[cyan]{sparse_url}[/cyan] first...[/dim]"
+                f"  [dim]🔭 requirement sparse — fetching "
+                f"[cyan]{sparse_url}[/cyan] directly (no LLM)...[/dim]"
             )
             try:
-                explore_prompt = EXPLORE_FOR_QA_PROMPT.replace(
-                    "{url}", sparse_url
-                )
-                explore_result = await nation.run(
-                    "qa_explore", explore_prompt,
-                )
-                page_report = (explore_result.output or "").strip()
-                if page_report:
+                from anthill.core.page_inspector import inspect_url
+                page_ctx = await inspect_url(sparse_url)
+                if page_ctx.ok:
                     augmented_requirement = (
                         f"{requirement.strip()}\n\n"
-                        f"=== PAGE INSPECTION REPORT ({sparse_url}) ===\n"
-                        f"{page_report}\n"
-                        f"=== END REPORT ===\n\n"
-                        f"Use the inspection report above to write "
-                        f"concrete test cases against THIS specific page."
+                        f"{page_ctx.render_for_qa()}\n"
+                        f"Use the inspection above to write CONCRETE test "
+                        f"cases against THIS specific page. Reference the "
+                        f"actual UI labels you see — don't invent generic "
+                        f"placeholders."
                     )
                     console.print(
-                        "  [dim]✓ inspection captured, "
-                        f"{len(page_report)} chars[/dim]"
+                        f"  [dim]✓ inspected via {page_ctx.method} in "
+                        f"{page_ctx.duration_seconds:.1f}s "
+                        f"({len(page_ctx.forms)} forms, "
+                        f"{len(page_ctx.buttons)} buttons, "
+                        f"{len(page_ctx.links)} links)[/dim]"
                     )
                 else:
                     console.print(
-                        "  [yellow]⚠ inspection returned empty.[/yellow] "
-                        "[dim]falling back to generic case generation.[/dim]"
+                        f"  [yellow]⚠ inspection failed:[/yellow] "
+                        f"{page_ctx.error}\n"
+                        f"  [dim]falling back to LLM-only case gen "
+                        f"(may produce generic cases).[/dim]"
                     )
             except Exception as e:  # noqa: BLE001
                 console.print(
-                    f"  [yellow]⚠ inspection failed:[/yellow] {e}\n"
+                    f"  [yellow]⚠ inspection error:[/yellow] {e}\n"
                     f"  [dim]continuing with raw requirement.[/dim]"
                 )
 
