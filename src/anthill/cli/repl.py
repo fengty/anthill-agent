@@ -91,6 +91,77 @@ MULTILINE_OPENER = '"""'
 MULTILINE_CONT_PROMPT = "  ... "
 
 
+def _normalize_imed_input(line: str) -> tuple[str, bool]:
+    """0.2.46 — collapse Chinese-IME-injected spaces between Latin chars.
+
+    Real bug (production screenshot):
+        » /test r e c o r d我试 http://localhost:3000/
+        bye.
+
+    macOS Chinese IMEs (拼音/搜狗/etc.), in certain composition
+    states, insert spaces between every Latin character a user
+    types. anthill saw `r e c o r d` as 6 separate tokens, didn't
+    match `/test record`, user got frustrated, hit Ctrl+D, exited.
+
+    Heuristic: split on whitespace; find runs of ≥3 consecutive
+    single-Latin-letter tokens; collapse each run. Tokens of length
+    ≥2 (real words like `test` / `git` / `log`) terminate the run.
+
+    A trailing token that STARTS with a Latin char followed by
+    non-ASCII (e.g. `d我试`) gets its Latin prefix glued onto the
+    collapsed run — that's the canonical IME failure mode where the
+    last char of `record` got stuck to following CJK.
+
+    Returns (normalized_line, was_normalized).
+    """
+    if not line:
+        return line, False
+    # split(' ') instead of split() preserves consecutive spaces in
+    # the gap (so we don't accidentally fuse separate fragments
+    # across a 2-space pause).
+    tokens = line.split(" ")
+    out: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if _is_single_latin(tok):
+            # Look ahead for a run of single-letter tokens.
+            run_end = i + 1
+            while run_end < len(tokens) and _is_single_latin(tokens[run_end]):
+                run_end += 1
+            run_len = run_end - i
+            if run_len >= 3:
+                collapsed = "".join(tokens[i:run_end])
+                # Peel a leading Latin char off the next token if it
+                # exists AND is Latin+non-Latin (the "d我试" pattern).
+                if run_end < len(tokens):
+                    nxt = tokens[run_end]
+                    if (
+                        len(nxt) >= 2
+                        and nxt[0].isascii()
+                        and nxt[0].isalpha()
+                        and (not nxt[1].isascii() or not nxt[1].isalpha())
+                    ):
+                        # Glue the lone Latin prefix to the run.
+                        collapsed = collapsed + nxt[0]
+                        # Replace the next token with its tail.
+                        out.append(collapsed)
+                        out.append(nxt[1:])
+                        i = run_end + 1
+                        continue
+                out.append(collapsed)
+                i = run_end
+                continue
+        out.append(tok)
+        i += 1
+    new_line = " ".join(out)
+    return new_line, new_line != line
+
+
+def _is_single_latin(tok: str) -> bool:
+    return len(tok) == 1 and tok.isascii() and tok.isalpha()
+
+
 def _read_request_line(prompt: str = "» ") -> str:
     '''Read one logical request from stdin.
 
@@ -5132,6 +5203,17 @@ def run_repl(
         # the user is asking something else, ignore the prior nudge.
         if stats.queued_shell_command is not None:
             stats.queued_shell_command = None
+
+        # 0.2.46 — collapse IME-injected spaces between Latin chars.
+        # macOS Chinese IMEs sometimes produce "r e c o r d" instead
+        # of "record". Detect + fix + tell the user we did.
+        line, ime_fixed = _normalize_imed_input(line)
+        if ime_fixed:
+            console.print(
+                f"  [dim]🔤 IME 加了空格 → 已修复为 [/dim]"
+                f"[cyan]{line[:80]}[/cyan]"
+                f"{'[dim]...[/dim]' if len(line) > 80 else ''}"
+            )
 
         if line.startswith("/"):
             cmd, _, rest = line[1:].partition(" ")
