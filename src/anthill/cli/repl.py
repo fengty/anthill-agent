@@ -5215,6 +5215,37 @@ def run_repl(
                 f"{'[dim]...[/dim]' if len(line) > 80 else ''}"
             )
 
+        # 0.2.47 — client-style paste-to-file.
+        # Heavy paste → save to ~/.anthill/pastes/, rewrite to @path
+        # so it goes through the @file attachment machinery and
+        # doesn't blast the prompt with 5000-char wall.
+        # File path drag-into-terminal → also @-ify so the file
+        # attaches instead of being read as a question.
+        try:
+            from anthill.core.paste_attach import (
+                maybe_persist_paste,
+                maybe_resolve_file_path,
+            )
+            paste_result = maybe_persist_paste(line, config.home)
+            if paste_result.kind == "paste_saved":
+                console.print(
+                    f"  [dim]📋 paste detected ({paste_result.chars:,} chars, "
+                    f"{paste_result.lines} lines)[/dim] → "
+                    f"[cyan]{paste_result.persisted_path}[/cyan]"
+                )
+                line = paste_result.rewritten
+            else:
+                # Try the single-line file-path case.
+                resolved = maybe_resolve_file_path(line)
+                if resolved is not None:
+                    console.print(
+                        f"  [dim]📎 file path detected[/dim] → "
+                        f"[cyan]@{resolved}[/cyan]"
+                    )
+                    line = f"@{resolved}"
+        except Exception:  # noqa: BLE001 — paste-helper must never break input
+            pass
+
         if line.startswith("/"):
             cmd, _, rest = line[1:].partition(" ")
             cmd = cmd.lower()
